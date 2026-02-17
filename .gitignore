@@ -1,0 +1,13 @@
+# Build outputs
+third_party/build-*/
+third_party/bin/
+
+# Temp/package outputs
+artifacts/
+release_assets/
+
+# OS/editor
+.DS_Store
+.idea/
+.vscode/
+
