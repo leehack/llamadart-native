@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       llama_cpp_tag:
-        description: 'llama.cpp tag to build (e.g., b8011, latest)'
+        description: 'llama.cpp ref to build (e.g., b8011, latest, submodule)'
         required: true
-        default: 'latest'
+        default: 'submodule'
       linux_backend:
         description: 'Linux backend'
         required: true
@@ -50,15 +50,23 @@ jobs:
     outputs:
       tag: ${{ steps.tag.outputs.tag }}
     steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
       - name: Resolve llama.cpp tag
         id: tag
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG="${{ github.event.inputs.llama_cpp_tag }}"
+
           if [ -z "$TAG" ] || [ "$TAG" = "latest" ]; then
             TAG=$(gh api repos/ggml-org/llama.cpp/releases/latest --jq '.tag_name')
+          elif [ "$TAG" = "submodule" ]; then
+            TAG=$(git -C native/deps/llama.cpp describe --tags --exact-match 2>/dev/null || git -C native/deps/llama.cpp rev-parse --short HEAD)
           fi
+
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "Resolved tag: $TAG"
 
@@ -70,14 +78,17 @@ jobs:
         android_abi: [arm64-v8a, x86_64]
     defaults:
       run:
-        working-directory: third_party
+        working-directory: native
     steps:
       - uses: actions/checkout@v4
-      - name: Fetch deps
+        with:
+          submodules: recursive
+      - name: Checkout llama.cpp ref
+        if: ${{ github.event.inputs.llama_cpp_tag != 'submodule' }}
         run: |
           TAG="${{ needs.resolve-tag.outputs.tag }}"
-          git clone --depth 1 --branch "$TAG" https://github.com/ggml-org/llama.cpp.git llama_cpp
-          git clone --depth 1 https://github.com/KhronosGroup/Vulkan-Headers.git Vulkan-Headers
+          git -C deps/llama.cpp fetch --tags --force origin
+          git -C deps/llama.cpp checkout --detach "$TAG"
       - name: Set up JDK
         uses: actions/setup-java@v4
         with:
@@ -95,7 +106,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: libllamadart_android_${{ matrix.android_abi }}
-          path: third_party/bin/android/*/libllamadart.so
+          path: native/bin/android/*/libllamadart.so
 
   build-apple:
     needs: resolve-tag
@@ -105,14 +116,17 @@ jobs:
         target: [macos-arm64, macos-x86_64, ios-device-arm64, ios-sim-arm64, ios-sim-x86_64]
     defaults:
       run:
-        working-directory: third_party
+        working-directory: native
     steps:
       - uses: actions/checkout@v4
-      - name: Fetch deps
+        with:
+          submodules: recursive
+      - name: Checkout llama.cpp ref
+        if: ${{ github.event.inputs.llama_cpp_tag != 'submodule' }}
         run: |
           TAG="${{ needs.resolve-tag.outputs.tag }}"
-          git clone --depth 1 --branch "$TAG" https://github.com/ggml-org/llama.cpp.git llama_cpp
-          git clone --depth 1 https://github.com/KhronosGroup/Vulkan-Headers.git Vulkan-Headers
+          git -C deps/llama.cpp fetch --tags --force origin
+          git -C deps/llama.cpp checkout --detach "$TAG"
       - name: Install build deps
         run: brew install ccache
       - name: Build
@@ -122,8 +136,8 @@ jobs:
         with:
           name: libllamadart_apple_${{ matrix.target }}
           path: |
-            third_party/bin/macos/**/*.dylib
-            third_party/bin/ios/*.dylib
+            native/bin/macos/**/*.dylib
+            native/bin/ios/*.dylib
 
   build-linux:
     needs: resolve-tag
@@ -133,14 +147,17 @@ jobs:
         config: [{arch: x64}, {arch: arm64}]
     defaults:
       run:
-        working-directory: third_party
+        working-directory: native
     steps:
       - uses: actions/checkout@v4
-      - name: Fetch deps
+        with:
+          submodules: recursive
+      - name: Checkout llama.cpp ref
+        if: ${{ github.event.inputs.llama_cpp_tag != 'submodule' }}
         run: |
           TAG="${{ needs.resolve-tag.outputs.tag }}"
-          git clone --depth 1 --branch "$TAG" https://github.com/ggml-org/llama.cpp.git llama_cpp
-          git clone --depth 1 https://github.com/KhronosGroup/Vulkan-Headers.git Vulkan-Headers
+          git -C deps/llama.cpp fetch --tags --force origin
+          git -C deps/llama.cpp checkout --detach "$TAG"
       - name: Install build deps
         run: |
           sudo apt-get update
@@ -171,22 +188,25 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: libllamadart_linux_${{ matrix.config.arch }}
-          path: third_party/bin/linux/${{ matrix.config.arch }}/libllamadart.so
+          path: native/bin/linux/${{ matrix.config.arch }}/libllamadart.so
 
   build-windows:
     needs: resolve-tag
     runs-on: windows-latest
     defaults:
       run:
-        working-directory: third_party
+        working-directory: native
     steps:
       - uses: actions/checkout@v4
-      - name: Fetch deps
+        with:
+          submodules: recursive
+      - name: Checkout llama.cpp ref
+        if: ${{ github.event.inputs.llama_cpp_tag != 'submodule' }}
         shell: bash
         run: |
           TAG="${{ needs.resolve-tag.outputs.tag }}"
-          git clone --depth 1 --branch "$TAG" https://github.com/ggml-org/llama.cpp.git llama_cpp
-          git clone --depth 1 https://github.com/KhronosGroup/Vulkan-Headers.git Vulkan-Headers
+          git -C deps/llama.cpp fetch --tags --force origin
+          git -C deps/llama.cpp checkout --detach "$TAG"
       - name: Install Ninja
         run: choco install ninja -y
       - name: Setup sccache
@@ -208,7 +228,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: libllamadart_windows_x64
-          path: third_party/bin/windows/x64/libllamadart.dll
+          path: native/bin/windows/x64/libllamadart.dll
 
   package-and-release:
     needs: [resolve-tag, build-android, build-apple, build-linux, build-windows]

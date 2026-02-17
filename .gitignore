@@ -1,6 +1,6 @@
 # Build outputs
-third_party/build-*/
-third_party/bin/
+native/build-*/
+native/bin/
 
 # Temp/package outputs
 artifacts/
@@ -10,4 +10,3 @@ release_assets/
 .DS_Store
 .idea/
 .vscode/
-

@@ -1,14 +1,23 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# build_android.sh <ABI> [clean]
+# build_android.sh <ABI|all> [clean]
 # Env: ANDROID_GPU_BACKEND=vulkan|opencl|cpu (default: vulkan)
 
-if [ "$1" = "all" ]; then
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
+
+if [ ! -f "deps/llama.cpp/CMakeLists.txt" ]; then
+  echo "Error: missing submodule deps/llama.cpp. Run: git submodule update --init --recursive" >&2
+  exit 1
+fi
+
+FIRST_ARG="${1:-arm64-v8a}"
+if [ "$FIRST_ARG" = "all" ]; then
   ABIS=("arm64-v8a" "x86_64")
   CLEAN="${2:-}"
 else
-  ABIS=("${1:-arm64-v8a}")
+  ABIS=("$FIRST_ARG")
   CLEAN="${2:-}"
 fi
 
@@ -119,9 +128,9 @@ for ABI in "${ABIS[@]}"; do
       exit 1
     fi
 
-    VULKAN_INC_DIR="$(pwd)/Vulkan-Headers/include"
+    VULKAN_INC_DIR="$(pwd)/deps/Vulkan-Headers/include"
     if [ ! -d "$VULKAN_INC_DIR/vulkan" ]; then
-      echo "Error: Vulkan-Headers submodule missing." >&2
+      echo "Error: missing submodule deps/Vulkan-Headers." >&2
       exit 1
     fi
 

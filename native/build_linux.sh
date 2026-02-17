@@ -4,6 +4,14 @@ set -euo pipefail
 # build_linux.sh <backend> [arch] [clean]
 # backends: cpu | vulkan | cuda | zendnn
 
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
+
+if [ ! -f "deps/llama.cpp/CMakeLists.txt" ]; then
+  echo "Error: missing submodule deps/llama.cpp. Run: git submodule update --init --recursive" >&2
+  exit 1
+fi
+
 BACKEND="${1:-vulkan}"
 ARCH="${2:-}"
 CLEAN="${3:-}"

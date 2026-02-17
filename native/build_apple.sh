@@ -11,6 +11,14 @@ CLEAN="${2:-}"
 BACKEND="${3:-${APPLE_BACKEND:-metal}}"
 APPLE_BUILD_STATIC="${APPLE_BUILD_STATIC:-0}"
 
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
+
+if [ ! -f "deps/llama.cpp/CMakeLists.txt" ]; then
+  echo "Error: missing submodule deps/llama.cpp. Run: git submodule update --init --recursive" >&2
+  exit 1
+fi
+
 if [ -z "$TARGET" ]; then
   echo "Usage: build_apple.sh <target> [clean] [backend]" >&2
   exit 1

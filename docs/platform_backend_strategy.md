@@ -40,3 +40,6 @@
 - Android OpenCL requires OpenCL headers/ICD loader in the NDK/sysroot.
 - ZenDNN currently targets Linux x64.
 
+## Dependency Management
+
+- Native dependencies are pinned as git submodules under `native/deps/`.

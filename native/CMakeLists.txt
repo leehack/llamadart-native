@@ -23,20 +23,24 @@ set(LLAMA_HTTPLIB OFF CACHE BOOL "Disable httplib" FORCE)
 set(LLAMA_OPENSSL OFF CACHE BOOL "Disable OpenSSL" FORCE)
 set(GGML_NATIVE OFF CACHE BOOL "Disable native CPU optimizations for portability" FORCE)
 
+if (NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/deps/llama.cpp/CMakeLists.txt")
+    message(FATAL_ERROR "Missing submodule: native/deps/llama.cpp. Run: git submodule update --init --recursive")
+endif()
+
 # Set defaults for Release builds
 if (CMAKE_BUILD_TYPE STREQUAL "Release")
     set(CMAKE_INTERPROCEDURAL_OPTIMIZATION ON)
 endif()
 
-add_subdirectory(llama_cpp/tools/mtmd EXCLUDE_FROM_ALL)
-add_subdirectory(llama_cpp)
+add_subdirectory(deps/llama.cpp/tools/mtmd EXCLUDE_FROM_ALL)
+add_subdirectory(deps/llama.cpp)
 
 set(CONSOLIDATED_LIBS llama ggml ggml-base ggml-cpu ggml-vulkan ggml-blas ggml-metal ggml-cuda mtmd)
 
 # mtmd needs these to export symbols properly when built as a static lib merged into shared
-target_compile_definitions(mtmd PRIVATE 
-    GGML_SHARED LLAMA_SHARED 
-    GGML_BUILD LLAMA_BUILD 
+target_compile_definitions(mtmd PRIVATE
+    GGML_SHARED LLAMA_SHARED
+    GGML_BUILD LLAMA_BUILD
     GGML_BACKEND_SHARED GGML_BACKEND_BUILD)
 
 if (APPLE)
@@ -62,9 +66,9 @@ elseif (MSVC)
     foreach(LIB ${CONSOLIDATED_LIBS})
         if(TARGET ${LIB})
             list(APPEND ACTIVE_LIBS ${LIB})
-            target_compile_definitions(${LIB} PRIVATE 
-                GGML_SHARED LLAMA_SHARED 
-                GGML_BUILD LLAMA_BUILD 
+            target_compile_definitions(${LIB} PRIVATE
+                GGML_SHARED LLAMA_SHARED
+                GGML_BUILD LLAMA_BUILD
                 GGML_BACKEND_SHARED GGML_BACKEND_BUILD)
             list(APPEND COMBINED_OBJECTS $<TARGET_OBJECTS:${LIB}>)
         endif()
@@ -93,13 +97,13 @@ else()
 endif()
 
 # Set the output name to 'llamadart' consistently
-set_target_properties(llamadart_lib PROPERTIES 
+set_target_properties(llamadart_lib PROPERTIES
     OUTPUT_NAME llamadart
     LIBRARY_OUTPUT_NAME llamadart
 )
 
 target_include_directories(llamadart_lib PRIVATE
-    llama_cpp/include
-    llama_cpp/src
+    deps/llama.cpp/include
+    deps/llama.cpp/src
     libllamadart
 )

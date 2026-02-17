@@ -7,6 +7,14 @@ param (
     [string]$VulkanSdk = ""
 )
 
+$ScriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+Set-Location $ScriptRoot
+
+if (-not (Test-Path "deps/llama.cpp/CMakeLists.txt")) {
+    Write-Error "Missing submodule deps/llama.cpp. Run: git submodule update --init --recursive"
+    exit 1
+}
+
 $BuildDir = "build-$Backend"
 if ($Clean -eq "clean" -and (Test-Path $BuildDir)) {
     Remove-Item -Path $BuildDir -Recurse -Force

@@ -52,7 +52,16 @@ For hook-sync automation:
 
 - `.github/workflows/native_release.yml`: build + package + release.
 - `.github/workflows/sync_llamadart_hook.yml`: post-release PR sync.
-- `third_party/`: native CMake wrapper and platform build scripts.
+- `.gitmodules`: pinned native dependency submodules.
+- `native/`: native CMake wrapper and platform build scripts.
+- `native/deps/llama.cpp`: upstream llama.cpp as submodule.
+- `native/deps/Vulkan-Headers`: Vulkan headers submodule for Android Vulkan builds.
 - `scripts/generate_assets_manifest.sh`: builds `assets.json` + checksums.
 - `scripts/update_llamadart_hook.sh`: updates tag and base URL in `hook/build.dart`.
 - `docs/platform_backend_strategy.md`: default/configurable backend matrix.
+
+Initialize submodules after clone:
+
+```bash
+git submodule update --init --recursive
+```
