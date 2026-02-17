@@ -23,46 +23,132 @@ hash_file() {
   fi
 }
 
-infer_meta() {
-  local file="$1"
-  local base stem platform="unknown" arch="unknown" backend="unknown" module="core"
-
-  base="$(basename "$file")"
-  stem="${base#libllamadart-}"
-  stem="${stem%.*}"
-
-  case "$stem" in
-    windows-x64-*)
-      platform="windows"; arch="x64"; backend="${stem#windows-x64-}" ;;
-    linux-x64-*)
-      platform="linux"; arch="x64"; backend="${stem#linux-x64-}" ;;
-    linux-arm64-*)
-      platform="linux"; arch="arm64"; backend="${stem#linux-arm64-}" ;;
-    macos-arm64-*)
-      platform="macos"; arch="arm64"; backend="${stem#macos-arm64-}" ;;
-    macos-x86_64-*)
-      platform="macos"; arch="x86_64"; backend="${stem#macos-x86_64-}" ;;
-    ios-arm64-sim-*)
-      platform="ios"; arch="arm64-sim"; backend="${stem#ios-arm64-sim-}" ;;
-    ios-x86_64-sim-*)
-      platform="ios"; arch="x86_64-sim"; backend="${stem#ios-x86_64-sim-}" ;;
-    ios-arm64-*)
-      platform="ios"; arch="arm64"; backend="${stem#ios-arm64-}" ;;
-    android-arm64-*)
-      platform="android"; arch="arm64"; backend="${stem#android-arm64-}" ;;
-    android-x64-*)
-      platform="android"; arch="x64"; backend="${stem#android-x64-}" ;;
-    *) ;;
-  esac
-
-  case "$backend" in
-    cpu|vulkan|cuda|metal|opencl|zendnn|blas)
-      module="backend-$backend"
+strip_ext() {
+  local base="$1"
+  case "$base" in
+    *.dylib)
+      echo "${base%.dylib}"
       ;;
-    mtmd)
-      module="mtmd"
+    *.dll)
+      echo "${base%.dll}"
+      ;;
+    *.so)
+      echo "${base%.so}"
+      ;;
+    *.so.*)
+      echo "${base%%.so*}"
       ;;
     *)
+      echo "${base%.*}"
+      ;;
+  esac
+}
+
+infer_meta() {
+  local file="$1"
+  local base stem platform="unknown" arch="unknown" backend="unknown" module="core" libid=""
+
+  base="$(basename "$file")"
+  stem="$(strip_ext "$base")"
+  libid="$stem"
+
+  # New naming convention: <libname>-<platform>-<arch>.<ext>
+  case "$stem" in
+    *-windows-x64)
+      platform="windows"; arch="x64"; libid="${stem%-windows-x64}" ;;
+    *-linux-x64)
+      platform="linux"; arch="x64"; libid="${stem%-linux-x64}" ;;
+    *-linux-arm64)
+      platform="linux"; arch="arm64"; libid="${stem%-linux-arm64}" ;;
+    *-macos-arm64)
+      platform="macos"; arch="arm64"; libid="${stem%-macos-arm64}" ;;
+    *-macos-x86_64)
+      platform="macos"; arch="x86_64"; libid="${stem%-macos-x86_64}" ;;
+    *-ios-arm64-sim)
+      platform="ios"; arch="arm64-sim"; libid="${stem%-ios-arm64-sim}" ;;
+    *-ios-x86_64-sim)
+      platform="ios"; arch="x86_64-sim"; libid="${stem%-ios-x86_64-sim}" ;;
+    *-ios-arm64)
+      platform="ios"; arch="arm64"; libid="${stem%-ios-arm64}" ;;
+    *-android-arm64)
+      platform="android"; arch="arm64"; libid="${stem%-android-arm64}" ;;
+    *-android-x64)
+      platform="android"; arch="x64"; libid="${stem%-android-x64}" ;;
+    *)
+      ;;
+  esac
+
+  # Backward compatibility for old naming: libllamadart-<platform>-<arch>-<backend>
+  if [ "$platform" = "unknown" ]; then
+    local legacy
+    legacy="${stem#libllamadart-}"
+    case "$legacy" in
+      windows-x64-*)
+        platform="windows"; arch="x64"; backend="${legacy#windows-x64-}"; module="backend-$backend" ;;
+      linux-x64-*)
+        platform="linux"; arch="x64"; backend="${legacy#linux-x64-}"; module="backend-$backend" ;;
+      linux-arm64-*)
+        platform="linux"; arch="arm64"; backend="${legacy#linux-arm64-}"; module="backend-$backend" ;;
+      macos-arm64-*)
+        platform="macos"; arch="arm64"; backend="${legacy#macos-arm64-}"; module="backend-$backend" ;;
+      macos-x86_64-*)
+        platform="macos"; arch="x86_64"; backend="${legacy#macos-x86_64-}"; module="backend-$backend" ;;
+      ios-arm64-sim-*)
+        platform="ios"; arch="arm64-sim"; backend="${legacy#ios-arm64-sim-}"; module="backend-$backend" ;;
+      ios-x86_64-sim-*)
+        platform="ios"; arch="x86_64-sim"; backend="${legacy#ios-x86_64-sim-}"; module="backend-$backend" ;;
+      ios-arm64-*)
+        platform="ios"; arch="arm64"; backend="${legacy#ios-arm64-}"; module="backend-$backend" ;;
+      android-arm64-*)
+        platform="android"; arch="arm64"; backend="${legacy#android-arm64-}"; module="backend-$backend" ;;
+      android-x64-*)
+        platform="android"; arch="x64"; backend="${legacy#android-x64-}"; module="backend-$backend" ;;
+      *)
+        ;;
+    esac
+
+    echo "$platform|$arch|$backend|$module"
+    return
+  fi
+
+  local id_no_lib
+  id_no_lib="${libid#lib}"
+
+  case "$id_no_lib" in
+    ggml-base|ggml|llama|llamadart)
+      backend="core"
+      module="core"
+      ;;
+    mtmd)
+      backend="mtmd"
+      module="mtmd"
+      ;;
+    ggml-*)
+      local ggml_backend
+      ggml_backend="${id_no_lib#ggml-}"
+      case "$ggml_backend" in
+        cpu*) backend="cpu" ;;
+        vulkan*) backend="vulkan" ;;
+        opencl*) backend="opencl" ;;
+        cuda*) backend="cuda" ;;
+        metal*) backend="metal" ;;
+        zendnn*) backend="zendnn" ;;
+        blas*) backend="blas" ;;
+        sycl*) backend="sycl" ;;
+        hip*) backend="hip" ;;
+        rpc*) backend="rpc" ;;
+        webgpu*) backend="webgpu" ;;
+        hexagon*) backend="hexagon" ;;
+        cann*) backend="cann" ;;
+        musa*) backend="musa" ;;
+        virtgpu*) backend="virtgpu" ;;
+        zdnn*) backend="zdnn" ;;
+        *) backend="$ggml_backend" ;;
+      esac
+      module="backend-$backend"
+      ;;
+    *)
+      backend="core"
       module="core"
       ;;
   esac

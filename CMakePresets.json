@@ -1,0 +1,224 @@
+{
+  "version": 4,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 23,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "GGML_NATIVE": "OFF",
+        "BUILD_SHARED_LIBS": "ON",
+        "GGML_BACKEND_DL": "ON"
+      }
+    },
+    {
+      "name": "apple-base",
+      "hidden": true,
+      "inherits": "base",
+      "cacheVariables": {
+        "LLAMADART_CONSOLIDATE": "ON",
+        "GGML_BLAS": "OFF",
+        "GGML_CPU_KLEIDIAI": "OFF"
+      }
+    },
+    {
+      "name": "macos-base",
+      "hidden": true,
+      "inherits": "apple-base",
+      "cacheVariables": {
+        "CMAKE_OSX_DEPLOYMENT_TARGET": "11.0"
+      }
+    },
+    {
+      "name": "ios-base",
+      "hidden": true,
+      "inherits": "apple-base",
+      "cacheVariables": {
+        "CMAKE_SYSTEM_NAME": "iOS",
+        "IOS": "ON",
+        "CMAKE_OSX_DEPLOYMENT_TARGET": "16.4"
+      }
+    },
+    {
+      "name": "linux-base",
+      "hidden": true,
+      "inherits": "base",
+      "cacheVariables": {
+        "CMAKE_SHARED_LINKER_FLAGS": "-s",
+        "GGML_OPENMP": "ON"
+      }
+    },
+    {
+      "name": "windows-base",
+      "hidden": true,
+      "inherits": "base"
+    },
+    {
+      "name": "android-base",
+      "hidden": true,
+      "inherits": "base",
+      "cacheVariables": {
+        "CMAKE_TOOLCHAIN_FILE": "$env{ANDROID_NDK_HOME}/build/cmake/android.toolchain.cmake",
+        "CMAKE_SHARED_LINKER_FLAGS": "-s",
+        "GGML_OPENMP": "OFF",
+        "GGML_LLAMAFILE": "OFF"
+      }
+    },
+
+    {
+      "name": "macos-arm64-full",
+      "inherits": "macos-base",
+      "cacheVariables": {
+        "CMAKE_OSX_ARCHITECTURES": "arm64",
+        "GGML_METAL": "ON",
+        "GGML_METAL_EMBED_LIBRARY": "ON",
+        "GGML_METAL_USE_BF16": "OFF"
+      }
+    },
+    {
+      "name": "macos-x86_64-full",
+      "inherits": "macos-base",
+      "cacheVariables": {
+        "CMAKE_OSX_ARCHITECTURES": "x86_64",
+        "GGML_METAL": "ON",
+        "GGML_METAL_EMBED_LIBRARY": "ON",
+        "GGML_METAL_USE_BF16": "OFF"
+      }
+    },
+    {
+      "name": "ios-device-arm64-full",
+      "inherits": "ios-base",
+      "cacheVariables": {
+        "CMAKE_OSX_SYSROOT": "iphoneos",
+        "CMAKE_OSX_ARCHITECTURES": "arm64",
+        "GGML_METAL": "ON",
+        "GGML_METAL_EMBED_LIBRARY": "ON",
+        "GGML_METAL_USE_BF16": "OFF"
+      }
+    },
+    {
+      "name": "ios-sim-arm64-full",
+      "inherits": "ios-base",
+      "cacheVariables": {
+        "CMAKE_OSX_SYSROOT": "iphonesimulator",
+        "CMAKE_OSX_ARCHITECTURES": "arm64",
+        "GGML_METAL": "ON",
+        "GGML_METAL_EMBED_LIBRARY": "ON",
+        "GGML_METAL_USE_BF16": "OFF"
+      }
+    },
+    {
+      "name": "ios-sim-x86_64-full",
+      "inherits": "ios-base",
+      "cacheVariables": {
+        "CMAKE_OSX_SYSROOT": "iphonesimulator",
+        "CMAKE_OSX_ARCHITECTURES": "x86_64",
+        "GGML_METAL": "ON",
+        "GGML_METAL_EMBED_LIBRARY": "ON",
+        "GGML_METAL_USE_BF16": "OFF"
+      }
+    },
+
+    {
+      "name": "linux-x64-full",
+      "inherits": "linux-base",
+      "cacheVariables": {
+        "GGML_BLAS": "ON",
+        "GGML_BLAS_VENDOR": "OpenBLAS",
+        "GGML_VULKAN": "ON",
+        "GGML_OPENCL": "OFF",
+        "GGML_CUDA": "ON",
+        "GGML_ZENDNN": "ON"
+      }
+    },
+    {
+      "name": "linux-arm64-full",
+      "inherits": "linux-base",
+      "cacheVariables": {
+        "GGML_BLAS": "ON",
+        "GGML_BLAS_VENDOR": "OpenBLAS",
+        "GGML_CPU_KLEIDIAI": "ON",
+        "GGML_VULKAN": "ON",
+        "GGML_OPENCL": "OFF",
+        "GGML_CUDA": "OFF",
+        "GGML_ZENDNN": "OFF"
+      }
+    },
+
+    {
+      "name": "windows-x64-full",
+      "inherits": "windows-base",
+      "cacheVariables": {
+        "GGML_BLAS": "ON",
+        "GGML_BLAS_VENDOR": "OpenBLAS",
+        "GGML_VULKAN": "ON",
+        "GGML_OPENCL": "OFF",
+        "GGML_CUDA": "ON"
+      }
+    },
+    {
+      "name": "windows-arm64-full",
+      "inherits": "windows-base",
+      "generator": "Visual Studio 17 2022",
+      "architecture": {
+        "value": "ARM64",
+        "strategy": "set"
+      },
+      "toolset": {
+        "value": "ClangCL",
+        "strategy": "set"
+      },
+      "cacheVariables": {
+        "GGML_BLAS": "ON",
+        "GGML_BLAS_VENDOR": "OpenBLAS",
+        "GGML_VULKAN": "ON",
+        "GGML_OPENCL": "OFF",
+        "GGML_CUDA": "OFF",
+        "GGML_CPU_KLEIDIAI": "ON"
+      }
+    },
+
+    {
+      "name": "android-arm64-v8a-full",
+      "inherits": "android-base",
+      "cacheVariables": {
+        "ANDROID_ABI": "arm64-v8a",
+        "ANDROID_PLATFORM": "android-28",
+        "GGML_CPU_ARM_ARCH": "armv8.5-a+fp16+i8mm",
+        "GGML_CPU_KLEIDIAI": "ON",
+        "GGML_VULKAN": "ON",
+        "GGML_OPENCL": "ON"
+      }
+    },
+    {
+      "name": "android-x86_64-full",
+      "inherits": "android-base",
+      "cacheVariables": {
+        "ANDROID_ABI": "x86_64",
+        "ANDROID_PLATFORM": "android-28",
+        "GGML_VULKAN": "ON",
+        "GGML_OPENCL": "ON"
+      }
+    }
+  ],
+  "buildPresets": [
+    { "name": "macos-arm64-full", "configurePreset": "macos-arm64-full" },
+    { "name": "macos-x86_64-full", "configurePreset": "macos-x86_64-full" },
+    { "name": "ios-device-arm64-full", "configurePreset": "ios-device-arm64-full" },
+    { "name": "ios-sim-arm64-full", "configurePreset": "ios-sim-arm64-full" },
+    { "name": "ios-sim-x86_64-full", "configurePreset": "ios-sim-x86_64-full" },
+    { "name": "linux-x64-full", "configurePreset": "linux-x64-full" },
+    { "name": "linux-arm64-full", "configurePreset": "linux-arm64-full" },
+    { "name": "windows-x64-full", "configurePreset": "windows-x64-full" },
+    { "name": "windows-arm64-full", "configurePreset": "windows-arm64-full", "configuration": "Release" },
+    { "name": "android-arm64-v8a-full", "configurePreset": "android-arm64-v8a-full" },
+    { "name": "android-x86_64-full", "configurePreset": "android-x86_64-full" }
+  ]
+}

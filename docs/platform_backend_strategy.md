@@ -1,45 +1,44 @@
 # Platform Backend Strategy
 
-## Default Strategy
+## Worthy Backend Sets (Built Together)
 
-| Platform | Default Backend |
+| Platform | Built backends |
 |---|---|
-| Android (arm64/x64) | OpenCL |
-| iOS | Metal |
-| macOS | Metal |
-| Linux x64/arm64 | Vulkan |
-| Windows x64 | Vulkan |
+| Android arm64 | Vulkan + OpenCL + Kleidi + CPU |
+| Android x64 | Vulkan + OpenCL + CPU |
+| iOS | Metal + CPU |
+| macOS | Metal + CPU |
+| Linux x64 | Vulkan + CUDA + BLAS + ZenDNN + CPU |
+| Linux arm64 | Vulkan + BLAS + Kleidi + CPU |
+| Windows x64 | Vulkan + CUDA + BLAS + CPU |
+| Windows arm64 | Vulkan + BLAS + Kleidi + CPU |
 
-## Fallback Strategy (runtime policy target)
+## Build Model
 
-| Platform | Fallback Chain |
-|---|---|
-| Android | OpenCL -> Vulkan -> CPU |
-| iOS/macOS | Metal -> CPU |
-| Linux | Vulkan -> CPU |
-| Windows | Vulkan -> CPU |
+- Build one preset per platform/arch target.
+- Apple (iOS/macOS): consolidate Metal+CPU into a single `libllamadart`.
+- Apple defaults keep BLAS and Kleidi disabled for a simpler compatibility path.
+- Kleidi is enabled on Linux arm64, Android arm64, and Windows arm64 in this pipeline.
+- Non-Apple: keep backends as separate dynamic libraries (`GGML_BACKEND_DL=ON`).
 
-## Configurable Backends
+## Runtime Packaging Model
 
-| Platform | Configurable options |
-|---|---|
-| Android | `opencl`, `vulkan`, `cpu` |
-| Apple | `metal`, `cpu` |
-| Linux | `vulkan`, `cpu`, `cuda`, `zendnn` |
-| Windows | `vulkan`, `cpu`, `cuda` |
+- Apple: ship only `libllamadart` for each target.
+- Non-Apple required core libs: `llamadart`, `llama`, `ggml`, `ggml-base` (and `mtmd` when present).
+- Non-Apple optional backend libs: `ggml-<backend>` modules (for example `ggml-vulkan`, `ggml-opencl`, `ggml-cuda`).
+- App integrators decide which backend modules to ship and load at runtime.
 
-## CPU Optimization Notes
+## Constraints
 
-- x86: AVX2/AVX512/FMA/F16C options are available upstream.
-- ARM64: dotprod/i8mm/SVE/SME paths exist upstream.
-- AMD server CPUs: ZenDNN can accelerate matrix multiplication workloads.
-
-## Current Constraints
-
-- CUDA builds require CUDA toolchain availability (`nvcc`) on the runner.
-- Android OpenCL requires OpenCL headers/ICD loader in the NDK/sysroot.
-- ZenDNN currently targets Linux x64.
+- CUDA lanes require `nvcc` availability.
+- Android Vulkan lanes require NDK-provided `libvulkan.so`.
+- Android OpenCL lanes require `CL/cl.h` and `libOpenCL.so` from one of:
+  - env overrides (`OPENCL_INCLUDE_DIR`, `OPENCL_LIBRARY_ANDROID_<ABI>`)
+  - `third_party/opencl-stubs/`
+  - auto-built OpenCL ICD loader from `third_party/OpenCL-ICD-Loader` + `third_party/OpenCL-Headers`
+- Linux arm64 builds on x64 runners require `aarch64-linux-gnu-gcc/g++`, `libopenblas-dev:arm64`, and `libvulkan-dev:arm64`.
+- ZenDNN currently targets Linux x64 in this pipeline.
 
 ## Dependency Management
 
-- Native dependencies are pinned as git submodules under `native/deps/`.
+- Native dependencies are pinned as git submodules under `third_party/`.

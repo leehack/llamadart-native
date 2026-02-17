@@ -1,12 +1,18 @@
 # Build outputs
-native/build-*/
-native/bin/
+bin/
+build/
+.ccache/
 
 # Temp/package outputs
 artifacts/
 release_assets/
 
+# Local OpenCL stub overrides (optional)
+third_party/opencl-stubs/android/*/libOpenCL.so
+third_party/opencl-stubs/include/CL/
+
 # OS/editor
 .DS_Store
 .idea/
 .vscode/
+__pycache__/
