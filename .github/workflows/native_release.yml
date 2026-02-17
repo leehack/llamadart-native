@@ -151,12 +151,12 @@ jobs:
             sudo dpkg --add-architecture arm64
             source /etc/os-release
             CODENAME="${VERSION_CODENAME}"
-            cat <<EOF | sudo tee /etc/apt/sources.list.d/arm64-ports.list >/dev/null
-deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports ${CODENAME} main universe restricted multiverse
-deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports ${CODENAME}-updates main universe restricted multiverse
-deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports ${CODENAME}-backports main universe restricted multiverse
-deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports ${CODENAME}-security main universe restricted multiverse
-EOF
+            {
+              echo "deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports ${CODENAME} main universe restricted multiverse"
+              echo "deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports ${CODENAME}-updates main universe restricted multiverse"
+              echo "deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports ${CODENAME}-backports main universe restricted multiverse"
+              echo "deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports ${CODENAME}-security main universe restricted multiverse"
+            } | sudo tee /etc/apt/sources.list.d/arm64-ports.list >/dev/null
           fi
           sudo apt-get update
           sudo apt-get install -y ccache ninja-build pkg-config libvulkan-dev glslc make
