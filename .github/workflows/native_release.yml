@@ -122,9 +122,7 @@ jobs:
         with:
           name: libllamadart_apple_${{ matrix.target }}
           path: |
-            third_party/bin/macos/**/*.a
             third_party/bin/macos/**/*.dylib
-            third_party/bin/ios/*.a
             third_party/bin/ios/*.dylib
 
   build-linux:
