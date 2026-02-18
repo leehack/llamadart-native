@@ -275,6 +275,16 @@ jobs:
           submodules: recursive
       - name: Enable Git Long Paths
         run: git config --global core.longpaths true
+      - name: Setup MSVC (x64)
+        if: ${{ matrix.arch == 'x64' }}
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - name: Setup MSVC (arm64 cross)
+        if: ${{ matrix.arch == 'arm64' }}
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: amd64_arm64
       - name: Checkout llama.cpp ref
         if: ${{ github.event.inputs.llama_cpp_tag != 'submodule' }}
         shell: bash
