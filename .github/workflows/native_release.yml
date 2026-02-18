@@ -355,6 +355,10 @@ jobs:
       CCACHE_DIR: ${{ github.workspace }}/.ccache
       CCACHE_MAXSIZE: 5G
     steps:
+      - name: Install Git
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y git
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -367,8 +371,7 @@ jobs:
           github_token: ${{ github.token }}
       - name: Install build deps
         run: |
-          apt-get update
-          DEBIAN_FRONTEND=noninteractive apt-get install -y build-essential cmake git ccache ninja-build pkg-config python3 rocblas-dev hipblas-dev
+          DEBIAN_FRONTEND=noninteractive apt-get install -y build-essential cmake ccache ninja-build pkg-config python3 rocblas-dev hipblas-dev
       - name: Restore ccache
         uses: actions/cache@v4
         with:
