@@ -371,7 +371,9 @@ jobs:
           github_token: ${{ github.token }}
       - name: Install build deps
         run: |
-          DEBIAN_FRONTEND=noninteractive apt-get install -y build-essential cmake ccache ninja-build pkg-config python3 rocblas-dev hipblas-dev
+          DEBIAN_FRONTEND=noninteractive apt-get install -y build-essential ccache ninja-build pkg-config python3 python3-pip rocblas-dev hipblas-dev
+          python3 -m pip install --upgrade cmake
+          cmake --version
       - name: Restore ccache
         uses: actions/cache@v4
         with:
