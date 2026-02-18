@@ -49,6 +49,9 @@ jobs:
   build-android:
     needs: resolve-tag
     runs-on: ubuntu-latest
+    env:
+      CCACHE_DIR: ~/.cache/ccache
+      CCACHE_MAXSIZE: 2G
     strategy:
       fail-fast: false
       matrix:
@@ -76,8 +79,22 @@ jobs:
         uses: android-actions/setup-android@v3
       - name: Install build deps
         run: sudo apt-get update && sudo apt-get install -y ninja-build ccache
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ccache
+          key: ccache-android-${{ matrix.android_abi }}-${{ github.run_id }}
+          restore-keys: |
+            ccache-android-${{ matrix.android_abi }}-
+      - name: Prime ccache
+        run: |
+          ccache --max-size "${CCACHE_MAXSIZE}"
+          ccache --zero-stats
       - name: Build
         run: python3 tools/build.py android --abi ${{ matrix.android_abi }}
+      - name: ccache stats
+        if: always()
+        run: ccache --show-stats
       - name: Validate Android backend artifacts
         run: |
           OUT_DIR="bin/android/${{ matrix.out_arch }}"
@@ -92,6 +109,9 @@ jobs:
   build-apple:
     needs: resolve-tag
     runs-on: macos-latest
+    env:
+      CCACHE_DIR: ~/.cache/ccache
+      CCACHE_MAXSIZE: 2G
     strategy:
       fail-fast: false
       matrix:
@@ -118,8 +138,22 @@ jobs:
           git -C third_party/llama.cpp checkout --detach "$TAG"
       - name: Install build deps
         run: brew install ccache
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ccache
+          key: ccache-apple-${{ matrix.target }}-${{ github.run_id }}
+          restore-keys: |
+            ccache-apple-${{ matrix.target }}-
+      - name: Prime ccache
+        run: |
+          ccache --max-size "${CCACHE_MAXSIZE}"
+          ccache --zero-stats
       - name: Build
         run: python3 tools/build.py apple --target ${{ matrix.target }}
+      - name: ccache stats
+        if: always()
+        run: ccache --show-stats
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
@@ -129,6 +163,9 @@ jobs:
   build-linux:
     needs: resolve-tag
     runs-on: ubuntu-latest
+    env:
+      CCACHE_DIR: ~/.cache/ccache
+      CCACHE_MAXSIZE: 2G
     strategy:
       fail-fast: false
       matrix:
@@ -185,8 +222,22 @@ jobs:
           if [ "${{ matrix.arch }}" = "x64" ]; then
             sudo apt-get install -y nvidia-cuda-toolkit
           fi
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ccache
+          key: ccache-linux-${{ matrix.arch }}-${{ github.run_id }}
+          restore-keys: |
+            ccache-linux-${{ matrix.arch }}-
+      - name: Prime ccache
+        run: |
+          ccache --max-size "${CCACHE_MAXSIZE}"
+          ccache --zero-stats
       - name: Build
         run: python3 tools/build.py linux --arch "${{ matrix.arch }}"
+      - name: ccache stats
+        if: always()
+        run: ccache --show-stats
       - name: Validate Linux backend artifacts
         run: |
           OUT_DIR="bin/linux/${{ matrix.arch }}"
