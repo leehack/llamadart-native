@@ -255,6 +255,9 @@ jobs:
   build-windows:
     needs: resolve-tag
     runs-on: windows-latest
+    env:
+      VCPKG_BINARY_SOURCES: clear;x-gha,readwrite
+      VCPKG_FEATURE_FLAGS: binarycaching
     strategy:
       fail-fast: false
       matrix:
@@ -278,9 +281,35 @@ jobs:
           git -C third_party/llama.cpp checkout --detach "$TAG"
       - name: Install Ninja
         run: choco install ninja -y
-      - name: Install CUDA Toolkit
+      - name: Detect preinstalled CUDA Toolkit
         if: ${{ matrix.arch == 'x64' }}
-        run: choco install cuda -y
+        id: detect_cuda
+        run: |
+          $nvcc = $null
+          $cmd = Get-Command nvcc.exe -ErrorAction SilentlyContinue
+          if ($cmd) {
+            $nvcc = $cmd.Source
+          }
+          if (-not $nvcc) {
+            $candidates = Get-ChildItem "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA" -Directory -ErrorAction SilentlyContinue |
+              Sort-Object Name -Descending |
+              ForEach-Object { Join-Path $_.FullName "bin\nvcc.exe" }
+            $nvcc = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          }
+          if ($nvcc) {
+            $cudaBin = Split-Path $nvcc -Parent
+            Add-Content $env:GITHUB_PATH $cudaBin
+            Add-Content $env:GITHUB_ENV "CUDA_PATH=$(Split-Path $cudaBin -Parent)"
+            Add-Content $env:GITHUB_OUTPUT "found=true"
+            Write-Host "Using preinstalled CUDA: $nvcc"
+            & $nvcc --version
+          } else {
+            Add-Content $env:GITHUB_OUTPUT "found=false"
+            Write-Host "No preinstalled CUDA detected."
+          }
+      - name: Install CUDA Toolkit
+        if: ${{ matrix.arch == 'x64' && steps.detect_cuda.outputs.found != 'true' }}
+        run: choco install cuda -y --no-progress --limit-output
       - name: Register CUDA in PATH
         if: ${{ matrix.arch == 'x64' }}
         run: |
@@ -295,13 +324,20 @@ jobs:
           Add-Content $env:GITHUB_PATH $cudaBin
           Add-Content $env:GITHUB_ENV "CUDA_PATH=$(Split-Path $cudaBin -Parent)"
           & (Join-Path $cudaBin "nvcc.exe") --version
+      - name: Restore vcpkg cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            C:\vcpkg\downloads
+            C:\vcpkg\packages
+            C:\vcpkg\installed
+          key: vcpkg-${{ matrix.vcpkg_triplet }}-${{ github.run_id }}
+          restore-keys: |
+            vcpkg-${{ matrix.vcpkg_triplet }}-
       - name: Install OpenBLAS (vcpkg)
         run: |
-          $vcpkgRoot = $env:VCPKG_INSTALLATION_ROOT
-          if (-not $vcpkgRoot) { $vcpkgRoot = $env:VCPKG_ROOT }
-          if (-not $vcpkgRoot -and (Test-Path "C:\vcpkg")) { $vcpkgRoot = "C:\vcpkg" }
-          if (-not $vcpkgRoot) {
-            $vcpkgRoot = Join-Path $env:RUNNER_TEMP "vcpkg"
+          $vcpkgRoot = "C:\vcpkg"
+          if (-not (Test-Path $vcpkgRoot)) {
             git clone https://github.com/microsoft/vcpkg "$vcpkgRoot"
           }
           if (-not (Test-Path "$vcpkgRoot\vcpkg.exe")) {
