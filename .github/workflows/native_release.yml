@@ -343,7 +343,8 @@ jobs:
           Add-Content $env:GITHUB_ENV "CUDA_PATH=$(Split-Path $cudaBin -Parent)"
           & (Join-Path $cudaBin "nvcc.exe") --version
       - name: Restore vcpkg cache
-        uses: actions/cache@v4
+        id: vcpkg-cache
+        uses: actions/cache/restore@v4
         with:
           path: |
             C:\vcpkg\downloads
@@ -424,6 +425,15 @@ jobs:
         with:
           name: native_windows_${{ matrix.arch }}
           path: bin/windows/${{ matrix.arch }}/*
+      - name: Save vcpkg cache
+        if: always() && steps.vcpkg-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            C:\vcpkg\downloads
+            C:\vcpkg\packages
+            C:\vcpkg\installed
+          key: vcpkg-${{ runner.os }}-${{ matrix.vcpkg_triplet }}-${{ hashFiles('.github/workflows/native_release.yml') }}
 
   package-and-release:
     needs: [resolve-tag, build-android, build-apple, build-linux, build-windows]
