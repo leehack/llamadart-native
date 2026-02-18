@@ -20,6 +20,7 @@ env:
   CMAKE_C_COMPILER_LAUNCHER: ccache
   CMAKE_CXX_COMPILER_LAUNCHER: ccache
   CMAKE_CUDA_COMPILER_LAUNCHER: ccache
+  VCPKG_CACHE_VERSION: v1
 
 jobs:
   resolve-tag:
@@ -350,7 +351,7 @@ jobs:
             C:\vcpkg\downloads
             C:\vcpkg\packages
             C:\vcpkg\installed
-          key: vcpkg-${{ runner.os }}-${{ matrix.vcpkg_triplet }}-${{ hashFiles('.github/workflows/native_release.yml') }}
+          key: vcpkg-${{ runner.os }}-${{ matrix.vcpkg_triplet }}-${{ env.VCPKG_CACHE_VERSION }}
           restore-keys: |
             vcpkg-${{ runner.os }}-${{ matrix.vcpkg_triplet }}-
       - name: Install OpenBLAS (vcpkg)
@@ -433,7 +434,7 @@ jobs:
             C:\vcpkg\downloads
             C:\vcpkg\packages
             C:\vcpkg\installed
-          key: vcpkg-${{ runner.os }}-${{ matrix.vcpkg_triplet }}-${{ hashFiles('.github/workflows/native_release.yml') }}
+          key: vcpkg-${{ runner.os }}-${{ matrix.vcpkg_triplet }}-${{ env.VCPKG_CACHE_VERSION }}
 
   package-and-release:
     needs: [resolve-tag, build-android, build-apple, build-linux, build-windows]
