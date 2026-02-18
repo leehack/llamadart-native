@@ -19,6 +19,7 @@ permissions:
 env:
   CMAKE_C_COMPILER_LAUNCHER: ccache
   CMAKE_CXX_COMPILER_LAUNCHER: ccache
+  CMAKE_CUDA_COMPILER_LAUNCHER: ccache
 
 jobs:
   resolve-tag:
@@ -167,7 +168,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       CCACHE_DIR: ${{ github.workspace }}/.ccache
-      CCACHE_MAXSIZE: 2G
+      CCACHE_MAXSIZE: 5G
     strategy:
       fail-fast: false
       matrix:
@@ -347,9 +348,9 @@ jobs:
             C:\vcpkg\downloads
             C:\vcpkg\packages
             C:\vcpkg\installed
-          key: vcpkg-${{ matrix.vcpkg_triplet }}-${{ github.run_id }}
+          key: vcpkg-${{ runner.os }}-${{ matrix.vcpkg_triplet }}-${{ hashFiles('.github/workflows/native_release.yml') }}
           restore-keys: |
-            vcpkg-${{ matrix.vcpkg_triplet }}-
+            vcpkg-${{ runner.os }}-${{ matrix.vcpkg_triplet }}-
       - name: Install OpenBLAS (vcpkg)
         run: |
           $vcpkgRoot = "C:\vcpkg"
@@ -359,13 +360,22 @@ jobs:
           if (-not (Test-Path "$vcpkgRoot\vcpkg.exe")) {
             & "$vcpkgRoot\bootstrap-vcpkg.bat" -disableMetrics
           }
-          & "$vcpkgRoot\vcpkg.exe" install "openblas:${{ matrix.vcpkg_triplet }}"
-          & "$vcpkgRoot\vcpkg.exe" install "pkgconf:x64-windows"
+          $openblasLib = Join-Path $vcpkgRoot "installed\${{ matrix.vcpkg_triplet }}\lib\openblas.lib"
+          if (-not (Test-Path $openblasLib)) {
+            & "$vcpkgRoot\vcpkg.exe" install "openblas:${{ matrix.vcpkg_triplet }}"
+          } else {
+            Write-Host "OpenBLAS already present in cache: $openblasLib"
+          }
+
           $pkgconfCandidates = @(
             (Join-Path $vcpkgRoot "installed\x64-windows\tools\pkgconf\pkg-config.exe"),
             (Join-Path $vcpkgRoot "installed\x64-windows\tools\pkgconf\pkgconf.exe")
           )
           $pkgconf = $pkgconfCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $pkgconf) {
+            & "$vcpkgRoot\vcpkg.exe" install "pkgconf:x64-windows"
+            $pkgconf = $pkgconfCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          }
           if (-not $pkgconf) {
             throw "pkg-config executable not found in vcpkg tools"
           }
