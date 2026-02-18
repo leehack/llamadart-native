@@ -585,7 +585,7 @@ def build_windows(args: argparse.Namespace) -> None:
 def print_presets() -> None:
     presets = [
         "apple: target=macos-arm64|macos-x86_64|ios-device-arm64|ios-sim-arm64|ios-sim-x86_64 (consolidated: metal+cpu in one dylib)",
-        "linux: arch=x64|arm64 (full: x64=vulkan+cuda+blas+zendnn+cpu, arm64=vulkan+blas+kleidi+cpu)",
+        "linux: arch=x64|arm64 (full: x64=vulkan+cuda+blas+cpu, arm64=vulkan+blas+kleidi+cpu)",
         "android: abi=arm64-v8a|x86_64|all (full: arm64=vulkan+opencl+kleidi+cpu, x86_64=vulkan+opencl+cpu)",
         "windows: arch=x64|arm64 (full: x64=vulkan+cuda+blas+cpu, arm64=vulkan+blas+kleidi+cpu)",
     ]

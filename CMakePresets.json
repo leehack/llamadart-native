@@ -139,7 +139,7 @@
         "GGML_VULKAN": "ON",
         "GGML_OPENCL": "OFF",
         "GGML_CUDA": "ON",
-        "GGML_ZENDNN": "ON"
+        "GGML_ZENDNN": "OFF"
       }
     },
     {
