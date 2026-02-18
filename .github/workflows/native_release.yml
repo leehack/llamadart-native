@@ -326,9 +326,11 @@ jobs:
             Add-Content $env:GITHUB_OUTPUT "found=false"
             Write-Host "No preinstalled CUDA detected."
           }
-      - name: Install CUDA Toolkit
+      - name: Install CUDA Toolkit (minimal components)
         if: ${{ matrix.arch == 'x64' && steps.detect_cuda.outputs.found != 'true' }}
-        run: choco install cuda -y --no-progress --limit-output
+        uses: ./third_party/llama.cpp/.github/actions/windows-setup-cuda
+        with:
+          cuda_version: '12.4'
       - name: Register CUDA in PATH
         if: ${{ matrix.arch == 'x64' }}
         run: |
