@@ -6,7 +6,7 @@ on:
       llama_cpp_tag:
         description: 'llama.cpp ref to build (e.g., b8011, latest, submodule)'
         required: true
-        default: 'submodule'
+        default: 'latest'
       publish_release:
         description: 'Publish GitHub release'
         required: true
@@ -682,3 +682,29 @@ jobs:
           name: ${{ needs.resolve-tag.outputs.tag }}
           files: release_assets/*
           prerelease: false
+
+  update-llama-submodule:
+    needs: [resolve-tag, package-and-release]
+    if: ${{ github.event.inputs.publish_release == 'true' && needs.package-and-release.result == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: recursive
+      - name: Move llama.cpp submodule to released tag
+        run: |
+          TAG="${{ needs.resolve-tag.outputs.tag }}"
+          git -C third_party/llama.cpp fetch --tags --force origin
+          git -C third_party/llama.cpp checkout --detach "$TAG"
+      - name: Commit and push submodule update
+        run: |
+          if git diff --quiet -- third_party/llama.cpp; then
+            echo "llama.cpp submodule already at ${{ needs.resolve-tag.outputs.tag }}"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add third_party/llama.cpp
+          git commit -m "chore: bump llama.cpp submodule to ${{ needs.resolve-tag.outputs.tag }}"
+          git push origin HEAD:${{ github.ref_name }}
