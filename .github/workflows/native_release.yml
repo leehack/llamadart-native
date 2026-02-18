@@ -50,7 +50,7 @@ jobs:
     needs: resolve-tag
     runs-on: ubuntu-latest
     env:
-      CCACHE_DIR: ~/.cache/ccache
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
       CCACHE_MAXSIZE: 2G
     strategy:
       fail-fast: false
@@ -82,12 +82,13 @@ jobs:
       - name: Restore ccache
         uses: actions/cache@v4
         with:
-          path: ~/.cache/ccache
+          path: ${{ env.CCACHE_DIR }}
           key: ccache-android-${{ matrix.android_abi }}-${{ github.run_id }}
           restore-keys: |
             ccache-android-${{ matrix.android_abi }}-
       - name: Prime ccache
         run: |
+          mkdir -p "${CCACHE_DIR}"
           ccache --max-size "${CCACHE_MAXSIZE}"
           ccache --zero-stats
       - name: Build
@@ -110,7 +111,7 @@ jobs:
     needs: resolve-tag
     runs-on: macos-latest
     env:
-      CCACHE_DIR: ~/.cache/ccache
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
       CCACHE_MAXSIZE: 2G
     strategy:
       fail-fast: false
@@ -141,12 +142,13 @@ jobs:
       - name: Restore ccache
         uses: actions/cache@v4
         with:
-          path: ~/.cache/ccache
+          path: ${{ env.CCACHE_DIR }}
           key: ccache-apple-${{ matrix.target }}-${{ github.run_id }}
           restore-keys: |
             ccache-apple-${{ matrix.target }}-
       - name: Prime ccache
         run: |
+          mkdir -p "${CCACHE_DIR}"
           ccache --max-size "${CCACHE_MAXSIZE}"
           ccache --zero-stats
       - name: Build
@@ -164,7 +166,7 @@ jobs:
     needs: resolve-tag
     runs-on: ubuntu-latest
     env:
-      CCACHE_DIR: ~/.cache/ccache
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
       CCACHE_MAXSIZE: 2G
     strategy:
       fail-fast: false
@@ -225,12 +227,13 @@ jobs:
       - name: Restore ccache
         uses: actions/cache@v4
         with:
-          path: ~/.cache/ccache
+          path: ${{ env.CCACHE_DIR }}
           key: ccache-linux-${{ matrix.arch }}-${{ github.run_id }}
           restore-keys: |
             ccache-linux-${{ matrix.arch }}-
       - name: Prime ccache
         run: |
+          mkdir -p "${CCACHE_DIR}"
           ccache --max-size "${CCACHE_MAXSIZE}"
           ccache --zero-stats
       - name: Build
