@@ -668,66 +668,55 @@ jobs:
       - name: Prepare release assets
         run: |
           mkdir -p release_assets
-
-          rename_with_suffix() {
-            local base="$1"
-            local platform="$2"
-            local arch="$3"
-
-            case "$base" in
-              *.dylib)
-                echo "${base%.dylib}-${platform}-${arch}.dylib"
-                ;;
-              *.dll)
-                echo "${base%.dll}-${platform}-${arch}.dll"
-                ;;
-              *.so)
-                echo "${base%.so}-${platform}-${arch}.so"
-                ;;
-              *)
-                echo "${base}-${platform}-${arch}"
-                ;;
-            esac
-          }
+          mkdir -p bundles
 
           for dir in artifacts/native_*; do
             [ -d "$dir" ] || continue
             name="$(basename "$dir")"
 
-            platform=""
-            arch=""
+            bundle=""
             if [[ "$name" =~ ^native_windows_(x64|arm64)(_.+)?$ ]]; then
-              platform="windows"; arch="${BASH_REMATCH[1]}"
+              bundle="windows-${BASH_REMATCH[1]}"
             elif [[ "$name" =~ ^native_linux_(x64|arm64)(_.+)?$ ]]; then
-              platform="linux"; arch="${BASH_REMATCH[1]}"
+              bundle="linux-${BASH_REMATCH[1]}"
             elif [[ "$name" =~ ^native_android_(arm64-v8a|x86_64)(_.+)?$ ]]; then
-              platform="android"
               if [ "${BASH_REMATCH[1]}" = "arm64-v8a" ]; then
-                arch="arm64"
+                bundle="android-arm64"
               else
-                arch="x64"
+                bundle="android-x64"
               fi
             elif [[ "$name" = "native_apple_macos-arm64" ]]; then
-              platform="macos"; arch="arm64"
+              bundle="macos-arm64"
             elif [[ "$name" = "native_apple_macos-x86_64" ]]; then
-              platform="macos"; arch="x86_64"
+              bundle="macos-x86_64"
             elif [[ "$name" = "native_apple_ios-device-arm64" ]]; then
-              platform="ios"; arch="arm64"
+              bundle="ios-arm64"
             elif [[ "$name" = "native_apple_ios-sim-arm64" ]]; then
-              platform="ios"; arch="arm64-sim"
+              bundle="ios-arm64-sim"
             elif [[ "$name" = "native_apple_ios-sim-x86_64" ]]; then
-              platform="ios"; arch="x86_64-sim"
+              bundle="ios-x86_64-sim"
             else
               echo "Skipping unknown artifact directory: $name"
               continue
             fi
 
+            out_dir="bundles/${bundle}"
+            mkdir -p "$out_dir"
             while IFS= read -r src; do
               [ -n "$src" ] || continue
-              base="$(basename "$src")"
-              dst="$(rename_with_suffix "$base" "$platform" "$arch")"
-              cp "$src" "release_assets/$dst"
+              cp -f "$src" "${out_dir}/$(basename "$src")"
             done < <(find "$dir" -maxdepth 1 -type f \( -name '*.dll' -o -name '*.dylib' -o -name '*.so' \) | sort)
+          done
+
+          for bundle_dir in bundles/*; do
+            [ -d "$bundle_dir" ] || continue
+            if ! find "$bundle_dir" -maxdepth 1 -type f -print -quit | grep -q .; then
+              echo "Skipping empty bundle directory: $bundle_dir"
+              continue
+            fi
+            bundle_name="$(basename "$bundle_dir")"
+            archive="llamadart-native-${bundle_name}-${{ needs.resolve-tag.outputs.tag }}.tar.gz"
+            tar -czf "release_assets/${archive}" -C "$bundle_dir" .
           done
 
           mkdir -p headers_bundle/include/llama.cpp headers_bundle/include/ggml
