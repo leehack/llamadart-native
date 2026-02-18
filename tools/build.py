@@ -343,7 +343,8 @@ def is_runtime_library(path: Path) -> bool:
     if not path.is_file():
         return False
 
-    if not (name.endswith(".dll") or name.endswith(".dylib") or ".so" in name):
+    # Keep canonical runtime filenames only (drop Linux SONAME aliases like libfoo.so.0 / libfoo.so.0.0.0).
+    if not (name.endswith(".dll") or name.endswith(".dylib") or name.endswith(".so")):
         return False
 
     prefixes = (

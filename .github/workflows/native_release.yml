@@ -452,11 +452,6 @@ jobs:
               *.so)
                 echo "${base%.so}-${platform}-${arch}.so"
                 ;;
-              *.so.*)
-                local prefix="${base%%.so*}"
-                local rest="${base#${prefix}}"
-                echo "${prefix}-${platform}-${arch}${rest}"
-                ;;
               *)
                 echo "${base}-${platform}-${arch}"
                 ;;
@@ -503,7 +498,7 @@ jobs:
               base="$(basename "$src")"
               dst="$(rename_with_suffix "$base" "$platform" "$arch")"
               cp "$src" "release_assets/$dst"
-            done < <(find "$dir" -maxdepth 1 -type f \( -name '*.dll' -o -name '*.dylib' -o -name '*.so' -o -name '*.so.*' \) | sort)
+            done < <(find "$dir" -maxdepth 1 -type f \( -name '*.dll' -o -name '*.dylib' -o -name '*.so' \) | sort)
           done
 
           ls -la release_assets
