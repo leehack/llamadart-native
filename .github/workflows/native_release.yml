@@ -90,8 +90,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           TAG="${{ needs.resolve-tag.outputs.tag }}"
+          FETCH_URL="https://x-access-token:${GH_TOKEN}@github.com/ggml-org/llama.cpp.git"
           for i in 1 2 3; do
-            if git -C third_party/llama.cpp -c "http.https://github.com/.extraheader=AUTHORIZATION: bearer ${GH_TOKEN}" fetch --tags --force origin; then
+            if git -C third_party/llama.cpp fetch --tags --force "${FETCH_URL}"; then
               break
             fi
             if [ "$i" -eq 3 ]; then
@@ -180,8 +181,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           TAG="${{ needs.resolve-tag.outputs.tag }}"
+          FETCH_URL="https://x-access-token:${GH_TOKEN}@github.com/ggml-org/llama.cpp.git"
           for i in 1 2 3; do
-            if git -C third_party/llama.cpp -c "http.https://github.com/.extraheader=AUTHORIZATION: bearer ${GH_TOKEN}" fetch --tags --force origin; then
+            if git -C third_party/llama.cpp fetch --tags --force "${FETCH_URL}"; then
               break
             fi
             if [ "$i" -eq 3 ]; then
@@ -272,8 +274,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           TAG="${{ needs.resolve-tag.outputs.tag }}"
+          FETCH_URL="https://x-access-token:${GH_TOKEN}@github.com/ggml-org/llama.cpp.git"
           for i in 1 2 3; do
-            if git -C third_party/llama.cpp -c "http.https://github.com/.extraheader=AUTHORIZATION: bearer ${GH_TOKEN}" fetch --tags --force origin; then
+            if git -C third_party/llama.cpp fetch --tags --force "${FETCH_URL}"; then
               break
             fi
             if [ "$i" -eq 3 ]; then
@@ -462,8 +465,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           TAG="${{ needs.resolve-tag.outputs.tag }}"
+          FETCH_URL="https://x-access-token:${GH_TOKEN}@github.com/ggml-org/llama.cpp.git"
           for i in 1 2 3; do
-            if git -C third_party/llama.cpp -c "http.https://github.com/.extraheader=AUTHORIZATION: bearer ${GH_TOKEN}" fetch --tags --force origin; then
+            if git -C third_party/llama.cpp fetch --tags --force "${FETCH_URL}"; then
               break
             fi
             if [ "$i" -eq 3 ]; then
