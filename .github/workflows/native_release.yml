@@ -719,17 +719,31 @@ jobs:
             tar -czf "release_assets/${archive}" -C "$bundle_dir" .
           done
 
-          mkdir -p headers_bundle/include/llama.cpp headers_bundle/include/ggml
+          mkdir -p \
+            headers_bundle/include/llama.cpp \
+            headers_bundle/include/ggml \
+            headers_bundle/include/mtmd \
+            headers_bundle/third_party/libllamadart \
+            headers_bundle/third_party/llama_cpp/include \
+            headers_bundle/third_party/llama_cpp/ggml/include \
+            headers_bundle/third_party/llama_cpp/tools/mtmd
           cp src/llama_dart_wrapper.h headers_bundle/include/
+          cp src/llama_dart_wrapper.h headers_bundle/third_party/libllamadart/
           shopt -s nullglob
           for hdr in third_party/llama.cpp/include/*.{h,hpp}; do
             cp "$hdr" headers_bundle/include/llama.cpp/
+            cp "$hdr" headers_bundle/third_party/llama_cpp/include/
           done
           for hdr in third_party/llama.cpp/ggml/include/*.{h,hpp}; do
             cp "$hdr" headers_bundle/include/ggml/
+            cp "$hdr" headers_bundle/third_party/llama_cpp/ggml/include/
+          done
+          for hdr in third_party/llama.cpp/tools/mtmd/*.{h,hpp}; do
+            cp "$hdr" headers_bundle/include/mtmd/
+            cp "$hdr" headers_bundle/third_party/llama_cpp/tools/mtmd/
           done
           HEADER_ARCHIVE="llamadart-native-headers-${{ needs.resolve-tag.outputs.tag }}.tar.gz"
-          tar -czf "release_assets/${HEADER_ARCHIVE}" -C headers_bundle include
+          tar -czf "release_assets/${HEADER_ARCHIVE}" -C headers_bundle include third_party
 
           ls -la release_assets
           test -n "$(find release_assets -maxdepth 1 -type f -print -quit)"

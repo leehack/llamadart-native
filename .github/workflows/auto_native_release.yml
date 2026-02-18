@@ -1,0 +1,50 @@
+name: Auto Trigger Native Release
+
+on:
+  schedule:
+    - cron: '23 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: auto-native-release
+  cancel-in-progress: false
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch native release for new upstream tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          tag="$(gh api repos/ggml-org/llama.cpp/releases/latest --jq '.tag_name')"
+          if [ -z "$tag" ]; then
+            echo "Failed to resolve latest llama.cpp tag" >&2
+            exit 1
+          fi
+          echo "Latest upstream llama.cpp tag: $tag"
+
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $tag already exists in $GITHUB_REPOSITORY; nothing to do."
+            exit 0
+          fi
+
+          in_flight="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow native_release.yml --limit 20 --json status --jq '[.[] | select(.status == "queued" or .status == "in_progress")] | length')"
+          if [ "$in_flight" -gt 0 ]; then
+            echo "native_release.yml has $in_flight queued/running run(s); skipping dispatch."
+            exit 0
+          fi
+
+          gh workflow run native_release.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref "${{ github.ref_name }}" \
+            -f llama_cpp_tag="$tag" \
+            -f publish_release=true
+
+          echo "Dispatched native_release.yml for tag $tag."

@@ -9,7 +9,6 @@ This repository is responsible for:
 - Building native `llamadart` binaries across platforms.
 - Publishing release artifacts consumed by `llamadart` build hooks.
 - Producing release metadata (`assets.json` + `SHA256SUMS`).
-- Syncing release tag updates back to `llamadart` via pull request.
 
 The Dart API/runtime stays in the main `llamadart` repository.
 
@@ -21,9 +20,10 @@ The Dart API/runtime stays in the main `llamadart` repository.
   - Fails when any enabled backend in that target fails.
   - Publishes per-target native assets (Apple consolidated, others split core/backend libs).
   - Generates `assets.json` and `SHA256SUMS`.
-- `Sync llamadart Hook` (`.github/workflows/sync_llamadart_hook.yml`)
-  - Triggered by published release (or manual dispatch).
-  - Opens PR in `leehack/llamadart` to update `hook/build.dart`.
+- `Auto Trigger Native Release` (`.github/workflows/auto_native_release.yml`)
+  - Daily schedule plus manual dispatch.
+  - Resolves latest upstream `ggml-org/llama.cpp` release tag.
+  - Dispatches `Native Build & Release` only when this repo does not already have that tag and no native release run is in flight.
 
 ## Backend Policy (Worthy Sets)
 
@@ -45,6 +45,7 @@ Release assets contain:
 - Apple: consolidated `libllamadart` per target.
 - Non-Apple core libs: `llamadart`, `llama`, `ggml`, `ggml-base` (and `mtmd` where produced)
 - Non-Apple backend libs: `ggml-<backend>` modules (`ggml-vulkan`, `ggml-opencl`, etc.)
+- Headers archive: `llamadart-native-headers-<tag>.tar.gz` with both `include/...` and `third_party/...` layouts, including llama.cpp, ggml, mtmd, and `llama_dart_wrapper.h`.
 
 Consumers can choose which backend libs to include in their package and load at runtime.
 
@@ -58,16 +59,10 @@ Assets are suffixed with platform/arch, for example:
 - `libggml-opencl-android-arm64.so`
 - `ggml-cuda-windows-x64.dll`
 
-## Required Secrets
-
-For hook-sync automation:
-
-- `LLAMADART_REPO_TOKEN`: token with permission to push branch and open PR on `leehack/llamadart`.
-
 ## Repository Layout
 
+- `.github/workflows/auto_native_release.yml`: daily upstream tag watcher + native release dispatcher.
 - `.github/workflows/native_release.yml`: build + package + release.
-- `.github/workflows/sync_llamadart_hook.yml`: post-release PR sync.
 - `.gitmodules`: pinned native dependency submodules.
 - `CMakeLists.txt` + `CMakePresets.json`: root-native build configuration.
 - `src/`: `llama_dart_wrapper.*`.
@@ -78,7 +73,6 @@ For hook-sync automation:
 - `third_party/opencl-stubs`: optional local fallback location for OpenCL headers/stubs.
 - `tools/build.py`: cross-platform build entrypoint.
 - `scripts/generate_assets_manifest.sh`: builds `assets.json` + checksums.
-- `scripts/update_llamadart_hook.sh`: updates tag and base URL in `hook/build.dart`.
 - `docs/platform_backend_strategy.md`: platform/backend matrix.
 
 ## Local Build (Preferred)
