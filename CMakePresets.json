@@ -58,7 +58,11 @@
     {
       "name": "windows-base",
       "hidden": true,
-      "inherits": "base"
+      "inherits": "base",
+      "cacheVariables": {
+        "CMAKE_C_FLAGS": "-DWIN32_LEAN_AND_MEAN -DNOMINMAX",
+        "CMAKE_CXX_FLAGS": "-DWIN32_LEAN_AND_MEAN -DNOMINMAX"
+      }
     },
     {
       "name": "android-base",
@@ -155,6 +159,7 @@
     {
       "name": "windows-x64-full",
       "inherits": "windows-base",
+      "binaryDir": "${sourceDir}/build/wx64",
       "cacheVariables": {
         "GGML_BLAS": "ON",
         "GGML_BLAS_VENDOR": "OpenBLAS",
@@ -166,6 +171,7 @@
     {
       "name": "windows-arm64-full",
       "inherits": "windows-base",
+      "binaryDir": "${sourceDir}/build/wa64",
       "generator": "Visual Studio 17 2022",
       "architecture": {
         "value": "ARM64",

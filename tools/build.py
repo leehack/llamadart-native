@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import platform
 import shutil
 import subprocess
+from functools import lru_cache
 from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 THIRD_PARTY_DIR = REPO_ROOT / "third_party"
@@ -49,6 +51,28 @@ def run(cmd: list[str], *, env: dict[str, str] | None = None) -> None:
     effective_env = (env.copy() if env is not None else os.environ.copy())
     effective_env.setdefault("CCACHE_DIR", str(REPO_ROOT / ".ccache"))
     subprocess.run(cmd, cwd=REPO_ROOT, env=effective_env, check=True)
+
+
+@lru_cache(maxsize=1)
+def load_cmake_presets() -> dict:
+    presets_path = REPO_ROOT / "CMakePresets.json"
+    try:
+        return json.loads(presets_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        fail(f"Failed to read {presets_path}: {exc}")
+
+
+def resolve_build_dir_for_preset(preset: str) -> Path:
+    data = load_cmake_presets()
+    for cfg in data.get("configurePresets", []):
+        if cfg.get("name") != preset:
+            continue
+        binary_dir = cfg.get("binaryDir")
+        if not binary_dir:
+            return BUILD_ROOT / preset
+        resolved = binary_dir.replace("${sourceDir}", str(REPO_ROOT)).replace("${presetName}", preset)
+        return Path(resolved)
+    return BUILD_ROOT / preset
 
 
 def ensure_submodule(path: Path, error: str) -> None:
@@ -104,7 +128,7 @@ def restore_llama_zendnn_install_target() -> None:
 
 
 def clean_build_dir(preset: str, clean: bool) -> Path:
-    build_dir = BUILD_ROOT / preset
+    build_dir = resolve_build_dir_for_preset(preset)
     if clean and build_dir.exists():
         shutil.rmtree(build_dir)
     return build_dir
@@ -126,7 +150,7 @@ def configure_and_build(
     if jobs and jobs > 0:
         build_cmd.extend(["--parallel", str(jobs)])
     run(build_cmd, env=env)
-    return BUILD_ROOT / preset
+    return resolve_build_dir_for_preset(preset)
 
 
 def detect_linux_arch() -> str:

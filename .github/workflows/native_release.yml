@@ -400,7 +400,7 @@ jobs:
               throw "Missing CUDA backend DLL in $out"
             }
           } else {
-            $cache = "build/windows-arm64-full/CMakeCache.txt"
+            $cache = "build/wa64/CMakeCache.txt"
             if (-not (Test-Path $cache)) {
               throw "Missing CMake cache at $cache"
             }
