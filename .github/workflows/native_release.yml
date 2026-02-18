@@ -30,6 +30,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          fetch-depth: 0
           submodules: recursive
 
       - name: Resolve llama.cpp tag
@@ -81,6 +82,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          fetch-depth: 0
           submodules: recursive
       - name: Checkout llama.cpp ref
         if: ${{ github.event.inputs.llama_cpp_tag != 'submodule' }}
@@ -159,6 +161,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          fetch-depth: 0
           submodules: recursive
       - name: Checkout llama.cpp ref
         if: ${{ github.event.inputs.llama_cpp_tag != 'submodule' }}
@@ -239,6 +242,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          fetch-depth: 0
           submodules: recursive
       - name: Checkout llama.cpp ref
         if: ${{ github.event.inputs.llama_cpp_tag != 'submodule' }}
@@ -404,6 +408,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          fetch-depth: 0
           submodules: recursive
       - name: Enable Git Long Paths
         run: git config --global core.longpaths true
