@@ -720,30 +720,23 @@ jobs:
           done
 
           mkdir -p \
-            headers_bundle/include/llama.cpp \
-            headers_bundle/include/ggml \
-            headers_bundle/include/mtmd \
-            headers_bundle/third_party/libllamadart \
-            headers_bundle/third_party/llama_cpp/include \
-            headers_bundle/third_party/llama_cpp/ggml/include \
-            headers_bundle/third_party/llama_cpp/tools/mtmd
-          cp src/llama_dart_wrapper.h headers_bundle/include/
-          cp src/llama_dart_wrapper.h headers_bundle/third_party/libllamadart/
+            headers_bundle/libllamadart \
+            headers_bundle/llama_cpp/include \
+            headers_bundle/llama_cpp/ggml/include \
+            headers_bundle/llama_cpp/tools/mtmd
+          cp src/llama_dart_wrapper.h headers_bundle/libllamadart/
           shopt -s nullglob
           for hdr in third_party/llama.cpp/include/*.{h,hpp}; do
-            cp "$hdr" headers_bundle/include/llama.cpp/
-            cp "$hdr" headers_bundle/third_party/llama_cpp/include/
+            cp "$hdr" headers_bundle/llama_cpp/include/
           done
           for hdr in third_party/llama.cpp/ggml/include/*.{h,hpp}; do
-            cp "$hdr" headers_bundle/include/ggml/
-            cp "$hdr" headers_bundle/third_party/llama_cpp/ggml/include/
+            cp "$hdr" headers_bundle/llama_cpp/ggml/include/
           done
           for hdr in third_party/llama.cpp/tools/mtmd/*.{h,hpp}; do
-            cp "$hdr" headers_bundle/include/mtmd/
-            cp "$hdr" headers_bundle/third_party/llama_cpp/tools/mtmd/
+            cp "$hdr" headers_bundle/llama_cpp/tools/mtmd/
           done
           HEADER_ARCHIVE="llamadart-native-headers-${{ needs.resolve-tag.outputs.tag }}.tar.gz"
-          tar -czf "release_assets/${HEADER_ARCHIVE}" -C headers_bundle include third_party
+          tar -czf "release_assets/${HEADER_ARCHIVE}" -C headers_bundle libllamadart llama_cpp
 
           ls -la release_assets
           test -n "$(find release_assets -maxdepth 1 -type f -print -quit)"
