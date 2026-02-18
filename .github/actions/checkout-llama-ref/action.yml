@@ -1,0 +1,32 @@
+name: Checkout llama.cpp ref
+description: Checkout third_party/llama.cpp to a given tag/ref with retrying authenticated fetch.
+inputs:
+  tag:
+    description: llama.cpp tag or ref
+    required: true
+  github_token:
+    description: GitHub token used to fetch tags from ggml-org/llama.cpp
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Fetch and checkout llama.cpp ref
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        TAG="${{ inputs.tag }}"
+        FETCH_URL="https://x-access-token:${{ inputs.github_token }}@github.com/ggml-org/llama.cpp.git"
+
+        for i in 1 2 3; do
+          if git -C third_party/llama.cpp fetch --tags --force "${FETCH_URL}"; then
+            break
+          fi
+          if [ "$i" -eq 3 ]; then
+            echo "Failed to fetch llama.cpp tags after retries"
+            exit 1
+          fi
+          sleep $((i * 5))
+        done
+
+        git -C third_party/llama.cpp checkout --detach "$TAG"

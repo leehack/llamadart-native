@@ -86,22 +86,10 @@ jobs:
           submodules: recursive
       - name: Checkout llama.cpp ref
         if: ${{ github.event.inputs.llama_cpp_tag != 'submodule' }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          TAG="${{ needs.resolve-tag.outputs.tag }}"
-          FETCH_URL="https://x-access-token:${GH_TOKEN}@github.com/ggml-org/llama.cpp.git"
-          for i in 1 2 3; do
-            if git -C third_party/llama.cpp fetch --tags --force "${FETCH_URL}"; then
-              break
-            fi
-            if [ "$i" -eq 3 ]; then
-              echo "Failed to fetch llama.cpp tags after retries"
-              exit 1
-            fi
-            sleep $((i * 5))
-          done
-          git -C third_party/llama.cpp checkout --detach "$TAG"
+        uses: ./.github/actions/checkout-llama-ref
+        with:
+          tag: ${{ needs.resolve-tag.outputs.tag }}
+          github_token: ${{ github.token }}
       - name: Set up JDK
         uses: actions/setup-java@v4
         with:
@@ -177,22 +165,10 @@ jobs:
           submodules: recursive
       - name: Checkout llama.cpp ref
         if: ${{ github.event.inputs.llama_cpp_tag != 'submodule' }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          TAG="${{ needs.resolve-tag.outputs.tag }}"
-          FETCH_URL="https://x-access-token:${GH_TOKEN}@github.com/ggml-org/llama.cpp.git"
-          for i in 1 2 3; do
-            if git -C third_party/llama.cpp fetch --tags --force "${FETCH_URL}"; then
-              break
-            fi
-            if [ "$i" -eq 3 ]; then
-              echo "Failed to fetch llama.cpp tags after retries"
-              exit 1
-            fi
-            sleep $((i * 5))
-          done
-          git -C third_party/llama.cpp checkout --detach "$TAG"
+        uses: ./.github/actions/checkout-llama-ref
+        with:
+          tag: ${{ needs.resolve-tag.outputs.tag }}
+          github_token: ${{ github.token }}
       - name: Install build deps
         run: brew install ccache
       - name: Restore ccache
@@ -270,22 +246,10 @@ jobs:
           submodules: recursive
       - name: Checkout llama.cpp ref
         if: ${{ github.event.inputs.llama_cpp_tag != 'submodule' }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          TAG="${{ needs.resolve-tag.outputs.tag }}"
-          FETCH_URL="https://x-access-token:${GH_TOKEN}@github.com/ggml-org/llama.cpp.git"
-          for i in 1 2 3; do
-            if git -C third_party/llama.cpp fetch --tags --force "${FETCH_URL}"; then
-              break
-            fi
-            if [ "$i" -eq 3 ]; then
-              echo "Failed to fetch llama.cpp tags after retries"
-              exit 1
-            fi
-            sleep $((i * 5))
-          done
-          git -C third_party/llama.cpp checkout --detach "$TAG"
+        uses: ./.github/actions/checkout-llama-ref
+        with:
+          tag: ${{ needs.resolve-tag.outputs.tag }}
+          github_token: ${{ github.token }}
       - name: Install build deps
         run: |
           if [ "${{ matrix.arch }}" = "arm64" ]; then
@@ -383,6 +347,62 @@ jobs:
           name: native_linux_${{ matrix.arch }}_${{ matrix.backend }}
           path: artifact_payload/*
 
+  build-linux-hip:
+    needs: resolve-tag
+    runs-on: ubuntu-latest
+    container: rocm/dev-ubuntu-22.04:6.1.2
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_MAXSIZE: 5G
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: recursive
+      - name: Checkout llama.cpp ref
+        if: ${{ github.event.inputs.llama_cpp_tag != 'submodule' }}
+        uses: ./.github/actions/checkout-llama-ref
+        with:
+          tag: ${{ needs.resolve-tag.outputs.tag }}
+          github_token: ${{ github.token }}
+      - name: Install build deps
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y build-essential cmake git ccache ninja-build pkg-config python3 rocblas-dev hipblas-dev
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ccache-linux-x64-hip-${{ github.run_id }}
+          restore-keys: |
+            ccache-linux-x64-hip-
+      - name: Prime ccache
+        run: |
+          mkdir -p "${CCACHE_DIR}"
+          ccache --max-size "${CCACHE_MAXSIZE}"
+          ccache --zero-stats
+      - name: Build
+        run: python3 tools/build.py linux --arch x64 --backend hip
+      - name: ccache stats
+        if: always()
+        run: ccache --show-stats
+      - name: Validate Linux HIP artifacts
+        run: |
+          OUT_DIR="bin/linux/x64"
+          test -f "$OUT_DIR/libggml-hip.so" || { echo "Missing $OUT_DIR/libggml-hip.so"; exit 1; }
+      - name: Stage upload payload
+        run: |
+          OUT_DIR="bin/linux/x64"
+          PAYLOAD="artifact_payload"
+          mkdir -p "$PAYLOAD"
+          cp "$OUT_DIR/libggml-hip.so" "$PAYLOAD"/
+          ls -la "$PAYLOAD"
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: native_linux_x64_hip
+          path: artifact_payload/*
+
   build-windows:
     needs: resolve-tag
     runs-on: ${{ matrix.runs_on }}
@@ -390,8 +410,6 @@ jobs:
       CMAKE_C_COMPILER_LAUNCHER: sccache
       CMAKE_CXX_COMPILER_LAUNCHER: sccache
       CMAKE_CUDA_COMPILER_LAUNCHER: ""
-      VCPKG_BINARY_SOURCES: clear;x-gha,readwrite
-      VCPKG_FEATURE_FLAGS: binarycaching
     strategy:
       fail-fast: false
       matrix:
@@ -460,24 +478,12 @@ jobs:
           arch: arm64
       - name: Checkout llama.cpp ref
         if: ${{ github.event.inputs.llama_cpp_tag != 'submodule' }}
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          TAG="${{ needs.resolve-tag.outputs.tag }}"
-          FETCH_URL="https://x-access-token:${GH_TOKEN}@github.com/ggml-org/llama.cpp.git"
-          for i in 1 2 3; do
-            if git -C third_party/llama.cpp fetch --tags --force "${FETCH_URL}"; then
-              break
-            fi
-            if [ "$i" -eq 3 ]; then
-              echo "Failed to fetch llama.cpp tags after retries"
-              exit 1
-            fi
-            sleep $((i * 5))
-          done
-          git -C third_party/llama.cpp checkout --detach "$TAG"
+        uses: ./.github/actions/checkout-llama-ref
+        with:
+          tag: ${{ needs.resolve-tag.outputs.tag }}
+          github_token: ${{ github.token }}
       - name: Install Ninja
+        if: ${{ matrix.arch == 'x64' }}
         run: choco install ninja -y
       - name: Detect preinstalled CUDA Toolkit
         if: ${{ matrix.needs_cuda }}
@@ -637,10 +643,19 @@ jobs:
           key: vcpkg-${{ runner.os }}-${{ matrix.vcpkg_triplet }}-${{ env.VCPKG_CACHE_VERSION }}
 
   package-and-release:
-    needs: [resolve-tag, build-android, build-apple, build-linux, build-windows]
+    needs: [resolve-tag, build-android, build-apple, build-linux, build-linux-hip, build-windows]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: recursive
+      - name: Checkout llama.cpp ref
+        if: ${{ github.event.inputs.llama_cpp_tag != 'submodule' }}
+        uses: ./.github/actions/checkout-llama-ref
+        with:
+          tag: ${{ needs.resolve-tag.outputs.tag }}
+          github_token: ${{ github.token }}
       - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
@@ -710,6 +725,18 @@ jobs:
             done < <(find "$dir" -maxdepth 1 -type f \( -name '*.dll' -o -name '*.dylib' -o -name '*.so' \) | sort)
           done
 
+          mkdir -p headers_bundle/include/llama.cpp headers_bundle/include/ggml
+          cp src/llama_dart_wrapper.h headers_bundle/include/
+          shopt -s nullglob
+          for hdr in third_party/llama.cpp/include/*.{h,hpp}; do
+            cp "$hdr" headers_bundle/include/llama.cpp/
+          done
+          for hdr in third_party/llama.cpp/ggml/include/*.{h,hpp}; do
+            cp "$hdr" headers_bundle/include/ggml/
+          done
+          HEADER_ARCHIVE="llamadart-native-headers-${{ needs.resolve-tag.outputs.tag }}.tar.gz"
+          tar -czf "release_assets/${HEADER_ARCHIVE}" -C headers_bundle include
+
           ls -la release_assets
           test -n "$(find release_assets -maxdepth 1 -type f -print -quit)"
 
@@ -741,10 +768,10 @@ jobs:
           fetch-depth: 0
           submodules: recursive
       - name: Move llama.cpp submodule to released tag
-        run: |
-          TAG="${{ needs.resolve-tag.outputs.tag }}"
-          git -C third_party/llama.cpp fetch --tags --force origin
-          git -C third_party/llama.cpp checkout --detach "$TAG"
+        uses: ./.github/actions/checkout-llama-ref
+        with:
+          tag: ${{ needs.resolve-tag.outputs.tag }}
+          github_token: ${{ github.token }}
       - name: Commit and push submodule update
         run: |
           if git diff --quiet -- third_party/llama.cpp; then

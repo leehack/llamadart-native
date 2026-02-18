@@ -41,7 +41,7 @@ ANDROID_PRAGMA_WARN_SUPPRESS = "-Wno-#pragma-messages"
 ANDROID_OPENCL_LOADER_WARN_SUPPRESS = "-Wno-#pragma-messages -Wno-typedef-redefinition"
 WINDOWS_VCPKG_TRIPLETS = {"x64": "x64-windows", "arm64": "arm64-windows"}
 ANDROID_BACKENDS = ("full", "vulkan", "opencl")
-LINUX_BACKENDS = ("full", "vulkan", "cuda", "blas")
+LINUX_BACKENDS = ("full", "vulkan", "cuda", "hip", "blas")
 WINDOWS_BACKENDS = ("full", "vulkan", "cuda", "blas")
 
 
@@ -170,13 +170,14 @@ def cmake_cache_args(cache_vars: dict[str, str]) -> list[str]:
 
 
 def linux_backend_cache_vars(arch: str, backend: str) -> dict[str, str]:
-    if backend == "cuda" and arch != "x64":
-        fail("Linux cuda backend build is only available for x64")
+    if backend in ("cuda", "hip") and arch != "x64":
+        fail(f"Linux {backend} backend build is only available for x64")
 
     cache_vars: dict[str, str] = {
         "GGML_VULKAN": "OFF",
         "GGML_OPENCL": "OFF",
         "GGML_CUDA": "OFF",
+        "GGML_HIP": "OFF",
         "GGML_BLAS": "OFF",
         "GGML_ZENDNN": "OFF",
         "GGML_CPU_KLEIDIAI": "ON" if arch == "arm64" else "OFF",
@@ -186,6 +187,8 @@ def linux_backend_cache_vars(arch: str, backend: str) -> dict[str, str]:
         cache_vars["GGML_VULKAN"] = "ON"
     if backend in ("full", "cuda"):
         cache_vars["GGML_CUDA"] = "ON"
+    if backend == "hip":
+        cache_vars["GGML_HIP"] = "ON"
     if backend in ("full", "blas"):
         cache_vars["GGML_BLAS"] = "ON"
         cache_vars["GGML_BLAS_VENDOR"] = "OpenBLAS"
@@ -511,6 +514,8 @@ def build_linux(args: argparse.Namespace) -> None:
 
     if cache_vars["GGML_CUDA"] == "ON" and not (shutil.which("nvcc") or shutil.which("nvcc.exe")):
         fail("Linux CUDA backend build requires CUDA (nvcc not found in PATH)")
+    if cache_vars["GGML_HIP"] == "ON" and not shutil.which("hipcc"):
+        fail("Linux HIP backend build requires HIP (hipcc not found in PATH)")
 
     zendnn_patch_applied = False
     if arch == "x64" and cache_vars["GGML_ZENDNN"] == "ON":
@@ -670,7 +675,7 @@ def build_windows(args: argparse.Namespace) -> None:
 def print_presets() -> None:
     presets = [
         "apple: target=macos-arm64|macos-x86_64|ios-device-arm64|ios-sim-arm64|ios-sim-x86_64 (consolidated: metal+cpu in one dylib)",
-        "linux: arch=x64|arm64 backend=full|vulkan|cuda|blas (x64 full=vulkan+cuda+blas+cpu, arm64 full=vulkan+blas+kleidi+cpu)",
+        "linux: arch=x64|arm64 backend=full|vulkan|cuda|hip|blas (x64 full=vulkan+cuda+blas+cpu, arm64 full=vulkan+blas+kleidi+cpu, hip=x64 only)",
         "android: abi=arm64-v8a|x86_64|all backend=full|vulkan|opencl (arm64 full=vulkan+opencl+kleidi+cpu, x86_64 full=vulkan+opencl+cpu)",
         "windows: arch=x64|arm64 backend=full|vulkan|cuda|blas (x64 full=vulkan+cuda+blas+cpu, arm64 full=vulkan+blas+kleidi+cpu)",
     ]
