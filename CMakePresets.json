@@ -185,6 +185,7 @@
         "GGML_BLAS": "ON",
         "GGML_BLAS_VENDOR": "OpenBLAS",
         "GGML_VULKAN": "ON",
+        "GGML_VULKAN_SHADERS_GEN_TOOLCHAIN": "${sourceDir}/cmake/windows-host-x64-toolchain.cmake",
         "GGML_OPENCL": "OFF",
         "GGML_CUDA": "OFF",
         "GGML_CPU_KLEIDIAI": "ON"
