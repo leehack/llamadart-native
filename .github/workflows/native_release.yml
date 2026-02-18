@@ -259,6 +259,9 @@ jobs:
     needs: resolve-tag
     runs-on: windows-latest
     env:
+      CMAKE_C_COMPILER_LAUNCHER: sccache
+      CMAKE_CXX_COMPILER_LAUNCHER: sccache
+      CMAKE_CUDA_COMPILER_LAUNCHER: sccache
       VCPKG_BINARY_SOURCES: clear;x-gha,readwrite
       VCPKG_FEATURE_FLAGS: binarycaching
     strategy:
