@@ -86,9 +86,20 @@ jobs:
           submodules: recursive
       - name: Checkout llama.cpp ref
         if: ${{ github.event.inputs.llama_cpp_tag != 'submodule' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           TAG="${{ needs.resolve-tag.outputs.tag }}"
-          git -C third_party/llama.cpp fetch --tags --force origin
+          for i in 1 2 3; do
+            if git -C third_party/llama.cpp -c "http.https://github.com/.extraheader=AUTHORIZATION: bearer ${GH_TOKEN}" fetch --tags --force origin; then
+              break
+            fi
+            if [ "$i" -eq 3 ]; then
+              echo "Failed to fetch llama.cpp tags after retries"
+              exit 1
+            fi
+            sleep $((i * 5))
+          done
           git -C third_party/llama.cpp checkout --detach "$TAG"
       - name: Set up JDK
         uses: actions/setup-java@v4
@@ -165,9 +176,20 @@ jobs:
           submodules: recursive
       - name: Checkout llama.cpp ref
         if: ${{ github.event.inputs.llama_cpp_tag != 'submodule' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           TAG="${{ needs.resolve-tag.outputs.tag }}"
-          git -C third_party/llama.cpp fetch --tags --force origin
+          for i in 1 2 3; do
+            if git -C third_party/llama.cpp -c "http.https://github.com/.extraheader=AUTHORIZATION: bearer ${GH_TOKEN}" fetch --tags --force origin; then
+              break
+            fi
+            if [ "$i" -eq 3 ]; then
+              echo "Failed to fetch llama.cpp tags after retries"
+              exit 1
+            fi
+            sleep $((i * 5))
+          done
           git -C third_party/llama.cpp checkout --detach "$TAG"
       - name: Install build deps
         run: brew install ccache
@@ -246,9 +268,20 @@ jobs:
           submodules: recursive
       - name: Checkout llama.cpp ref
         if: ${{ github.event.inputs.llama_cpp_tag != 'submodule' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           TAG="${{ needs.resolve-tag.outputs.tag }}"
-          git -C third_party/llama.cpp fetch --tags --force origin
+          for i in 1 2 3; do
+            if git -C third_party/llama.cpp -c "http.https://github.com/.extraheader=AUTHORIZATION: bearer ${GH_TOKEN}" fetch --tags --force origin; then
+              break
+            fi
+            if [ "$i" -eq 3 ]; then
+              echo "Failed to fetch llama.cpp tags after retries"
+              exit 1
+            fi
+            sleep $((i * 5))
+          done
           git -C third_party/llama.cpp checkout --detach "$TAG"
       - name: Install build deps
         run: |
@@ -425,9 +458,20 @@ jobs:
       - name: Checkout llama.cpp ref
         if: ${{ github.event.inputs.llama_cpp_tag != 'submodule' }}
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           TAG="${{ needs.resolve-tag.outputs.tag }}"
-          git -C third_party/llama.cpp fetch --tags --force origin
+          for i in 1 2 3; do
+            if git -C third_party/llama.cpp -c "http.https://github.com/.extraheader=AUTHORIZATION: bearer ${GH_TOKEN}" fetch --tags --force origin; then
+              break
+            fi
+            if [ "$i" -eq 3 ]; then
+              echo "Failed to fetch llama.cpp tags after retries"
+              exit 1
+            fi
+            sleep $((i * 5))
+          done
           git -C third_party/llama.cpp checkout --detach "$TAG"
       - name: Install Ninja
         run: choco install ninja -y
