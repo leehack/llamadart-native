@@ -25,7 +25,7 @@ static void llama_dart_native_log_callback(ggml_log_level level,
 
 extern "C" {
 
-LLAMA_API void llama_dart_set_log_level(int level) {
+LLAMADART_API void llama_dart_set_log_level(int level) {
   if (level < 0) {
     level = 0;
   } else if (level > 4) {
