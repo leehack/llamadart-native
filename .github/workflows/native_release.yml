@@ -60,8 +60,24 @@ jobs:
         include:
           - android_abi: arm64-v8a
             out_arch: arm64
+            backend: vulkan
+            include_core: true
+            backend_glob: libggml-vulkan.so
+          - android_abi: arm64-v8a
+            out_arch: arm64
+            backend: opencl
+            include_core: false
+            backend_glob: libggml-opencl.so
           - android_abi: x86_64
             out_arch: x64
+            backend: vulkan
+            include_core: true
+            backend_glob: libggml-vulkan.so
+          - android_abi: x86_64
+            out_arch: x64
+            backend: opencl
+            include_core: false
+            backend_glob: libggml-opencl.so
     steps:
       - uses: actions/checkout@v4
         with:
@@ -94,20 +110,31 @@ jobs:
           ccache --max-size "${CCACHE_MAXSIZE}"
           ccache --zero-stats
       - name: Build
-        run: python3 tools/build.py android --abi ${{ matrix.android_abi }}
+        run: python3 tools/build.py android --abi ${{ matrix.android_abi }} --backend ${{ matrix.backend }}
       - name: ccache stats
         if: always()
         run: ccache --show-stats
       - name: Validate Android backend artifacts
         run: |
           OUT_DIR="bin/android/${{ matrix.out_arch }}"
-          test -f "$OUT_DIR/libggml-vulkan.so" || { echo "Missing $OUT_DIR/libggml-vulkan.so"; exit 1; }
-          test -f "$OUT_DIR/libggml-opencl.so" || { echo "Missing $OUT_DIR/libggml-opencl.so"; exit 1; }
+          test -f "$OUT_DIR/${{ matrix.backend_glob }}" || { echo "Missing $OUT_DIR/${{ matrix.backend_glob }}"; exit 1; }
+      - name: Stage upload payload
+        run: |
+          OUT_DIR="bin/android/${{ matrix.out_arch }}"
+          PAYLOAD="artifact_payload"
+          mkdir -p "$PAYLOAD"
+          if [ "${{ matrix.include_core }}" = "true" ]; then
+            cp "$OUT_DIR"/*.so "$PAYLOAD"/
+          else
+            cp "$OUT_DIR/${{ matrix.backend_glob }}" "$PAYLOAD"/
+          fi
+          ls -la "$PAYLOAD"
+          test -n "$(find "$PAYLOAD" -maxdepth 1 -type f -print -quit)"
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: native_android_${{ matrix.android_abi }}
-          path: bin/android/${{ matrix.out_arch }}/*
+          name: native_android_${{ matrix.android_abi }}_${{ matrix.backend }}
+          path: artifact_payload/*
 
   build-apple:
     needs: resolve-tag
@@ -175,7 +202,40 @@ jobs:
       matrix:
         include:
           - arch: x64
+            backend: vulkan
+            include_core: true
+            needs_vulkan: true
+            needs_openblas: false
+            needs_cuda: false
+            backend_glob: libggml-vulkan.so
+          - arch: x64
+            backend: cuda
+            include_core: false
+            needs_vulkan: false
+            needs_openblas: false
+            needs_cuda: true
+            backend_glob: libggml-cuda.so
+          - arch: x64
+            backend: blas
+            include_core: false
+            needs_vulkan: false
+            needs_openblas: true
+            needs_cuda: false
+            backend_glob: libggml-blas.so
           - arch: arm64
+            backend: vulkan
+            include_core: true
+            needs_vulkan: true
+            needs_openblas: false
+            needs_cuda: false
+            backend_glob: libggml-vulkan.so
+          - arch: arm64
+            backend: blas
+            include_core: false
+            needs_vulkan: false
+            needs_openblas: true
+            needs_cuda: false
+            backend_glob: libggml-blas.so
     steps:
       - uses: actions/checkout@v4
         with:
@@ -217,13 +277,24 @@ jobs:
             } | sudo tee /etc/apt/sources.list.d/ubuntu.sources >/dev/null
           fi
           sudo apt-get update
-          sudo apt-get install -y ccache ninja-build pkg-config libvulkan-dev glslc make
+          sudo apt-get install -y ccache ninja-build pkg-config make
           if [ "${{ matrix.arch }}" = "arm64" ]; then
-            sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu libopenblas-dev:arm64 libvulkan-dev:arm64
-          else
-            sudo apt-get install -y libopenblas-dev
+            sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
           fi
-          if [ "${{ matrix.arch }}" = "x64" ]; then
+          if [ "${{ matrix.needs_vulkan }}" = "true" ]; then
+            sudo apt-get install -y libvulkan-dev glslc
+            if [ "${{ matrix.arch }}" = "arm64" ]; then
+              sudo apt-get install -y libvulkan-dev:arm64
+            fi
+          fi
+          if [ "${{ matrix.needs_openblas }}" = "true" ]; then
+            if [ "${{ matrix.arch }}" = "arm64" ]; then
+              sudo apt-get install -y libopenblas-dev:arm64
+            else
+              sudo apt-get install -y libopenblas-dev
+            fi
+          fi
+          if [ "${{ matrix.needs_cuda }}" = "true" ]; then
             sudo apt-get install -y nvidia-cuda-toolkit
           fi
       - name: Restore ccache
@@ -239,23 +310,38 @@ jobs:
           ccache --max-size "${CCACHE_MAXSIZE}"
           ccache --zero-stats
       - name: Build
-        run: python3 tools/build.py linux --arch "${{ matrix.arch }}"
+        run: python3 tools/build.py linux --arch "${{ matrix.arch }}" --backend "${{ matrix.backend }}"
       - name: ccache stats
         if: always()
         run: ccache --show-stats
       - name: Validate Linux backend artifacts
         run: |
           OUT_DIR="bin/linux/${{ matrix.arch }}"
-          test -f "$OUT_DIR/libggml-vulkan.so" || { echo "Missing $OUT_DIR/libggml-vulkan.so"; exit 1; }
-          find "$OUT_DIR" -maxdepth 1 -type f -name 'libggml-blas.so*' | grep -q . || { echo "Missing BLAS backend in $OUT_DIR"; exit 1; }
-          if [ "${{ matrix.arch }}" = "x64" ]; then
-            find "$OUT_DIR" -maxdepth 1 -type f -name 'libggml-cuda.so*' | grep -q . || { echo "Missing CUDA backend in $OUT_DIR"; exit 1; }
+          test -f "$OUT_DIR/${{ matrix.backend_glob }}" || { echo "Missing $OUT_DIR/${{ matrix.backend_glob }}"; exit 1; }
+          if [ "${{ matrix.arch }}" = "arm64" ]; then
+            CACHE_FILE="build/linux-arm64-full/CMakeCache.txt"
+            test -f "$CACHE_FILE" || { echo "Missing CMake cache at $CACHE_FILE"; exit 1; }
+            grep -q '^GGML_CPU_KLEIDIAI:BOOL=ON$' "$CACHE_FILE" || { echo "Kleidi is not enabled in arm64 build"; exit 1; }
           fi
+      - name: Stage upload payload
+        run: |
+          OUT_DIR="bin/linux/${{ matrix.arch }}"
+          PAYLOAD="artifact_payload"
+          mkdir -p "$PAYLOAD"
+          shopt -s nullglob
+          if [ "${{ matrix.include_core }}" = "true" ]; then
+            files=("$OUT_DIR"/*.so)
+          else
+            files=("$OUT_DIR"/${{ matrix.backend_glob }})
+          fi
+          [ "${#files[@]}" -gt 0 ] || { echo "No files staged for upload"; exit 1; }
+          cp "${files[@]}" "$PAYLOAD"/
+          ls -la "$PAYLOAD"
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: native_linux_${{ matrix.arch }}
-          path: bin/linux/${{ matrix.arch }}/*
+          name: native_linux_${{ matrix.arch }}_${{ matrix.backend }}
+          path: artifact_payload/*
 
   build-windows:
     needs: resolve-tag
@@ -263,6 +349,7 @@ jobs:
     env:
       CMAKE_C_COMPILER_LAUNCHER: sccache
       CMAKE_CXX_COMPILER_LAUNCHER: sccache
+      CMAKE_CUDA_COMPILER_LAUNCHER: ""
       VCPKG_BINARY_SOURCES: clear;x-gha,readwrite
       VCPKG_FEATURE_FLAGS: binarycaching
     strategy:
@@ -272,9 +359,48 @@ jobs:
           - arch: x64
             vcpkg_triplet: x64-windows
             runs_on: windows-latest
+            backend: vulkan
+            include_core: true
+            needs_cuda: false
+            needs_openblas: false
+            needs_vulkan: true
+            backend_glob: "*ggml-vulkan*.dll"
+          - arch: x64
+            vcpkg_triplet: x64-windows
+            runs_on: windows-latest
+            backend: cuda
+            include_core: false
+            needs_cuda: true
+            needs_openblas: false
+            needs_vulkan: false
+            backend_glob: "*ggml-cuda*.dll"
+          - arch: x64
+            vcpkg_triplet: x64-windows
+            runs_on: windows-latest
+            backend: blas
+            include_core: false
+            needs_cuda: false
+            needs_openblas: true
+            needs_vulkan: false
+            backend_glob: "*ggml-blas*.dll"
           - arch: arm64
             vcpkg_triplet: arm64-windows
             runs_on: windows-11-arm
+            backend: vulkan
+            include_core: true
+            needs_cuda: false
+            needs_openblas: false
+            needs_vulkan: true
+            backend_glob: "*ggml-vulkan*.dll"
+          - arch: arm64
+            vcpkg_triplet: arm64-windows
+            runs_on: windows-11-arm
+            backend: blas
+            include_core: false
+            needs_cuda: false
+            needs_openblas: true
+            needs_vulkan: false
+            backend_glob: "*ggml-blas*.dll"
     steps:
       - uses: actions/checkout@v4
         with:
@@ -301,7 +427,7 @@ jobs:
       - name: Install Ninja
         run: choco install ninja -y
       - name: Detect preinstalled CUDA Toolkit
-        if: ${{ matrix.arch == 'x64' }}
+        if: ${{ matrix.needs_cuda }}
         id: detect_cuda
         run: |
           $nvcc = $null
@@ -327,12 +453,12 @@ jobs:
             Write-Host "No preinstalled CUDA detected."
           }
       - name: Install CUDA Toolkit (minimal components)
-        if: ${{ matrix.arch == 'x64' && steps.detect_cuda.outputs.found != 'true' }}
+        if: ${{ matrix.needs_cuda && steps.detect_cuda.outputs.found != 'true' }}
         uses: ./third_party/llama.cpp/.github/actions/windows-setup-cuda
         with:
           cuda_version: '12.4'
       - name: Register CUDA in PATH
-        if: ${{ matrix.arch == 'x64' }}
+        if: ${{ matrix.needs_cuda }}
         run: |
           $cudaBin = Get-ChildItem "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA" -Directory -ErrorAction SilentlyContinue |
             Sort-Object Name -Descending |
@@ -346,6 +472,7 @@ jobs:
           Add-Content $env:GITHUB_ENV "CUDA_PATH=$(Split-Path $cudaBin -Parent)"
           & (Join-Path $cudaBin "nvcc.exe") --version
       - name: Restore vcpkg cache
+        if: ${{ matrix.needs_openblas }}
         id: vcpkg-cache
         uses: actions/cache/restore@v4
         with:
@@ -357,6 +484,7 @@ jobs:
           restore-keys: |
             vcpkg-${{ runner.os }}-${{ matrix.vcpkg_triplet }}-
       - name: Install OpenBLAS (vcpkg)
+        if: ${{ matrix.needs_openblas }}
         run: |
           $vcpkgRoot = "C:\vcpkg"
           if (-not (Test-Path $vcpkgRoot)) {
@@ -393,6 +521,7 @@ jobs:
         run: |
           echo "SCCACHE_GHA_ENABLED=true" >> $env:GITHUB_ENV
       - name: Install Vulkan SDK
+        if: ${{ matrix.needs_vulkan }}
         run: |
           $ver = "1.4.313.2"
           curl.exe -o $env:RUNNER_TEMP/VulkanSDK-Installer.exe -L "https://sdk.lunarg.com/sdk/download/$ver/windows/vulkansdk-windows-X64-$ver.exe"
@@ -400,21 +529,19 @@ jobs:
           Add-Content $env:GITHUB_ENV "VULKAN_SDK=C:\VulkanSDK\$ver"
           Add-Content $env:GITHUB_PATH "C:\VulkanSDK\$ver\Bin"
       - name: Build
-        run: python tools/build.py windows --arch ${{ matrix.arch }}
+        run: python tools/build.py windows --arch ${{ matrix.arch }} --backend ${{ matrix.backend }}
       - name: Validate Windows backend artifacts
         run: |
           $out = "bin/windows/${{ matrix.arch }}"
-          if (-not (Get-ChildItem $out -Filter "*ggml-vulkan*.dll" -ErrorAction SilentlyContinue | Select-Object -First 1)) {
-            throw "Missing Vulkan backend DLL in $out"
+          if (-not (Get-ChildItem $out -Filter "${{ matrix.backend_glob }}" -ErrorAction SilentlyContinue | Select-Object -First 1)) {
+            throw "Missing backend DLL '${{ matrix.backend_glob }}' in $out"
           }
-          if (-not (Get-ChildItem $out -Filter "*ggml-blas*.dll" -ErrorAction SilentlyContinue | Select-Object -First 1)) {
-            throw "Missing BLAS backend DLL in $out"
-          }
-          if ("${{ matrix.arch }}" -eq "x64") {
-            if (-not (Get-ChildItem $out -Filter "*ggml-cuda*.dll" -ErrorAction SilentlyContinue | Select-Object -First 1)) {
-              throw "Missing CUDA backend DLL in $out"
+          if ("${{ matrix.include_core }}" -eq "true") {
+            if (-not (Get-ChildItem $out -Filter "*llamadart*.dll" -ErrorAction SilentlyContinue | Select-Object -First 1)) {
+              throw "Missing core wrapper DLL in $out"
             }
-          } else {
+          }
+          if ("${{ matrix.arch }}" -eq "arm64") {
             $cache = "build/wa64/CMakeCache.txt"
             if (-not (Test-Path $cache)) {
               throw "Missing CMake cache at $cache"
@@ -423,13 +550,31 @@ jobs:
               throw "Kleidi is not enabled in windows arm64 build"
             }
           }
+      - name: Stage upload payload
+        run: |
+          $out = "bin/windows/${{ matrix.arch }}"
+          $payload = "artifact_payload"
+          New-Item -ItemType Directory -Force -Path $payload | Out-Null
+
+          if ("${{ matrix.include_core }}" -eq "true") {
+            $files = Get-ChildItem $out -Filter "*.dll" -ErrorAction Stop
+          } else {
+            $files = Get-ChildItem $out -Filter "${{ matrix.backend_glob }}" -ErrorAction Stop
+          }
+          if (-not $files) {
+            throw "No files staged for upload"
+          }
+          foreach ($f in $files) {
+            Copy-Item $f.FullName -Destination $payload -Force
+          }
+          Get-ChildItem $payload
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: native_windows_${{ matrix.arch }}
-          path: bin/windows/${{ matrix.arch }}/*
+          name: native_windows_${{ matrix.arch }}_${{ matrix.backend }}
+          path: artifact_payload/*
       - name: Save vcpkg cache
-        if: always() && steps.vcpkg-cache.outputs.cache-hit != 'true'
+        if: ${{ always() && matrix.needs_openblas && steps.vcpkg-cache.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@v4
         with:
           path: |
@@ -478,34 +623,31 @@ jobs:
 
             platform=""
             arch=""
-            case "$name" in
-              native_windows_x64)
-                platform="windows"; arch="x64" ;;
-              native_windows_arm64)
-                platform="windows"; arch="arm64" ;;
-              native_linux_x64)
-                platform="linux"; arch="x64" ;;
-              native_linux_arm64)
-                platform="linux"; arch="arm64" ;;
-              native_apple_macos-arm64)
-                platform="macos"; arch="arm64" ;;
-              native_apple_macos-x86_64)
-                platform="macos"; arch="x86_64" ;;
-              native_apple_ios-device-arm64)
-                platform="ios"; arch="arm64" ;;
-              native_apple_ios-sim-arm64)
-                platform="ios"; arch="arm64-sim" ;;
-              native_apple_ios-sim-x86_64)
-                platform="ios"; arch="x86_64-sim" ;;
-              native_android_arm64-v8a)
-                platform="android"; arch="arm64" ;;
-              native_android_x86_64)
-                platform="android"; arch="x64" ;;
-              *)
-                echo "Skipping unknown artifact directory: $name"
-                continue
-                ;;
-            esac
+            if [[ "$name" =~ ^native_windows_(x64|arm64)(_.+)?$ ]]; then
+              platform="windows"; arch="${BASH_REMATCH[1]}"
+            elif [[ "$name" =~ ^native_linux_(x64|arm64)(_.+)?$ ]]; then
+              platform="linux"; arch="${BASH_REMATCH[1]}"
+            elif [[ "$name" =~ ^native_android_(arm64-v8a|x86_64)(_.+)?$ ]]; then
+              platform="android"
+              if [ "${BASH_REMATCH[1]}" = "arm64-v8a" ]; then
+                arch="arm64"
+              else
+                arch="x64"
+              fi
+            elif [[ "$name" = "native_apple_macos-arm64" ]]; then
+              platform="macos"; arch="arm64"
+            elif [[ "$name" = "native_apple_macos-x86_64" ]]; then
+              platform="macos"; arch="x86_64"
+            elif [[ "$name" = "native_apple_ios-device-arm64" ]]; then
+              platform="ios"; arch="arm64"
+            elif [[ "$name" = "native_apple_ios-sim-arm64" ]]; then
+              platform="ios"; arch="arm64-sim"
+            elif [[ "$name" = "native_apple_ios-sim-x86_64" ]]; then
+              platform="ios"; arch="x86_64-sim"
+            else
+              echo "Skipping unknown artifact directory: $name"
+              continue
+            fi
 
             while IFS= read -r src; do
               [ -n "$src" ] || continue

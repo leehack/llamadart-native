@@ -40,6 +40,9 @@ ANDROID_ARCH_PATH = {"arm64-v8a": "aarch64-linux-android", "x86_64": "x86_64-lin
 ANDROID_PRAGMA_WARN_SUPPRESS = "-Wno-#pragma-messages"
 ANDROID_OPENCL_LOADER_WARN_SUPPRESS = "-Wno-#pragma-messages -Wno-typedef-redefinition"
 WINDOWS_VCPKG_TRIPLETS = {"x64": "x64-windows", "arm64": "arm64-windows"}
+ANDROID_BACKENDS = ("full", "vulkan", "opencl")
+LINUX_BACKENDS = ("full", "vulkan", "cuda", "blas")
+WINDOWS_BACKENDS = ("full", "vulkan", "cuda", "blas")
 
 
 def fail(message: str) -> None:
@@ -160,6 +163,72 @@ def detect_linux_arch() -> str:
     if machine in ("aarch64", "arm64"):
         return "arm64"
     fail(f"Unsupported host architecture '{machine}' for Linux builds")
+
+
+def cmake_cache_args(cache_vars: dict[str, str]) -> list[str]:
+    return [f"-D{key}={value}" for key, value in cache_vars.items()]
+
+
+def linux_backend_cache_vars(arch: str, backend: str) -> dict[str, str]:
+    if backend == "cuda" and arch != "x64":
+        fail("Linux cuda backend build is only available for x64")
+
+    cache_vars: dict[str, str] = {
+        "GGML_VULKAN": "OFF",
+        "GGML_OPENCL": "OFF",
+        "GGML_CUDA": "OFF",
+        "GGML_BLAS": "OFF",
+        "GGML_ZENDNN": "OFF",
+        "GGML_CPU_KLEIDIAI": "ON" if arch == "arm64" else "OFF",
+    }
+
+    if backend in ("full", "vulkan"):
+        cache_vars["GGML_VULKAN"] = "ON"
+    if backend in ("full", "cuda"):
+        cache_vars["GGML_CUDA"] = "ON"
+    if backend in ("full", "blas"):
+        cache_vars["GGML_BLAS"] = "ON"
+        cache_vars["GGML_BLAS_VENDOR"] = "OpenBLAS"
+
+    return cache_vars
+
+
+def android_backend_cache_vars(abi: str, backend: str) -> dict[str, str]:
+    cache_vars: dict[str, str] = {
+        "GGML_VULKAN": "OFF",
+        "GGML_OPENCL": "OFF",
+        "GGML_CPU_KLEIDIAI": "ON" if abi == "arm64-v8a" else "OFF",
+    }
+
+    if backend in ("full", "vulkan"):
+        cache_vars["GGML_VULKAN"] = "ON"
+    if backend in ("full", "opencl"):
+        cache_vars["GGML_OPENCL"] = "ON"
+
+    return cache_vars
+
+
+def windows_backend_cache_vars(arch: str, backend: str) -> dict[str, str]:
+    if backend == "cuda" and arch != "x64":
+        fail("Windows cuda backend build is only available for x64")
+
+    cache_vars: dict[str, str] = {
+        "GGML_VULKAN": "OFF",
+        "GGML_OPENCL": "OFF",
+        "GGML_CUDA": "OFF",
+        "GGML_BLAS": "OFF",
+        "GGML_CPU_KLEIDIAI": "ON" if arch == "arm64" else "OFF",
+    }
+
+    if backend in ("full", "vulkan"):
+        cache_vars["GGML_VULKAN"] = "ON"
+    if backend in ("full", "cuda"):
+        cache_vars["GGML_CUDA"] = "ON"
+    if backend in ("full", "blas"):
+        cache_vars["GGML_BLAS"] = "ON"
+        cache_vars["GGML_BLAS_VENDOR"] = "OpenBLAS"
+
+    return cache_vars
 
 
 def detect_android_ndk() -> Path | None:
@@ -419,10 +488,12 @@ def build_linux(args: argparse.Namespace) -> None:
     )
 
     arch = args.arch or detect_linux_arch()
+    backend = args.backend
     preset = f"linux-{arch}-full"
     clean_build_dir(preset, args.clean)
 
-    extra_args: list[str] = []
+    cache_vars = linux_backend_cache_vars(arch, backend)
+    extra_args = cmake_cache_args(cache_vars)
     host_arch = detect_linux_arch()
     if arch == "arm64" and host_arch != "arm64":
         cc = shutil.which("aarch64-linux-gnu-gcc")
@@ -438,11 +509,11 @@ def build_linux(args: argparse.Namespace) -> None:
             ]
         )
 
-    if arch == "x64" and not (shutil.which("nvcc") or shutil.which("nvcc.exe")):
-        fail("Linux x64 full build requires CUDA (nvcc not found in PATH)")
+    if cache_vars["GGML_CUDA"] == "ON" and not (shutil.which("nvcc") or shutil.which("nvcc.exe")):
+        fail("Linux CUDA backend build requires CUDA (nvcc not found in PATH)")
 
     zendnn_patch_applied = False
-    if arch == "x64":
+    if arch == "x64" and cache_vars["GGML_ZENDNN"] == "ON":
         zendnn_patch_applied = patch_llama_zendnn_install_target()
 
     try:
@@ -469,43 +540,53 @@ def write_android_host_toolchain(path: Path) -> None:
 def build_android_abi(abi: str, args: argparse.Namespace, env: dict[str, str]) -> None:
     preset = f"android-{abi}-full"
     build_dir = clean_build_dir(preset, args.clean)
+    backend = args.backend
 
     ndk = Path(env["ANDROID_NDK_HOME"])
-    extra_args: list[str] = []
-
-    ensure_submodule(
-        THIRD_PARTY_DIR / "Vulkan-Headers/include/vulkan/vulkan.h",
-        "Missing submodule: third_party/Vulkan-Headers. Run: git submodule update --init --recursive",
-    )
-
-    toolchain = build_dir / "android-host-toolchain.cmake"
-    write_android_host_toolchain(toolchain)
-    extra_args.append(f"-DGGML_VULKAN_SHADERS_GEN_TOOLCHAIN={toolchain}")
-
-    glslc = find_file_with_suffix(ndk, "glslc") or find_file_with_suffix(ndk, "glslc.exe")
-    if glslc:
-        extra_args.append(f"-DVulkan_GLSLC_EXECUTABLE={glslc}")
-
-    arch_path = ANDROID_ARCH_PATH[abi]
-
-    vulkan_lib = find_file_with_suffix(ndk, "libvulkan.so", contains=f"/{arch_path}/28/")
-    if not vulkan_lib:
-        vulkan_lib = find_file_with_suffix(ndk, "libvulkan.so", contains=f"/{arch_path}/")
-    if not vulkan_lib:
-        fail(f"Could not find libvulkan.so in NDK for ABI {abi}")
-
-    opencl_include, opencl_lib = resolve_android_opencl(abi, ndk, build_dir, env, args.jobs)
-
+    cache_vars = android_backend_cache_vars(abi, backend)
+    extra_args = cmake_cache_args(cache_vars)
     extra_args.extend(
         [
             f"-DCMAKE_C_FLAGS={ANDROID_PRAGMA_WARN_SUPPRESS}",
             f"-DCMAKE_CXX_FLAGS={ANDROID_PRAGMA_WARN_SUPPRESS}",
-            f"-DVulkan_LIBRARY={vulkan_lib}",
-            f"-DVulkan_INCLUDE_DIR={THIRD_PARTY_DIR / 'Vulkan-Headers/include'}",
-            f"-DOpenCL_INCLUDE_DIR={opencl_include}",
-            f"-DOpenCL_LIBRARY={opencl_lib}",
         ]
     )
+
+    if cache_vars["GGML_VULKAN"] == "ON":
+        ensure_submodule(
+            THIRD_PARTY_DIR / "Vulkan-Headers/include/vulkan/vulkan.h",
+            "Missing submodule: third_party/Vulkan-Headers. Run: git submodule update --init --recursive",
+        )
+        toolchain = build_dir / "android-host-toolchain.cmake"
+        write_android_host_toolchain(toolchain)
+        extra_args.append(f"-DGGML_VULKAN_SHADERS_GEN_TOOLCHAIN={toolchain}")
+
+        glslc = find_file_with_suffix(ndk, "glslc") or find_file_with_suffix(ndk, "glslc.exe")
+        if glslc:
+            extra_args.append(f"-DVulkan_GLSLC_EXECUTABLE={glslc}")
+
+        arch_path = ANDROID_ARCH_PATH[abi]
+        vulkan_lib = find_file_with_suffix(ndk, "libvulkan.so", contains=f"/{arch_path}/28/")
+        if not vulkan_lib:
+            vulkan_lib = find_file_with_suffix(ndk, "libvulkan.so", contains=f"/{arch_path}/")
+        if not vulkan_lib:
+            fail(f"Could not find libvulkan.so in NDK for ABI {abi}")
+
+        extra_args.extend(
+            [
+                f"-DVulkan_LIBRARY={vulkan_lib}",
+                f"-DVulkan_INCLUDE_DIR={THIRD_PARTY_DIR / 'Vulkan-Headers/include'}",
+            ]
+        )
+
+    if cache_vars["GGML_OPENCL"] == "ON":
+        opencl_include, opencl_lib = resolve_android_opencl(abi, ndk, build_dir, env, args.jobs)
+        extra_args.extend(
+            [
+                f"-DOpenCL_INCLUDE_DIR={opencl_include}",
+                f"-DOpenCL_LIBRARY={opencl_lib}",
+            ]
+        )
 
     built_dir = configure_and_build(preset, jobs=args.jobs, extra_cmake_args=extra_args, env=env)
     out_arch = ANDROID_OUT_ARCH[abi]
@@ -532,7 +613,7 @@ def build_android(args: argparse.Namespace) -> None:
         abis = [ANDROID_ABI_ALIASES[args.abi]]
 
     for abi in abis:
-        print(f"Building Android ABI={abi} (full backend set)")
+        print(f"Building Android ABI={abi} backend={args.backend}")
         build_android_abi(abi, args, env)
 
 
@@ -545,15 +626,18 @@ def build_windows(args: argparse.Namespace) -> None:
     )
 
     arch = args.arch
-    if arch == "x64" and not (shutil.which("nvcc") or shutil.which("nvcc.exe")):
-        fail("Windows x64 full build requires CUDA (nvcc not found in PATH)")
+    backend = args.backend
+    cache_vars = windows_backend_cache_vars(arch, backend)
+
+    if cache_vars["GGML_CUDA"] == "ON" and not (shutil.which("nvcc") or shutil.which("nvcc.exe")):
+        fail("Windows CUDA backend build requires CUDA (nvcc not found in PATH)")
 
     preset = f"windows-{arch}-full"
     clean_build_dir(preset, args.clean)
 
-    extra_args: list[str] = []
+    extra_args = cmake_cache_args(cache_vars)
     vcpkg_root = detect_vcpkg_root()
-    if vcpkg_root:
+    if vcpkg_root and cache_vars["GGML_BLAS"] == "ON":
         toolchain = vcpkg_root / "scripts/buildsystems/vcpkg.cmake"
         if toolchain.is_file():
             extra_args.extend(
@@ -563,7 +647,7 @@ def build_windows(args: argparse.Namespace) -> None:
                 ]
             )
 
-    sdk = infer_vulkan_sdk(args.vulkan_sdk)
+    sdk = infer_vulkan_sdk(args.vulkan_sdk) if cache_vars["GGML_VULKAN"] == "ON" else None
     if sdk:
         if arch == "x64":
             extra_args.extend(
@@ -586,9 +670,9 @@ def build_windows(args: argparse.Namespace) -> None:
 def print_presets() -> None:
     presets = [
         "apple: target=macos-arm64|macos-x86_64|ios-device-arm64|ios-sim-arm64|ios-sim-x86_64 (consolidated: metal+cpu in one dylib)",
-        "linux: arch=x64|arm64 (full: x64=vulkan+cuda+blas+cpu, arm64=vulkan+blas+kleidi+cpu)",
-        "android: abi=arm64-v8a|x86_64|all (full: arm64=vulkan+opencl+kleidi+cpu, x86_64=vulkan+opencl+cpu)",
-        "windows: arch=x64|arm64 (full: x64=vulkan+cuda+blas+cpu, arm64=vulkan+blas+kleidi+cpu)",
+        "linux: arch=x64|arm64 backend=full|vulkan|cuda|blas (x64 full=vulkan+cuda+blas+cpu, arm64 full=vulkan+blas+kleidi+cpu)",
+        "android: abi=arm64-v8a|x86_64|all backend=full|vulkan|opencl (arm64 full=vulkan+opencl+kleidi+cpu, x86_64 full=vulkan+opencl+cpu)",
+        "windows: arch=x64|arm64 backend=full|vulkan|cuda|blas (x64 full=vulkan+cuda+blas+cpu, arm64 full=vulkan+blas+kleidi+cpu)",
     ]
     for p in presets:
         print(p)
@@ -613,16 +697,19 @@ def parse_args() -> argparse.Namespace:
 
     linux = subparsers.add_parser("linux", help="Build Linux shared libraries")
     linux.add_argument("--arch", choices=["x64", "arm64"], default=None)
+    linux.add_argument("--backend", choices=LINUX_BACKENDS, default="full")
     add_common_args(linux)
     linux.set_defaults(func=build_linux)
 
     android = subparsers.add_parser("android", help="Build Android shared libraries")
     android.add_argument("--abi", default="arm64-v8a", choices=["arm64-v8a", "arm64", "x86_64", "x64", "all"])
+    android.add_argument("--backend", choices=ANDROID_BACKENDS, default="full")
     add_common_args(android)
     android.set_defaults(func=build_android)
 
     windows = subparsers.add_parser("windows", help="Build Windows shared libraries")
     windows.add_argument("--arch", choices=["x64", "arm64"], default="x64")
+    windows.add_argument("--backend", choices=WINDOWS_BACKENDS, default="full")
     windows.add_argument("--vulkan-sdk", default=None, help="Optional explicit Vulkan SDK root")
     add_common_args(windows)
     windows.set_defaults(func=build_windows)
