@@ -61,7 +61,7 @@
       "inherits": "base",
       "cacheVariables": {
         "CMAKE_C_FLAGS": "-DWIN32_LEAN_AND_MEAN -DNOMINMAX",
-        "CMAKE_CXX_FLAGS": "-DWIN32_LEAN_AND_MEAN -DNOMINMAX"
+        "CMAKE_CXX_FLAGS": "/EHsc -DWIN32_LEAN_AND_MEAN -DNOMINMAX"
       }
     },
     {
