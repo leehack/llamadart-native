@@ -230,6 +230,20 @@ jobs:
       - name: Install CUDA Toolkit
         if: ${{ matrix.arch == 'x64' }}
         run: choco install cuda -y
+      - name: Register CUDA in PATH
+        if: ${{ matrix.arch == 'x64' }}
+        run: |
+          $cudaBin = Get-ChildItem "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA" -Directory -ErrorAction SilentlyContinue |
+            Sort-Object Name -Descending |
+            ForEach-Object { Join-Path $_.FullName "bin" } |
+            Where-Object { Test-Path (Join-Path $_ "nvcc.exe") } |
+            Select-Object -First 1
+          if (-not $cudaBin) {
+            throw "nvcc.exe not found after CUDA install"
+          }
+          Add-Content $env:GITHUB_PATH $cudaBin
+          Add-Content $env:GITHUB_ENV "CUDA_PATH=$(Split-Path $cudaBin -Parent)"
+          & (Join-Path $cudaBin "nvcc.exe") --version
       - name: Install OpenBLAS (vcpkg)
         run: |
           $vcpkgRoot = $env:VCPKG_INSTALLATION_ROOT
@@ -243,6 +257,17 @@ jobs:
             & "$vcpkgRoot\bootstrap-vcpkg.bat" -disableMetrics
           }
           & "$vcpkgRoot\vcpkg.exe" install "openblas:${{ matrix.vcpkg_triplet }}"
+          & "$vcpkgRoot\vcpkg.exe" install "pkgconf:x64-windows"
+          $pkgconfCandidates = @(
+            (Join-Path $vcpkgRoot "installed\x64-windows\tools\pkgconf\pkg-config.exe"),
+            (Join-Path $vcpkgRoot "installed\x64-windows\tools\pkgconf\pkgconf.exe")
+          )
+          $pkgconf = $pkgconfCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $pkgconf) {
+            throw "pkg-config executable not found in vcpkg tools"
+          }
+          Add-Content $env:GITHUB_PATH (Split-Path $pkgconf -Parent)
+          Add-Content $env:GITHUB_ENV "PKG_CONFIG_EXECUTABLE=$pkgconf"
           Add-Content $env:GITHUB_ENV "VCPKG_ROOT=$vcpkgRoot"
       - name: Setup sccache
         uses: mozilla-actions/sccache-action@v0.0.9
