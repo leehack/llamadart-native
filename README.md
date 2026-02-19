@@ -147,3 +147,8 @@ Android OpenCL override env vars (optional):
 - `OPENCL_INCLUDE_DIR=/path/to/opencl/headers`
 - `OPENCL_LIBRARY_ANDROID_ARM64_V8A=/path/to/arm64/libOpenCL.so`
 - `OPENCL_LIBRARY_ANDROID_X86_64=/path/to/x86_64/libOpenCL.so`
+
+## Maintainer Docs
+
+- `AGENTS.md`: agent workflow and cross-repo handoff
+- `CONTRIBUTING.md`: contributor setup/build/release steps
