@@ -691,6 +691,27 @@ def resolve_windows_dependency(name: str, roots: list[Path]) -> Path | None:
             if matches:
                 return matches[0]
 
+    # MSVC redist DLLs (e.g. libomp140.aarch64.dll) are often nested under
+    # onecore/<arch>/... and may not be in PATH. Probe that tree recursively.
+    vc_tools_redist = os.environ.get("VCToolsRedistDir")
+    if vc_tools_redist:
+        redist_root = Path(vc_tools_redist)
+        if redist_root.is_dir():
+            for alias in aliases:
+                direct_matches = sorted(
+                    [p for p in redist_root.rglob(alias) if p.is_file()],
+                    key=lambda p: str(p).lower(),
+                )
+                if direct_matches:
+                    return direct_matches[0]
+
+                lowered_matches = sorted(
+                    [p for p in redist_root.rglob(alias.lower()) if p.is_file()],
+                    key=lambda p: str(p).lower(),
+                )
+                if lowered_matches:
+                    return lowered_matches[0]
+
     return None
 
 
