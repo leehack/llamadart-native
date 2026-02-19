@@ -107,8 +107,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ env.CCACHE_DIR }}
-          key: ccache-android-${{ matrix.android_abi }}-${{ github.run_id }}
+          key: ccache-android-${{ matrix.android_abi }}-${{ matrix.backend }}-${{ github.run_id }}
           restore-keys: |
+            ccache-android-${{ matrix.android_abi }}-${{ matrix.backend }}-
             ccache-android-${{ matrix.android_abi }}-
       - name: Prime ccache
         run: |
@@ -120,6 +121,15 @@ jobs:
       - name: ccache stats
         if: always()
         run: ccache --show-stats
+      - name: Append ccache stats to summary
+        if: always()
+        run: |
+          {
+            echo "### ccache stats (android/${{ matrix.android_abi }}/${{ matrix.backend }})"
+            echo '```'
+            ccache --show-stats || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
       - name: Validate Android backend artifacts
         run: |
           OUT_DIR="bin/android/${{ matrix.out_arch }}"
@@ -192,6 +202,15 @@ jobs:
       - name: ccache stats
         if: always()
         run: ccache --show-stats
+      - name: Append ccache stats to summary
+        if: always()
+        run: |
+          {
+            echo "### ccache stats (apple/${{ matrix.target }})"
+            echo '```'
+            ccache --show-stats || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
@@ -309,8 +328,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ env.CCACHE_DIR }}
-          key: ccache-linux-${{ matrix.arch }}-${{ github.run_id }}
+          key: ccache-linux-${{ matrix.arch }}-${{ matrix.backend }}-${{ github.run_id }}
           restore-keys: |
+            ccache-linux-${{ matrix.arch }}-${{ matrix.backend }}-
             ccache-linux-${{ matrix.arch }}-
       - name: Prime ccache
         run: |
@@ -322,6 +342,15 @@ jobs:
       - name: ccache stats
         if: always()
         run: ccache --show-stats
+      - name: Append ccache stats to summary
+        if: always()
+        run: |
+          {
+            echo "### ccache stats (linux/${{ matrix.arch }}/${{ matrix.backend }})"
+            echo '```'
+            ccache --show-stats || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
       - name: Validate Linux backend artifacts
         run: |
           OUT_DIR="bin/linux/${{ matrix.arch }}"
@@ -395,6 +424,15 @@ jobs:
       - name: ccache stats
         if: always()
         run: ccache --show-stats
+      - name: Append ccache stats to summary
+        if: always()
+        run: |
+          {
+            echo "### ccache stats (linux/x64/hip)"
+            echo '```'
+            ccache --show-stats || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
       - name: Validate Linux HIP artifacts
         run: |
           OUT_DIR="bin/linux/x64"
@@ -584,10 +622,17 @@ jobs:
           Add-Content $env:GITHUB_ENV "PKG_CONFIG_EXECUTABLE=$pkgconf"
           Add-Content $env:GITHUB_ENV "VCPKG_ROOT=$vcpkgRoot"
       - name: Setup sccache
+        if: ${{ matrix.arch == 'x64' }}
         uses: mozilla-actions/sccache-action@v0.0.9
       - name: Configure sccache
+        if: ${{ matrix.arch == 'x64' }}
         run: |
           echo "SCCACHE_GHA_ENABLED=true" >> $env:GITHUB_ENV
+      - name: Disable sccache for arm64 Visual Studio builds
+        if: ${{ matrix.arch == 'arm64' }}
+        run: |
+          Add-Content $env:GITHUB_ENV "CMAKE_C_COMPILER_LAUNCHER="
+          Add-Content $env:GITHUB_ENV "CMAKE_CXX_COMPILER_LAUNCHER="
       - name: Install Vulkan SDK
         if: ${{ matrix.needs_vulkan }}
         run: |
