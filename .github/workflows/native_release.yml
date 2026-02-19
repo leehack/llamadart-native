@@ -16,6 +16,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: native-release-${{ github.ref_name }}
+  cancel-in-progress: false
+
 env:
   CMAKE_C_COMPILER_LAUNCHER: ccache
   CMAKE_CXX_COMPILER_LAUNCHER: ccache
@@ -799,12 +803,30 @@ jobs:
           github_token: ${{ github.token }}
       - name: Commit and push submodule update
         run: |
+          set -euo pipefail
+
           if git diff --quiet -- third_party/llama.cpp; then
             echo "llama.cpp submodule already at ${{ needs.resolve-tag.outputs.tag }}"
             exit 0
           fi
+
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add third_party/llama.cpp
           git commit -m "chore: bump llama.cpp submodule to ${{ needs.resolve-tag.outputs.tag }}"
-          git push origin HEAD:${{ github.ref_name }}
+
+          # main can move while this long workflow is running. Rebase and retry
+          # so submodule bump is applied on top of the latest branch tip.
+          for attempt in 1 2 3; do
+            if git push origin HEAD:${{ github.ref_name }}; then
+              echo "Submodule update pushed on attempt ${attempt}."
+              exit 0
+            fi
+
+            echo "Push rejected (attempt ${attempt}); rebasing onto origin/${{ github.ref_name }} and retrying..."
+            git fetch origin "${{ github.ref_name }}"
+            git rebase "origin/${{ github.ref_name }}"
+          done
+
+          echo "Failed to push submodule update after retries."
+          exit 1
