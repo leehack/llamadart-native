@@ -633,6 +633,17 @@ def build_windows_dependency_search_roots(primary_libs: list[Path]) -> list[Path
             for tool_nested_bin in sorted(installed.glob("*/tools/*/*/bin")):
                 roots.append(tool_nested_bin)
 
+    vc_tools_redist = os.environ.get("VCToolsRedistDir")
+    if vc_tools_redist:
+        vc_redist_root = Path(vc_tools_redist)
+        roots.append(vc_redist_root)
+        for arch_dir in ("arm64", "x64", "x86"):
+            arch_root = vc_redist_root / arch_dir
+            roots.append(arch_root)
+            if arch_root.is_dir():
+                for redist_dir in sorted([p for p in arch_root.iterdir() if p.is_dir()]):
+                    roots.append(redist_dir)
+
     unique_roots: list[Path] = []
     seen: set[str] = set()
     for root in roots:
@@ -649,15 +660,19 @@ def build_windows_dependency_search_roots(primary_libs: list[Path]) -> list[Path
 
 def resolve_windows_dependency(name: str, roots: list[Path]) -> Path | None:
     lowered = name.lower()
+    aliases: list[str] = [name]
+    if lowered == "libomp140.aarch64.dll":
+        aliases.append("libomp140.dll")
 
     for root in roots:
-        direct = root / name
-        if direct.is_file():
-            return direct
+        for alias in aliases:
+            direct = root / alias
+            if direct.is_file():
+                return direct
 
-        direct_lower = root / lowered
-        if direct_lower.is_file():
-            return direct_lower
+            direct_lower = root / alias.lower()
+            if direct_lower.is_file():
+                return direct_lower
 
     # Support versioned name variants if imported name is generic.
     if "*" not in name and name.endswith(".dll"):
