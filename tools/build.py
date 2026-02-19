@@ -7,6 +7,7 @@ import os
 import platform
 import shutil
 import subprocess
+from fnmatch import fnmatch
 from functools import lru_cache
 from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -43,6 +44,40 @@ WINDOWS_VCPKG_TRIPLETS = {"x64": "x64-windows", "arm64": "arm64-windows"}
 ANDROID_BACKENDS = ("full", "vulkan", "opencl")
 LINUX_BACKENDS = ("full", "vulkan", "cuda", "hip", "blas")
 WINDOWS_BACKENDS = ("full", "vulkan", "cuda", "blas")
+
+WINDOWS_SYSTEM_DLL_PREFIXES = (
+    "api-ms-win-",
+    "ext-ms-",
+)
+WINDOWS_SYSTEM_DLLS = {
+    "kernel32.dll",
+    "kernelbase.dll",
+    "ntdll.dll",
+    "user32.dll",
+    "advapi32.dll",
+    "bcrypt.dll",
+    "ws2_32.dll",
+    "ole32.dll",
+    "oleaut32.dll",
+    "shell32.dll",
+    "sechost.dll",
+    "rpcrt4.dll",
+    "combase.dll",
+    "comdlg32.dll",
+    "gdi32.dll",
+    "gdi32full.dll",
+    "imm32.dll",
+    "msvcrt.dll",
+    "ucrtbase.dll",
+    "msvcp140.dll",
+    "msvcp140_1.dll",
+    "vcruntime140.dll",
+    "vcruntime140_1.dll",
+    "concrt140.dll",
+    "vulkan-1.dll",
+    "nvcuda.dll",
+    "opencl.dll",
+}
 
 
 def fail(message: str) -> None:
@@ -459,12 +494,185 @@ def copy_output(src: Path, dst: Path) -> None:
 
 def copy_runtime_libraries(build_dir: Path, out_dir: Path) -> None:
     libs = collect_runtime_libraries(build_dir)
+    libs.extend(collect_windows_runtime_dependencies(libs))
+    unique: dict[str, Path] = {}
+    for lib in libs:
+        key = lib.name.lower()
+        if key not in unique:
+            unique[key] = lib
+    libs = [unique[k] for k in sorted(unique)]
+
     reset_dir(out_dir)
 
     for src in libs:
         copy_output(src, out_dir / src.name)
 
     print(f"Copied {len(libs)} runtime libraries to {out_dir.relative_to(REPO_ROOT)}")
+
+
+def collect_windows_runtime_dependencies(primary_libs: list[Path]) -> list[Path]:
+    if platform.system().lower() != "windows":
+        return []
+
+    if not primary_libs:
+        return []
+
+    roots = build_windows_dependency_search_roots(primary_libs)
+    resolved: dict[str, Path] = {}
+    missing: set[str] = set()
+    queue: list[Path] = list(primary_libs)
+    visited_paths: set[str] = set()
+
+    while queue:
+        current = queue.pop(0)
+        current_key = str(current).lower()
+        if current_key in visited_paths:
+            continue
+        visited_paths.add(current_key)
+
+        for dep in sorted(read_windows_dependents(current)):
+            dep_key = dep.lower()
+            if dep_key in resolved:
+                continue
+            candidate = resolve_windows_dependency(dep, roots)
+            if candidate is None:
+                missing.add(dep)
+                continue
+            resolved[dep_key] = candidate
+            queue.append(candidate)
+
+    if missing:
+        fail(
+            "Missing Windows runtime dependencies required by backend modules: "
+            + ", ".join(sorted(missing))
+        )
+
+    return [resolved[k] for k in sorted(resolved)]
+
+
+def read_windows_dependents(dll_path: Path) -> set[str]:
+    if platform.system().lower() != "windows":
+        return set()
+
+    dumpbin = shutil.which("dumpbin")
+    if not dumpbin:
+        fail("dumpbin is required to inspect Windows DLL dependencies")
+
+    cmd = [dumpbin, "/dependents", str(dll_path)]
+    result = subprocess.run(
+        cmd,
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        fail(
+            f"Failed to inspect DLL dependencies via dumpbin for {dll_path}: "
+            f"{result.stdout}\n{result.stderr}"
+        )
+
+    dependencies: set[str] = set()
+    for raw_line in result.stdout.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if ".dll" not in line.lower():
+            continue
+        name = line.split()[0].lower()
+        if not name.endswith(".dll"):
+            continue
+        if is_windows_system_dependency(name):
+            continue
+        dependencies.add(name)
+
+    return dependencies
+
+
+def is_windows_system_dependency(name: str) -> bool:
+    lowered = name.lower()
+    if lowered in WINDOWS_SYSTEM_DLLS:
+        return True
+    return lowered.startswith(WINDOWS_SYSTEM_DLL_PREFIXES)
+
+
+def build_windows_dependency_search_roots(primary_libs: list[Path]) -> list[Path]:
+    roots: list[Path] = []
+
+    for lib in primary_libs:
+        roots.append(lib.parent)
+
+    path_entries = os.environ.get("PATH", "").split(os.pathsep)
+    for entry in path_entries:
+        if not entry:
+            continue
+        roots.append(Path(entry))
+
+    cuda_path = os.environ.get("CUDA_PATH")
+    if cuda_path:
+        roots.append(Path(cuda_path) / "bin")
+
+    cuda_root = Path("C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA")
+    if cuda_root.is_dir():
+        versions = sorted(
+            [p for p in cuda_root.iterdir() if p.is_dir()],
+            key=lambda p: p.name,
+            reverse=True,
+        )
+        for version in versions:
+            roots.append(version / "bin")
+
+    vcpkg_root = detect_vcpkg_root()
+    if vcpkg_root:
+        installed = vcpkg_root / "installed"
+        if installed.is_dir():
+            for triplet_bin in sorted(installed.glob("*/bin")):
+                roots.append(triplet_bin)
+
+    unique_roots: list[Path] = []
+    seen: set[str] = set()
+    for root in roots:
+        if not root.is_dir():
+            continue
+        key = str(root).lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        unique_roots.append(root)
+
+    return unique_roots
+
+
+def resolve_windows_dependency(name: str, roots: list[Path]) -> Path | None:
+    lowered = name.lower()
+
+    for root in roots:
+        direct = root / name
+        if direct.is_file():
+            return direct
+
+        direct_lower = root / lowered
+        if direct_lower.is_file():
+            return direct_lower
+
+    # Support versioned name variants if imported name is generic.
+    if "*" not in name and name.endswith(".dll"):
+        stem = lowered[:-4]
+        wildcard = f"{stem}*.dll"
+        for root in roots:
+            matches = sorted(
+                [
+                    p
+                    for p in root.glob("*.dll")
+                    if fnmatch(p.name.lower(), wildcard)
+                ],
+                key=lambda p: p.name.lower(),
+                reverse=True,
+            )
+            if matches:
+                return matches[0]
+
+    return None
 
 
 def build_apple(args: argparse.Namespace) -> None:

@@ -45,6 +45,10 @@ Release assets contain:
 - Apple: consolidated `libllamadart` per target.
 - Non-Apple core libs: `llamadart`, `llama`, `ggml`, `ggml-base` (and `mtmd` where produced)
 - Non-Apple backend libs: `ggml-<backend>` modules (`ggml-vulkan`, `ggml-opencl`, etc.)
+- Windows backend runtime deps:
+  - CUDA lanes include CUDA runtime DLLs required by `ggml-cuda` (for example `cudart64_*.dll`, `cublas64_*.dll`).
+  - BLAS lanes include `openblas*.dll` required by `ggml-blas`.
+  - NVIDIA driver DLLs (for example `nvcuda.dll`) are not bundled and are provided by GPU drivers.
 - Headers archive: `llamadart-native-headers-<tag>.tar.gz` with `llama_cpp/...` and `libllamadart/...` roots, including llama.cpp, ggml, mtmd, and `llama_dart_wrapper.h`.
 
 Consumers can choose which backend libs to include in their package and load at runtime.

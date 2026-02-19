@@ -600,6 +600,19 @@ jobs:
           if (-not (Get-ChildItem $out -Filter "${{ matrix.backend_glob }}" -ErrorAction SilentlyContinue | Select-Object -First 1)) {
             throw "Missing backend DLL '${{ matrix.backend_glob }}' in $out"
           }
+          if ("${{ matrix.backend }}" -eq "cuda") {
+            if (-not (Get-ChildItem $out -Filter "cudart64_*.dll" -ErrorAction SilentlyContinue | Select-Object -First 1)) {
+              throw "Missing CUDA runtime dependency (cudart64_*.dll) in $out"
+            }
+            if (-not (Get-ChildItem $out -Filter "cublas64_*.dll" -ErrorAction SilentlyContinue | Select-Object -First 1)) {
+              throw "Missing CUDA runtime dependency (cublas64_*.dll) in $out"
+            }
+          }
+          if ("${{ matrix.backend }}" -eq "blas") {
+            if (-not (Get-ChildItem $out -Filter "openblas*.dll" -ErrorAction SilentlyContinue | Select-Object -First 1)) {
+              throw "Missing BLAS runtime dependency (openblas*.dll) in $out"
+            }
+          }
           if ("${{ matrix.include_core }}" -eq "true") {
             if (-not (Get-ChildItem $out -Filter "*llamadart*.dll" -ErrorAction SilentlyContinue | Select-Object -First 1)) {
               throw "Missing core wrapper DLL in $out"
@@ -623,7 +636,18 @@ jobs:
           if ("${{ matrix.include_core }}" -eq "true") {
             $files = Get-ChildItem $out -Filter "*.dll" -ErrorAction Stop
           } else {
-            $files = Get-ChildItem $out -Filter "${{ matrix.backend_glob }}" -ErrorAction Stop
+            $files = @(
+              Get-ChildItem $out -Filter "${{ matrix.backend_glob }}" -ErrorAction Stop
+            )
+            if ("${{ matrix.backend }}" -eq "cuda") {
+              $files += Get-ChildItem $out -Filter "cudart64_*.dll" -ErrorAction SilentlyContinue
+              $files += Get-ChildItem $out -Filter "cublas64_*.dll" -ErrorAction SilentlyContinue
+              $files += Get-ChildItem $out -Filter "cublasLt64_*.dll" -ErrorAction SilentlyContinue
+            }
+            if ("${{ matrix.backend }}" -eq "blas") {
+              $files += Get-ChildItem $out -Filter "openblas*.dll" -ErrorAction SilentlyContinue
+            }
+            $files = $files | Sort-Object FullName -Unique
           }
           if (-not $files) {
             throw "No files staged for upload"
