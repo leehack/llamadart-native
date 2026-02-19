@@ -628,6 +628,10 @@ def build_windows_dependency_search_roots(primary_libs: list[Path]) -> list[Path
         if installed.is_dir():
             for triplet_bin in sorted(installed.glob("*/bin")):
                 roots.append(triplet_bin)
+            for tool_bin in sorted(installed.glob("*/tools/*/bin")):
+                roots.append(tool_bin)
+            for tool_nested_bin in sorted(installed.glob("*/tools/*/*/bin")):
+                roots.append(tool_nested_bin)
 
     unique_roots: list[Path] = []
     seen: set[str] = set()
