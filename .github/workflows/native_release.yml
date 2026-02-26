@@ -132,21 +132,46 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Validate Android backend artifacts
         run: |
+          set -euo pipefail
+
           OUT_DIR="bin/android/${{ matrix.out_arch }}"
           test -f "$OUT_DIR/${{ matrix.backend_glob }}" || { echo "Missing $OUT_DIR/${{ matrix.backend_glob }}"; exit 1; }
-          if [ "${{ matrix.android_abi }}" = "arm64-v8a" ] && [ "${{ matrix.include_core }}" = "true" ]; then
-            expected_cpu_variants=(
-              "libggml-cpu-android_armv8.0_1.so"
-              "libggml-cpu-android_armv8.2_1.so"
-              "libggml-cpu-android_armv8.2_2.so"
-              "libggml-cpu-android_armv8.6_1.so"
-              "libggml-cpu-android_armv9.0_1.so"
-              "libggml-cpu-android_armv9.2_1.so"
-              "libggml-cpu-android_armv9.2_2.so"
-            )
-            for lib in "${expected_cpu_variants[@]}"; do
-              test -f "$OUT_DIR/$lib" || { echo "Missing $OUT_DIR/$lib"; exit 1; }
-            done
+          if [ "${{ matrix.android_abi }}" = "arm64-v8a" ]; then
+            if [ "${{ matrix.include_core }}" = "true" ]; then
+              expected_cpu_variants=(
+                "libggml-cpu-android_armv8.0_1.so"
+                "libggml-cpu-android_armv8.2_1.so"
+                "libggml-cpu-android_armv8.2_2.so"
+                "libggml-cpu-android_armv8.6_1.so"
+                "libggml-cpu-android_armv9.0_1.so"
+                "libggml-cpu-android_armv9.2_1.so"
+                "libggml-cpu-android_armv9.2_2.so"
+              )
+              for lib in "${expected_cpu_variants[@]}"; do
+                test -f "$OUT_DIR/$lib" || { echo "Missing $OUT_DIR/$lib"; exit 1; }
+              done
+            fi
+
+            CPU_LIB="$OUT_DIR/libggml-cpu-android_armv8.0_1.so"
+            if [ ! -f "$CPU_LIB" ]; then
+              CPU_LIB="$OUT_DIR/libggml-cpu.so"
+            fi
+            test -f "$CPU_LIB" || { echo "Missing $CPU_LIB"; exit 1; }
+
+            OBJDUMP="$(find "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt" -type f -name llvm-objdump | head -n 1)"
+            if [ -z "$OBJDUMP" ]; then
+              echo "Unable to locate llvm-objdump in ANDROID_NDK_HOME" >&2
+              exit 1
+            fi
+
+            DISASM_FILE="$(mktemp)"
+            trap 'rm -f "$DISASM_FILE"' EXIT
+            "$OBJDUMP" -d "$CPU_LIB" > "$DISASM_FILE"
+
+            if grep -Eiq 'stlurh?|stlurb' "$DISASM_FILE"; then
+              echo "Found unsupported armv8.4-a LRCPC2 STLUR instructions in $CPU_LIB" >&2
+              exit 1
+            fi
           fi
       - name: Stage upload payload
         run: |
