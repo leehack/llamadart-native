@@ -137,7 +137,25 @@ jobs:
           OUT_DIR="bin/android/${{ matrix.out_arch }}"
           test -f "$OUT_DIR/${{ matrix.backend_glob }}" || { echo "Missing $OUT_DIR/${{ matrix.backend_glob }}"; exit 1; }
           if [ "${{ matrix.android_abi }}" = "arm64-v8a" ]; then
-            CPU_LIB="$OUT_DIR/libggml-cpu.so"
+            if [ "${{ matrix.include_core }}" = "true" ]; then
+              expected_cpu_variants=(
+                "libggml-cpu-android_armv8.0_1.so"
+                "libggml-cpu-android_armv8.2_1.so"
+                "libggml-cpu-android_armv8.2_2.so"
+                "libggml-cpu-android_armv8.6_1.so"
+                "libggml-cpu-android_armv9.0_1.so"
+                "libggml-cpu-android_armv9.2_1.so"
+                "libggml-cpu-android_armv9.2_2.so"
+              )
+              for lib in "${expected_cpu_variants[@]}"; do
+                test -f "$OUT_DIR/$lib" || { echo "Missing $OUT_DIR/$lib"; exit 1; }
+              done
+            fi
+
+            CPU_LIB="$OUT_DIR/libggml-cpu-android_armv8.0_1.so"
+            if [ ! -f "$CPU_LIB" ]; then
+              CPU_LIB="$OUT_DIR/libggml-cpu.so"
+            fi
             test -f "$CPU_LIB" || { echo "Missing $CPU_LIB"; exit 1; }
 
             OBJDUMP="$(find "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt" -type f -name llvm-objdump | head -n 1)"
