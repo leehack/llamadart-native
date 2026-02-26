@@ -235,6 +235,7 @@ def android_backend_cache_vars(abi: str, backend: str) -> dict[str, str]:
     cache_vars: dict[str, str] = {
         "GGML_VULKAN": "OFF",
         "GGML_OPENCL": "OFF",
+        "GGML_CPU_ALL_VARIANTS": "ON" if abi == "arm64-v8a" else "OFF",
         "GGML_CPU_KLEIDIAI": "ON" if abi == "arm64-v8a" else "OFF",
     }
 
@@ -924,7 +925,7 @@ def print_presets() -> None:
     presets = [
         "apple: target=macos-arm64|macos-x86_64|ios-device-arm64|ios-sim-arm64|ios-sim-x86_64 (consolidated: metal+cpu in one dylib)",
         "linux: arch=x64|arm64 backend=full|vulkan|cuda|hip|blas (x64 full=vulkan+cuda+blas+cpu, arm64 full=vulkan+blas+kleidi+cpu, hip=x64 only)",
-        "android: abi=arm64-v8a|x86_64|all backend=full|vulkan|opencl (arm64 full=vulkan+opencl+kleidi+cpu, x86_64 full=vulkan+opencl+cpu)",
+        "android: abi=arm64-v8a|x86_64|all backend=full|vulkan|opencl (arm64 full=vulkan+opencl+kleidi+cpu variants, x86_64 full=vulkan+opencl+cpu)",
         "windows: arch=x64|arm64 backend=full|vulkan|cuda|blas (x64 full=vulkan+cuda+blas+cpu, arm64 full=vulkan+blas+kleidi+cpu)",
     ]
     for p in presets:
