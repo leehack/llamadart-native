@@ -132,7 +132,7 @@ jobs:
         run: python3 tools/build.py android --abi ${{ matrix.android_abi }} --backend ${{ matrix.backend }}
       - name: ccache stats
         if: always()
-        run: ccache --show-stats
+        run: ccache --show-stats || true
       - name: Append ccache stats to summary
         if: always()
         run: |
@@ -277,7 +277,7 @@ jobs:
         run: python3 tools/build.py apple --target ${{ matrix.target }}
       - name: ccache stats
         if: always()
-        run: ccache --show-stats
+        run: ccache --show-stats || true
       - name: Append ccache stats to summary
         if: always()
         run: |
@@ -351,6 +351,29 @@ jobs:
           github_token: ${{ github.token }}
       - name: Install build deps
         run: |
+          apt_get_update() {
+            for attempt in 1 2 3; do
+              if sudo apt-get -o Acquire::Retries=3 update; then
+                return 0
+              fi
+              if [ "$attempt" = "3" ]; then
+                return 1
+              fi
+              sleep $((attempt * 15))
+            done
+          }
+          apt_get_install() {
+            for attempt in 1 2 3; do
+              if sudo apt-get -o Acquire::Retries=3 install -y "$@"; then
+                return 0
+              fi
+              if [ "$attempt" = "3" ]; then
+                return 1
+              fi
+              sleep $((attempt * 15))
+            done
+          }
+
           if [ "${{ matrix.arch }}" = "arm64" ]; then
             sudo dpkg --add-architecture arm64
             source /etc/os-release
@@ -379,22 +402,22 @@ jobs:
                 "Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg"
             } | sudo tee /etc/apt/sources.list.d/ubuntu.sources >/dev/null
           fi
-          sudo apt-get update
-          sudo apt-get install -y ccache ninja-build pkg-config make
+          apt_get_update
+          apt_get_install ccache ninja-build pkg-config make
           if [ "${{ matrix.arch }}" = "arm64" ]; then
-            sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+            apt_get_install gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
           fi
           if [ "${{ matrix.needs_vulkan }}" = "true" ]; then
-            sudo apt-get install -y libvulkan-dev glslc
+            apt_get_install libvulkan-dev glslc
             if [ "${{ matrix.arch }}" = "arm64" ]; then
-              sudo apt-get install -y libvulkan-dev:arm64
+              apt_get_install libvulkan-dev:arm64
             fi
           fi
           if [ "${{ matrix.needs_openblas }}" = "true" ]; then
             if [ "${{ matrix.arch }}" = "arm64" ]; then
-              sudo apt-get install -y libopenblas-dev:arm64
+              apt_get_install libopenblas-dev:arm64
             else
-              sudo apt-get install -y libopenblas-dev
+              apt_get_install libopenblas-dev
             fi
           fi
           if [ "${{ matrix.needs_cuda }}" = "true" ]; then
@@ -403,6 +426,8 @@ jobs:
               --version "${CUDA_REDIST_VERSION}" \
               --platform linux-x86_64 \
               --destination "${cuda_root}"
+            test -f "${cuda_root}/lib64/libcudadevrt.a" || { echo "Missing CUDA device runtime static library" >&2; exit 1; }
+            test -f "${cuda_root}/lib64/libcudart_static.a" || { echo "Missing CUDA runtime static library" >&2; exit 1; }
             {
               echo "${cuda_root}/bin"
               echo "${cuda_root}/nvvm/bin"
@@ -410,7 +435,7 @@ jobs:
             {
               echo "CUDA_PATH=${cuda_root}"
               echo "CUDAToolkit_ROOT=${cuda_root}"
-              echo "LD_LIBRARY_PATH=${cuda_root}/lib:${cuda_root}/lib/stubs:${LD_LIBRARY_PATH:-}"
+              echo "LD_LIBRARY_PATH=${cuda_root}/lib64:${cuda_root}/lib64/stubs:${cuda_root}/lib:${cuda_root}/lib/stubs:${LD_LIBRARY_PATH:-}"
             } >> "${GITHUB_ENV}"
             "${cuda_root}/bin/nvcc" --version | tee nvcc-version.txt
             grep -q 'release 12\.8' nvcc-version.txt || {
@@ -435,7 +460,7 @@ jobs:
         run: python3 tools/build.py linux --arch "${{ matrix.arch }}" --backend "${{ matrix.backend }}"
       - name: ccache stats
         if: always()
-        run: ccache --show-stats
+        run: ccache --show-stats || true
       - name: Append ccache stats to summary
         if: always()
         run: |
@@ -508,8 +533,30 @@ jobs:
     steps:
       - name: Install Git
         run: |
-          apt-get update
-          DEBIAN_FRONTEND=noninteractive apt-get install -y git
+          apt_get_update() {
+            for attempt in 1 2 3; do
+              if apt-get -o Acquire::Retries=3 update; then
+                return 0
+              fi
+              if [ "$attempt" = "3" ]; then
+                return 1
+              fi
+              sleep $((attempt * 15))
+            done
+          }
+          apt_get_install() {
+            for attempt in 1 2 3; do
+              if DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=3 install -y "$@"; then
+                return 0
+              fi
+              if [ "$attempt" = "3" ]; then
+                return 1
+              fi
+              sleep $((attempt * 15))
+            done
+          }
+          apt_get_update
+          apt_get_install git
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -522,7 +569,18 @@ jobs:
           github_token: ${{ github.token }}
       - name: Install build deps
         run: |
-          DEBIAN_FRONTEND=noninteractive apt-get install -y build-essential binutils ccache ninja-build pkg-config python3 python3-pip rocblas-dev hipblas-dev
+          apt_get_install() {
+            for attempt in 1 2 3; do
+              if DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=3 install -y "$@"; then
+                return 0
+              fi
+              if [ "$attempt" = "3" ]; then
+                return 1
+              fi
+              sleep $((attempt * 15))
+            done
+          }
+          apt_get_install build-essential binutils ccache ninja-build pkg-config python3 python3-pip rocblas-dev hipblas-dev
           python3 -m pip install --upgrade cmake
           cmake --version
       - name: Restore ccache
@@ -541,7 +599,7 @@ jobs:
         run: python3 tools/build.py linux --arch x64 --backend hip
       - name: ccache stats
         if: always()
-        run: ccache --show-stats
+        run: ccache --show-stats || true
       - name: Append ccache stats to summary
         if: always()
         run: |

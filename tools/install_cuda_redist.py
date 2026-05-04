@@ -174,6 +174,19 @@ def install_component(
         copy_tree_contents(extracted, destination)
 
 
+def normalize_linux_layout(destination: Path) -> None:
+    lib = destination / "lib"
+    lib64 = destination / "lib64"
+    if not lib.exists() or lib64.exists():
+        return
+
+    try:
+        lib64.symlink_to("lib", target_is_directory=True)
+    except OSError:
+        shutil.copytree(lib, lib64, dirs_exist_ok=True)
+    print(f"Linked CUDA lib64 layout: {lib64} -> {lib}")
+
+
 def main() -> None:
     args = parse_args()
     manifest_url = f"{BASE_URL}/redistrib_{args.version}.json"
@@ -198,6 +211,9 @@ def main() -> None:
                 continue
             install_component(component, entry, args.destination, temp_dir)
             installed.append(component)
+
+    if args.platform.startswith("linux-"):
+        normalize_linux_layout(args.destination)
 
     print(
         "Installed CUDA components into "
