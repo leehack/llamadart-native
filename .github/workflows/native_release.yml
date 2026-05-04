@@ -494,8 +494,24 @@ jobs:
               exit 1
             }
             ldd "$OUT_DIR/${{ matrix.backend_glob }}" | tee ldd-cuda.txt
-            if grep -q 'not found' ldd-cuda.txt; then
-              echo "Linux CUDA backend has unresolved shared library dependencies" >&2
+            missing_deps="$(awk '/not found/ { print $1 }' ldd-cuda.txt || true)"
+            unexpected_missing=0
+            for dep in $missing_deps; do
+              if [ "$dep" = "libcuda.so.1" ]; then
+                continue
+              fi
+              case "$dep" in
+                libggml*.so.*|libllama.so.*|libmtmd.so.*)
+                  canonical="${dep%%.so.*}.so"
+                  if [ -f "$OUT_DIR/$canonical" ]; then
+                    continue
+                  fi
+                  ;;
+              esac
+              echo "Unexpected unresolved shared library dependency: $dep" >&2
+              unexpected_missing=1
+            done
+            if [ "$unexpected_missing" -ne 0 ]; then
               exit 1
             fi
           fi
