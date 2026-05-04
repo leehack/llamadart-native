@@ -4,7 +4,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-IMAGE_TAG="llamadart-native-linux-builder:ubuntu24.04"
+CUDA_VERSION="${CUDA_VERSION:-12.8.1}"
+IMAGE_TAG="llamadart-native-linux-builder:cuda${CUDA_VERSION}-ubuntu24.04"
 DOCKER_PLATFORM="${DOCKER_PLATFORM:-linux/amd64}"
 ARCH="x64"
 JOBS=""
@@ -80,6 +81,7 @@ build_image() {
   echo "Building image ${IMAGE_TAG} (${DOCKER_PLATFORM}) ..."
   docker build \
     --platform "${DOCKER_PLATFORM}" \
+    --build-arg "CUDA_VERSION=${CUDA_VERSION}" \
     -f "${REPO_ROOT}/tools/docker/linux-builder.Dockerfile" \
     -t "${IMAGE_TAG}" \
     "${REPO_ROOT}/tools/docker"
