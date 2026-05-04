@@ -488,8 +488,9 @@ jobs:
               --include='CMakeCache.txt' \
               --include='*.ninja' \
               --include='*.vcxproj' \
-              '120a-real' build/linux-x64-full >/dev/null || {
-              echo "Expected CUDA Blackwell architecture 120a-real in linux CUDA build" >&2
+              -E '120a-real|compute_120a|sm_120a' build/linux-x64-full >/dev/null || \
+              strings "$OUT_DIR/${{ matrix.backend_glob }}" | grep -E 'compute_120a|sm_120a' >/dev/null || {
+              echo "Expected CUDA Blackwell architecture marker in linux CUDA build" >&2
               exit 1
             }
             ldd "$OUT_DIR/${{ matrix.backend_glob }}" | tee ldd-cuda.txt
@@ -819,8 +820,8 @@ jobs:
               throw "Missing CMake cache at $cache"
             }
             $cudaArchFiles = Get-ChildItem "build/wx64" -Recurse -File -Include CMakeCache.txt,*.ninja,*.vcxproj
-            if (-not ($cudaArchFiles | Select-String -Pattern "120a-real" -Quiet)) {
-              throw "Expected CUDA Blackwell architecture 120a-real in windows CUDA build"
+            if (-not ($cudaArchFiles | Select-String -Pattern "120a-real|compute_120a|sm_120a" -Quiet)) {
+              throw "Expected CUDA Blackwell architecture marker in windows CUDA build"
             }
             $cudaBin = Join-Path $env:CUDA_PATH "bin"
             $cudaDlls = @()
