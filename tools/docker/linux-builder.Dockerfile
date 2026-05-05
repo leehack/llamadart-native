@@ -1,5 +1,6 @@
 # syntax=docker/dockerfile:1.7
-FROM ubuntu:24.04
+ARG CUDA_VERSION=12.8.1
+FROM nvidia/cuda:${CUDA_VERSION}-devel-ubuntu24.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -22,7 +23,6 @@ RUN dpkg --add-architecture arm64 \
       libvulkan-dev \
       libvulkan-dev:arm64 \
       ninja-build \
-      nvidia-cuda-toolkit \
       pkg-config \
       python3 \
     && rm -rf /var/lib/apt/lists/*

@@ -22,6 +22,7 @@ concurrency:
 
 env:
   ANDROID_NDK_VERSION: 28.2.13676358
+  CUDA_REDIST_VERSION: 12.8.1
   CMAKE_C_COMPILER_LAUNCHER: ccache
   CMAKE_CXX_COMPILER_LAUNCHER: ccache
   CMAKE_CUDA_COMPILER_LAUNCHER: ccache
@@ -131,7 +132,7 @@ jobs:
         run: python3 tools/build.py android --abi ${{ matrix.android_abi }} --backend ${{ matrix.backend }}
       - name: ccache stats
         if: always()
-        run: ccache --show-stats
+        run: ccache --show-stats || true
       - name: Append ccache stats to summary
         if: always()
         run: |
@@ -276,7 +277,7 @@ jobs:
         run: python3 tools/build.py apple --target ${{ matrix.target }}
       - name: ccache stats
         if: always()
-        run: ccache --show-stats
+        run: ccache --show-stats || true
       - name: Append ccache stats to summary
         if: always()
         run: |
@@ -350,6 +351,29 @@ jobs:
           github_token: ${{ github.token }}
       - name: Install build deps
         run: |
+          apt_get_update() {
+            for attempt in 1 2 3; do
+              if sudo apt-get -o Acquire::Retries=3 update; then
+                return 0
+              fi
+              if [ "$attempt" = "3" ]; then
+                return 1
+              fi
+              sleep $((attempt * 15))
+            done
+          }
+          apt_get_install() {
+            for attempt in 1 2 3; do
+              if sudo apt-get -o Acquire::Retries=3 install -y "$@"; then
+                return 0
+              fi
+              if [ "$attempt" = "3" ]; then
+                return 1
+              fi
+              sleep $((attempt * 15))
+            done
+          }
+
           if [ "${{ matrix.arch }}" = "arm64" ]; then
             sudo dpkg --add-architecture arm64
             source /etc/os-release
@@ -378,26 +402,46 @@ jobs:
                 "Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg"
             } | sudo tee /etc/apt/sources.list.d/ubuntu.sources >/dev/null
           fi
-          sudo apt-get update
-          sudo apt-get install -y ccache ninja-build pkg-config make
+          apt_get_update
+          apt_get_install ccache ninja-build pkg-config make
           if [ "${{ matrix.arch }}" = "arm64" ]; then
-            sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+            apt_get_install gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
           fi
           if [ "${{ matrix.needs_vulkan }}" = "true" ]; then
-            sudo apt-get install -y libvulkan-dev glslc
+            apt_get_install libvulkan-dev glslc
             if [ "${{ matrix.arch }}" = "arm64" ]; then
-              sudo apt-get install -y libvulkan-dev:arm64
+              apt_get_install libvulkan-dev:arm64
             fi
           fi
           if [ "${{ matrix.needs_openblas }}" = "true" ]; then
             if [ "${{ matrix.arch }}" = "arm64" ]; then
-              sudo apt-get install -y libopenblas-dev:arm64
+              apt_get_install libopenblas-dev:arm64
             else
-              sudo apt-get install -y libopenblas-dev
+              apt_get_install libopenblas-dev
             fi
           fi
           if [ "${{ matrix.needs_cuda }}" = "true" ]; then
-            sudo apt-get install -y nvidia-cuda-toolkit
+            cuda_root="${RUNNER_TEMP}/cuda-${CUDA_REDIST_VERSION}"
+            python3 tools/install_cuda_redist.py \
+              --version "${CUDA_REDIST_VERSION}" \
+              --platform linux-x86_64 \
+              --destination "${cuda_root}"
+            test -f "${cuda_root}/lib64/libcudadevrt.a" || { echo "Missing CUDA device runtime static library" >&2; exit 1; }
+            test -f "${cuda_root}/lib64/libcudart_static.a" || { echo "Missing CUDA runtime static library" >&2; exit 1; }
+            {
+              echo "${cuda_root}/bin"
+              echo "${cuda_root}/nvvm/bin"
+            } >> "${GITHUB_PATH}"
+            {
+              echo "CUDA_PATH=${cuda_root}"
+              echo "CUDAToolkit_ROOT=${cuda_root}"
+              echo "LD_LIBRARY_PATH=${cuda_root}/lib64:${cuda_root}/lib64/stubs:${cuda_root}/lib:${cuda_root}/lib/stubs:${LD_LIBRARY_PATH:-}"
+            } >> "${GITHUB_ENV}"
+            "${cuda_root}/bin/nvcc" --version | tee nvcc-version.txt
+            grep -q 'release 12\.8' nvcc-version.txt || {
+              echo "Expected CUDA ${CUDA_REDIST_VERSION} nvcc" >&2
+              exit 1
+            }
           fi
       - name: Restore ccache
         uses: actions/cache@v4
@@ -416,7 +460,7 @@ jobs:
         run: python3 tools/build.py linux --arch "${{ matrix.arch }}" --backend "${{ matrix.backend }}"
       - name: ccache stats
         if: always()
-        run: ccache --show-stats
+        run: ccache --show-stats || true
       - name: Append ccache stats to summary
         if: always()
         run: |
@@ -437,6 +481,40 @@ jobs:
               exit 1
             }
           done
+          if [ "${{ matrix.needs_cuda }}" = "true" ]; then
+            CACHE_FILE="build/linux-x64-full/CMakeCache.txt"
+            test -f "$CACHE_FILE" || { echo "Missing CMake cache at $CACHE_FILE"; exit 1; }
+            grep -R \
+              --include='CMakeCache.txt' \
+              --include='*.ninja' \
+              --include='*.vcxproj' \
+              -E '120a-real|compute_120a|sm_120a' build/linux-x64-full >/dev/null || \
+              strings "$OUT_DIR/${{ matrix.backend_glob }}" | grep -E 'compute_120a|sm_120a' >/dev/null || {
+              echo "Expected CUDA Blackwell architecture marker in linux CUDA build" >&2
+              exit 1
+            }
+            ldd "$OUT_DIR/${{ matrix.backend_glob }}" | tee ldd-cuda.txt
+            missing_deps="$(awk '/not found/ { print $1 }' ldd-cuda.txt || true)"
+            unexpected_missing=0
+            for dep in $missing_deps; do
+              if [ "$dep" = "libcuda.so.1" ]; then
+                continue
+              fi
+              case "$dep" in
+                libggml*.so.*|libllama.so.*|libmtmd.so.*)
+                  canonical="${dep%%.so.*}.so"
+                  if [ -f "$OUT_DIR/$canonical" ]; then
+                    continue
+                  fi
+                  ;;
+              esac
+              echo "Unexpected unresolved shared library dependency: $dep" >&2
+              unexpected_missing=1
+            done
+            if [ "$unexpected_missing" -ne 0 ]; then
+              exit 1
+            fi
+          fi
           if [ "${{ matrix.arch }}" = "arm64" ]; then
             CACHE_FILE="build/linux-arm64-full/CMakeCache.txt"
             test -f "$CACHE_FILE" || { echo "Missing CMake cache at $CACHE_FILE"; exit 1; }
@@ -472,8 +550,30 @@ jobs:
     steps:
       - name: Install Git
         run: |
-          apt-get update
-          DEBIAN_FRONTEND=noninteractive apt-get install -y git
+          apt_get_update() {
+            for attempt in 1 2 3; do
+              if apt-get -o Acquire::Retries=3 update; then
+                return 0
+              fi
+              if [ "$attempt" = "3" ]; then
+                return 1
+              fi
+              sleep $((attempt * 15))
+            done
+          }
+          apt_get_install() {
+            for attempt in 1 2 3; do
+              if DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=3 install -y "$@"; then
+                return 0
+              fi
+              if [ "$attempt" = "3" ]; then
+                return 1
+              fi
+              sleep $((attempt * 15))
+            done
+          }
+          apt_get_update
+          apt_get_install git
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -486,7 +586,18 @@ jobs:
           github_token: ${{ github.token }}
       - name: Install build deps
         run: |
-          DEBIAN_FRONTEND=noninteractive apt-get install -y build-essential binutils ccache ninja-build pkg-config python3 python3-pip rocblas-dev hipblas-dev
+          apt_get_install() {
+            for attempt in 1 2 3; do
+              if DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=3 install -y "$@"; then
+                return 0
+              fi
+              if [ "$attempt" = "3" ]; then
+                return 1
+              fi
+              sleep $((attempt * 15))
+            done
+          }
+          apt_get_install build-essential binutils ccache ninja-build pkg-config python3 python3-pip rocblas-dev hipblas-dev
           python3 -m pip install --upgrade cmake
           cmake --version
       - name: Restore ccache
@@ -505,7 +616,7 @@ jobs:
         run: python3 tools/build.py linux --arch x64 --backend hip
       - name: ccache stats
         if: always()
-        run: ccache --show-stats
+        run: ccache --show-stats || true
       - name: Append ccache stats to summary
         if: always()
         run: |
@@ -621,51 +732,23 @@ jobs:
       - name: Install Ninja
         if: ${{ matrix.arch == 'x64' }}
         run: choco install ninja -y
-      - name: Detect preinstalled CUDA Toolkit
-        if: ${{ matrix.needs_cuda }}
-        id: detect_cuda
-        run: |
-          $nvcc = $null
-          $cmd = Get-Command nvcc.exe -ErrorAction SilentlyContinue
-          if ($cmd) {
-            $nvcc = $cmd.Source
-          }
-          if (-not $nvcc) {
-            $candidates = Get-ChildItem "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA" -Directory -ErrorAction SilentlyContinue |
-              Sort-Object Name -Descending |
-              ForEach-Object { Join-Path $_.FullName "bin\nvcc.exe" }
-            $nvcc = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
-          }
-          if ($nvcc) {
-            $cudaBin = Split-Path $nvcc -Parent
-            Add-Content $env:GITHUB_PATH $cudaBin
-            Add-Content $env:GITHUB_ENV "CUDA_PATH=$(Split-Path $cudaBin -Parent)"
-            Add-Content $env:GITHUB_OUTPUT "found=true"
-            Write-Host "Using preinstalled CUDA: $nvcc"
-            & $nvcc --version
-          } else {
-            Add-Content $env:GITHUB_OUTPUT "found=false"
-            Write-Host "No preinstalled CUDA detected."
-          }
-      - name: Install CUDA Toolkit (minimal components)
-        if: ${{ matrix.needs_cuda && steps.detect_cuda.outputs.found != 'true' }}
-        uses: ./third_party/llama.cpp/.github/actions/windows-setup-cuda
-        with:
-          cuda_version: '12.4'
-      - name: Register CUDA in PATH
+      - name: Install CUDA Toolkit
         if: ${{ matrix.needs_cuda }}
         run: |
-          $cudaBin = Get-ChildItem "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA" -Directory -ErrorAction SilentlyContinue |
-            Sort-Object Name -Descending |
-            ForEach-Object { Join-Path $_.FullName "bin" } |
-            Where-Object { Test-Path (Join-Path $_ "nvcc.exe") } |
-            Select-Object -First 1
-          if (-not $cudaBin) {
-            throw "nvcc.exe not found after CUDA install"
+          $cudaRoot = Join-Path $env:ProgramFiles "NVIDIA GPU Computing Toolkit\CUDA\v12.8"
+          python tools/install_cuda_redist.py `
+            --version "${env:CUDA_REDIST_VERSION}" `
+            --platform windows-x86_64 `
+            --destination "$cudaRoot"
+          Add-Content $env:GITHUB_PATH (Join-Path $cudaRoot "bin")
+          Add-Content $env:GITHUB_PATH (Join-Path $cudaRoot "nvvm\bin")
+          Add-Content $env:GITHUB_ENV "CUDA_PATH=$cudaRoot"
+          Add-Content $env:GITHUB_ENV "CUDAToolkit_ROOT=$cudaRoot"
+          $nvccVersion = & (Join-Path $cudaRoot "bin\nvcc.exe") --version
+          $nvccVersion
+          if (($nvccVersion -join "`n") -notmatch 'release 12\.8') {
+            throw "Expected CUDA ${env:CUDA_REDIST_VERSION} nvcc"
           }
-          Add-Content $env:GITHUB_PATH $cudaBin
-          Add-Content $env:GITHUB_ENV "CUDA_PATH=$(Split-Path $cudaBin -Parent)"
-          & (Join-Path $cudaBin "nvcc.exe") --version
       - name: Restore vcpkg cache
         if: ${{ matrix.needs_openblas }}
         id: vcpkg-cache
@@ -744,6 +827,33 @@ jobs:
             }
             if (-not (Get-ChildItem $out -Filter "cublas64_*.dll" -ErrorAction SilentlyContinue | Select-Object -First 1)) {
               throw "Missing CUDA runtime dependency (cublas64_*.dll) in $out"
+            }
+            if (-not (Get-ChildItem $out -Filter "cublasLt64_*.dll" -ErrorAction SilentlyContinue | Select-Object -First 1)) {
+              throw "Missing CUDA runtime dependency (cublasLt64_*.dll) in $out"
+            }
+            $cache = "build/wx64/CMakeCache.txt"
+            if (-not (Test-Path $cache)) {
+              throw "Missing CMake cache at $cache"
+            }
+            $cudaArchFiles = Get-ChildItem "build/wx64" -Recurse -File -Include CMakeCache.txt,*.ninja,*.vcxproj
+            if (-not ($cudaArchFiles | Select-String -Pattern "120a-real|compute_120a|sm_120a" -Quiet)) {
+              throw "Expected CUDA Blackwell architecture marker in windows CUDA build"
+            }
+            $cudaBin = Join-Path $env:CUDA_PATH "bin"
+            $cudaDlls = @()
+            $cudaDlls += Get-ChildItem $out -Filter "cudart64_*.dll"
+            $cudaDlls += Get-ChildItem $out -Filter "cublas64_*.dll"
+            $cudaDlls += Get-ChildItem $out -Filter "cublasLt64_*.dll"
+            foreach ($dll in $cudaDlls) {
+              $source = Join-Path $cudaBin $dll.Name
+              if (-not (Test-Path $source)) {
+                throw "Packaged CUDA DLL $($dll.Name) is not present in CUDA_PATH"
+              }
+              $packagedHash = (Get-FileHash $dll.FullName -Algorithm SHA256).Hash
+              $sourceHash = (Get-FileHash $source -Algorithm SHA256).Hash
+              if ($packagedHash -ne $sourceHash) {
+                throw "Packaged CUDA DLL $($dll.Name) does not match CUDA_PATH"
+              }
             }
           }
           if ("${{ matrix.backend }}" -eq "blas") {

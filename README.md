@@ -121,9 +121,10 @@ git submodule update --init --recursive
 
 ## Local Linux Build With Docker Cache
 
-Use `tools/docker_build_linux.sh` to build Linux targets in a cached Docker image.
-The image keeps heavy apt dependencies (CUDA, cross toolchains, Vulkan/BLAS dev packages)
-in reusable layers, so repeat builds are faster.
+Use `tools/docker_build_linux.sh` to build Linux targets in a cached Docker
+image. The image is based on NVIDIA CUDA 12.8.1 and keeps heavy dependencies
+(CUDA, cross toolchains, Vulkan/BLAS dev packages) in reusable layers, so repeat
+builds are faster.
 This Docker flow is for local development only; CI Linux jobs run on native GitHub runners.
 
 ```bash
