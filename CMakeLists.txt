@@ -71,6 +71,23 @@ if (GGML_VULKAN)
     if (NOT EXISTS "${LLAMADART_SPIRV_HEADERS_INCLUDE}/spirv/unified1/spirv.hpp")
         message(FATAL_ERROR "Missing submodule: third_party/SPIRV-Headers. Run: git submodule update --init --recursive")
     endif()
+
+    # Newer llama.cpp Vulkan builds require find_package(SPIRV-Headers CONFIG).
+    # Provide a tiny package config backed by the vendored submodule so release
+    # builds do not depend on host-specific SPIR-V header packages.
+    set(LLAMADART_SPIRV_HEADERS_CONFIG_DIR "${CMAKE_CURRENT_BINARY_DIR}/cmake/SPIRV-Headers")
+    file(MAKE_DIRECTORY "${LLAMADART_SPIRV_HEADERS_CONFIG_DIR}")
+    file(TO_CMAKE_PATH "${LLAMADART_SPIRV_HEADERS_INCLUDE}" LLAMADART_SPIRV_HEADERS_INCLUDE_CMAKE)
+    file(WRITE "${LLAMADART_SPIRV_HEADERS_CONFIG_DIR}/SPIRV-HeadersConfig.cmake"
+        "if (NOT TARGET SPIRV-Headers::SPIRV-Headers)\n"
+        "  add_library(SPIRV-Headers::SPIRV-Headers INTERFACE IMPORTED)\n"
+        "  set_target_properties(SPIRV-Headers::SPIRV-Headers PROPERTIES\n"
+        "    INTERFACE_INCLUDE_DIRECTORIES \"${LLAMADART_SPIRV_HEADERS_INCLUDE_CMAKE}\"\n"
+        "  )\n"
+        "endif()\n"
+        "set(SPIRV-Headers_FOUND TRUE)\n"
+    )
+    set(SPIRV-Headers_DIR "${LLAMADART_SPIRV_HEADERS_CONFIG_DIR}" CACHE PATH "Vendored SPIRV-Headers package config" FORCE)
 endif()
 
 # Set defaults for Release builds
