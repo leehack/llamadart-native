@@ -1,15 +1,32 @@
 #include "llama_dart_wrapper.h"
 
 #include <atomic>
+#include <cstdlib>
 #include <cstring>
 
 #include <string>
 #include <vector>
 
+#if defined(__APPLE__)
+#include <TargetConditionals.h>
+#ifndef TARGET_OS_VISION
+#define TARGET_OS_VISION 0
+#endif
+#endif
+
 // Global log level (0=none, 1=debug, 2=info, 3=warn, 4=error)
 static std::atomic<int> g_dart_log_level{3}; // Default to WARN
 // Track last non-CONT severity so continuation lines inherit proper level.
 static std::atomic<int> g_last_non_cont_level{GGML_LOG_LEVEL_NONE};
+
+#if defined(__APPLE__) && (TARGET_OS_IOS || TARGET_OS_TV || TARGET_OS_VISION)
+__attribute__((constructor)) static void
+llama_dart_configure_apple_mobile_environment() {
+  // iOS-family devices can fail Metal runtime compilation when residency sets
+  // increase memory pressure. Keep Metal enabled but disable that optimization.
+  setenv("GGML_METAL_NO_RESIDENCY", "1", 0);
+}
+#endif
 
 static void llama_dart_native_log_callback(ggml_log_level level,
                                            const char *text, void *user_data) {
