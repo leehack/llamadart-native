@@ -228,6 +228,83 @@ def restore_llama_zendnn_install_target() -> None:
     print("Restored llama.cpp ggml-zendnn install target to install")
 
 
+def llama_metal_event_wait_patch_text() -> tuple[str, str]:
+    old = """void ggml_metal_device_event_synchronize(ggml_metal_device_t dev, ggml_metal_event_t ev) {
+    id<MTLSharedEvent> event = ev->obj;
+    const bool res = [event waitUntilSignaledValue:atomic_load_explicit(&ev->value, memory_order_relaxed) timeoutMS:60000];
+    if (!res) {
+        GGML_ABORT("%s: failed to wait for event\\n", __func__);
+    }
+
+    GGML_UNUSED(dev);
+}
+"""
+    new = """void ggml_metal_device_event_synchronize(ggml_metal_device_t dev, ggml_metal_event_t ev) {
+    id<MTLSharedEvent> event = ev->obj;
+    const uint64_t value = atomic_load_explicit(&ev->value, memory_order_relaxed);
+
+    bool res = false;
+    if (event.signaledValue >= value) {
+        res = true;
+    } else if (@available(macOS 12.0, iOS 15.0, *)) {
+        res = [event waitUntilSignaledValue:value timeoutMS:60000];
+    } else {
+        dispatch_semaphore_t sem = dispatch_semaphore_create(0);
+        MTLSharedEventListener * listener = [[MTLSharedEventListener alloc] init];
+
+        [event notifyListener:listener atValue:value block:^(id<MTLSharedEvent> shared_event, uint64_t signaled_value) {
+            GGML_UNUSED(shared_event);
+            GGML_UNUSED(signaled_value);
+            dispatch_semaphore_signal(sem);
+        }];
+
+        res = dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, 60 * NSEC_PER_SEC)) == 0;
+        [listener release];
+        dispatch_release(sem);
+    }
+    if (!res) {
+        GGML_ABORT("%s: failed to wait for event\\n", __func__);
+    }
+
+    GGML_UNUSED(dev);
+}
+"""
+    return old, new
+
+
+def patch_llama_metal_event_wait() -> bool:
+    metal_file = THIRD_PARTY_DIR / "llama.cpp/ggml/src/ggml-metal/ggml-metal-device.m"
+    ensure_submodule(
+        metal_file,
+        "Missing ggml-metal device file in llama.cpp submodule. Run: git submodule update --init --recursive",
+    )
+    old, new = llama_metal_event_wait_patch_text()
+
+    text = metal_file.read_text(encoding="utf-8")
+    if new in text:
+        return False
+    if old not in text:
+        fail(f"Could not apply ggml-metal iOS 13 event wait patch: expected function not found in {metal_file}")
+
+    metal_file.write_text(text.replace(old, new), encoding="utf-8")
+    print("Patched llama.cpp ggml-metal event wait for iOS 13 deployment target")
+    return True
+
+
+def restore_llama_metal_event_wait() -> None:
+    metal_file = THIRD_PARTY_DIR / "llama.cpp/ggml/src/ggml-metal/ggml-metal-device.m"
+    if not metal_file.is_file():
+        return
+    old, new = llama_metal_event_wait_patch_text()
+
+    text = metal_file.read_text(encoding="utf-8")
+    if new not in text:
+        return
+
+    metal_file.write_text(text.replace(new, old), encoding="utf-8")
+    print("Restored llama.cpp ggml-metal event wait")
+
+
 def clean_build_dir(preset: str, clean: bool) -> Path:
     build_dir = resolve_build_dir_for_preset(preset)
     if clean and build_dir.exists():
@@ -981,8 +1058,13 @@ def build_apple(args: argparse.Namespace) -> None:
     normalized, out_dir = APPLE_TARGETS[args.target]
     preset = f"{normalized}-full"
     clean_build_dir(preset, args.clean)
-    build_dir = configure_and_build(preset, jobs=args.jobs)
-    copy_runtime_libraries(build_dir, out_dir)
+    metal_patch_applied = patch_llama_metal_event_wait()
+    try:
+        build_dir = configure_and_build(preset, jobs=args.jobs)
+        copy_runtime_libraries(build_dir, out_dir)
+    finally:
+        if metal_patch_applied:
+            restore_llama_metal_event_wait()
 
 
 def build_linux(args: argparse.Namespace) -> None:

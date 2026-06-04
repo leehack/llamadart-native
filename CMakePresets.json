@@ -43,7 +43,7 @@
       "cacheVariables": {
         "CMAKE_SYSTEM_NAME": "iOS",
         "IOS": "ON",
-        "CMAKE_OSX_DEPLOYMENT_TARGET": "16.4"
+        "CMAKE_OSX_DEPLOYMENT_TARGET": "13.0"
       }
     },
     {
