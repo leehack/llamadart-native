@@ -25,6 +25,20 @@ The Dart API/runtime stays in the main `llamadart` repository.
   - Resolves latest upstream `ggml-org/llama.cpp` release tag.
   - Dispatches `Native Build & Release` only when this repo does not already have that tag and no native release run is in flight.
 
+## Native Version Management
+
+The published tag is the native version contract consumed by downstream package
+hooks and Swift Package manifests. When changing the upstream `llama.cpp`
+version:
+
+1. Run `Native Build & Release` for the selected `llama_cpp_tag`, or let
+   `Auto Trigger Native Release` dispatch it for the latest upstream tag.
+2. Verify the release contains per-platform native archives,
+   `llamadart-native-apple-xcframework-<tag>.zip`, `assets.json`, and
+   `SHA256SUMS`.
+3. Update downstream `llamadart` pins, SPM URLs, and SPM checksums together so
+   native-assets and SPM consumers use the same wrapper/runtime build.
+
 ## Backend Policy (Worthy Sets)
 
 Each target builds all worthy backends together in one build:
@@ -43,6 +57,9 @@ Non-Apple targets use `GGML_BACKEND_DL=ON`, so backend libs are optional at pack
 Release assets contain:
 
 - Apple: consolidated `libllamadart` per target.
+- Apple SPM: `llamadart-native-apple-xcframework-<tag>.zip`, a
+  `llamadart_native.xcframework` built from the same Apple slices and wrapper
+  code as the native-assets tarballs.
 - Non-Apple core libs: `llamadart`, `llama`, `ggml`, `ggml-base` (and `mtmd` where produced)
 - Non-Apple backend libs: `ggml-<backend>` modules (`ggml-vulkan`, `ggml-opencl`, etc.)
 - Windows backend runtime deps:
@@ -77,6 +94,8 @@ Assets are suffixed with platform/arch, for example:
 - `third_party/OpenCL-ICD-Loader`: OpenCL loader submodule used to produce Android `libOpenCL.so` when NDK does not provide one.
 - `third_party/opencl-stubs`: optional local fallback location for OpenCL headers/stubs.
 - `tools/build.py`: cross-platform build entrypoint.
+- `tools/package_apple_xcframework.py`: packages Apple `libllamadart` slices as
+  an SPM-compatible XCFramework zip.
 - `scripts/generate_assets_manifest.sh`: builds `assets.json` + checksums.
 - `docs/platform_backend_strategy.md`: platform/backend matrix.
 

@@ -921,7 +921,7 @@ jobs:
 
   package-and-release:
     needs: [resolve-tag, build-android, build-apple, build-linux, build-linux-hip, build-windows]
-    runs-on: ubuntu-latest
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
         with:
@@ -990,6 +990,12 @@ jobs:
             archive="llamadart-native-${bundle_name}-${{ needs.resolve-tag.outputs.tag }}.tar.gz"
             tar -czf "release_assets/${archive}" -C "$bundle_dir" .
           done
+
+          python3 tools/package_apple_xcframework.py \
+            --tag "${{ needs.resolve-tag.outputs.tag }}" \
+            --input-dir bundles \
+            --output-dir release_assets \
+            --clean
 
           mkdir -p \
             headers_bundle/libllamadart \
