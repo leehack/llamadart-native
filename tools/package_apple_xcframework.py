@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import argparse
+import os
+import plistlib
 import shutil
 import subprocess
 import zipfile
@@ -13,7 +15,9 @@ DEFAULT_INPUT_DIR = REPO_ROOT / "bin"
 DEFAULT_OUTPUT_DIR = REPO_ROOT / "release_assets"
 DEFAULT_WORK_DIR = REPO_ROOT / ".dart_tool" / "apple_xcframework"
 LIBRARY_NAME = "libllamadart.dylib"
-MODULE_NAME = "llamadart_native"
+MODULE_NAME = "llama"
+UMBRELLA_HEADER_NAME = "llama_module.h"
+BUNDLE_IDENTIFIER = "dev.leehack.llamadart.native.llama"
 
 
 def run(command: list[str]) -> None:
@@ -48,7 +52,7 @@ def make_universal_library(inputs: list[Path], output: Path) -> Path:
     return output
 
 
-def copy_headers(headers_dir: Path) -> None:
+def copy_headers(headers_dir: Path, *, framework: bool = False) -> None:
     include_root = REPO_ROOT / "third_party" / "llama.cpp" / "include"
     ggml_include_root = REPO_ROOT / "third_party" / "llama.cpp" / "ggml" / "include"
     mtmd_root = REPO_ROOT / "third_party" / "llama.cpp" / "tools" / "mtmd"
@@ -70,7 +74,7 @@ def copy_headers(headers_dir: Path) -> None:
         if source.is_file():
             shutil.copy2(source, headers_dir / source.name)
 
-    umbrella = headers_dir / f"{MODULE_NAME}.h"
+    umbrella = headers_dir / UMBRELLA_HEADER_NAME
     umbrella.write_text(
         "\n".join(
             [
@@ -90,11 +94,12 @@ def copy_headers(headers_dir: Path) -> None:
         ),
         encoding="utf-8",
     )
+    module_declaration = "framework module" if framework else "module"
     (headers_dir / "module.modulemap").write_text(
         "\n".join(
             [
-                f"module {MODULE_NAME} {{",
-                f'  umbrella header "{MODULE_NAME}.h"',
+                f"{module_declaration} {MODULE_NAME} {{",
+                f'  umbrella header "{UMBRELLA_HEADER_NAME}"',
                 "  export *",
                 "}",
                 "",
@@ -104,14 +109,108 @@ def copy_headers(headers_dir: Path) -> None:
     )
 
 
+def write_framework_info_plist(
+    destination: Path,
+    *,
+    executable: str,
+    bundle_identifier: str,
+) -> None:
+    info_plist = {
+        "CFBundleDevelopmentRegion": "en",
+        "CFBundleExecutable": executable,
+        "CFBundleIdentifier": bundle_identifier,
+        "CFBundleInfoDictionaryVersion": "6.0",
+        "CFBundleName": executable,
+        "CFBundlePackageType": "FMWK",
+        "CFBundleShortVersionString": "1.0",
+        "CFBundleVersion": "1",
+    }
+    with destination.open("wb") as file:
+        plistlib.dump(info_plist, file)
+
+
+def make_ios_framework(source: Path, destination: Path) -> Path:
+    if destination.exists():
+        shutil.rmtree(destination)
+    headers_dir = destination / "Headers"
+    modules_dir = destination / "Modules"
+    headers_dir.mkdir(parents=True, exist_ok=True)
+    modules_dir.mkdir(parents=True, exist_ok=True)
+
+    binary = destination / MODULE_NAME
+    shutil.copy2(source, binary)
+    binary.chmod(0o755)
+    run(
+        [
+            "install_name_tool",
+            "-id",
+            f"@rpath/{MODULE_NAME}.framework/{MODULE_NAME}",
+            str(binary),
+        ]
+    )
+
+    copy_headers(headers_dir, framework=True)
+    shutil.copy2(headers_dir / "module.modulemap", modules_dir / "module.modulemap")
+    write_framework_info_plist(
+        destination / "Info.plist",
+        executable=MODULE_NAME,
+        bundle_identifier=BUNDLE_IDENTIFIER,
+    )
+    return destination
+
+
+def make_macos_framework(source: Path, destination: Path) -> Path:
+    if destination.exists():
+        shutil.rmtree(destination)
+    version_dir = destination / "Versions" / "A"
+    headers_dir = version_dir / "Headers"
+    modules_dir = version_dir / "Modules"
+    resources_dir = version_dir / "Resources"
+    headers_dir.mkdir(parents=True, exist_ok=True)
+    modules_dir.mkdir(parents=True, exist_ok=True)
+    resources_dir.mkdir(parents=True, exist_ok=True)
+
+    binary = version_dir / MODULE_NAME
+    shutil.copy2(source, binary)
+    binary.chmod(0o755)
+    run(
+        [
+            "install_name_tool",
+            "-id",
+            f"@rpath/{MODULE_NAME}.framework/Versions/A/{MODULE_NAME}",
+            str(binary),
+        ]
+    )
+
+    copy_headers(headers_dir, framework=True)
+    shutil.copy2(headers_dir / "module.modulemap", modules_dir / "module.modulemap")
+    write_framework_info_plist(
+        resources_dir / "Info.plist",
+        executable=MODULE_NAME,
+        bundle_identifier=BUNDLE_IDENTIFIER,
+    )
+
+    (destination / "Versions" / "Current").symlink_to("A")
+    for name in ["Headers", "Modules", "Resources", MODULE_NAME]:
+        (destination / name).symlink_to(Path("Versions") / "Current" / name)
+    return destination
+
+
 def zip_xcframework(xcframework: Path, output_zip: Path) -> None:
     if output_zip.exists():
         output_zip.unlink()
     with zipfile.ZipFile(output_zip, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         for path in sorted(xcframework.rglob("*")):
+            relative_path = path.relative_to(xcframework.parent)
+            if path.is_symlink():
+                info = zipfile.ZipInfo(relative_path.as_posix())
+                info.create_system = 3
+                info.external_attr = 0o120777 << 16
+                archive.writestr(info, os.readlink(path))
+                continue
             if path.is_dir():
                 continue
-            archive.write(path, path.relative_to(xcframework.parent))
+            archive.write(path, relative_path)
 
 
 def package_xcframework(
@@ -141,8 +240,18 @@ def package_xcframework(
         work_dir / "macos" / LIBRARY_NAME,
     )
 
-    headers_dir = work_dir / "Headers"
-    copy_headers(headers_dir)
+    ios_device_framework = make_ios_framework(
+        ios_device,
+        work_dir / "ios-arm64" / f"{MODULE_NAME}.framework",
+    )
+    ios_sim_framework = make_ios_framework(
+        ios_sim_universal,
+        work_dir / "ios-simulator" / f"{MODULE_NAME}.framework",
+    )
+    macos_framework = make_macos_framework(
+        macos_universal,
+        work_dir / "macos" / f"{MODULE_NAME}.framework",
+    )
 
     xcframework = work_dir / f"{MODULE_NAME}.xcframework"
     if xcframework.exists():
@@ -151,18 +260,12 @@ def package_xcframework(
         [
             "xcodebuild",
             "-create-xcframework",
-            "-library",
-            str(ios_device),
-            "-headers",
-            str(headers_dir),
-            "-library",
-            str(ios_sim_universal),
-            "-headers",
-            str(headers_dir),
-            "-library",
-            str(macos_universal),
-            "-headers",
-            str(headers_dir),
+            "-framework",
+            str(ios_device_framework),
+            "-framework",
+            str(ios_sim_framework),
+            "-framework",
+            str(macos_framework),
             "-output",
             str(xcframework),
         ]
