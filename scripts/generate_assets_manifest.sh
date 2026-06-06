@@ -54,6 +54,8 @@ infer_meta() {
 
   # New naming convention: <libname>-<platform>-<arch>.<ext>
   case "$stem" in
+    llamadart-native-apple-xcframework-*)
+      platform="apple"; arch="universal"; backend="core"; module="spm-xcframework"; libid="llamadart-native-apple-xcframework" ;;
     *-windows-x64)
       platform="windows"; arch="x64"; libid="${stem%-windows-x64}" ;;
     *-linux-x64)
@@ -115,6 +117,10 @@ infer_meta() {
   id_no_lib="${libid#lib}"
 
   case "$id_no_lib" in
+    llamadart-native-apple-xcframework)
+      backend="core"
+      module="spm-xcframework"
+      ;;
     ggml-base|ggml|llama|llamadart)
       backend="core"
       module="core"
