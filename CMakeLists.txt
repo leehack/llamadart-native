@@ -15,6 +15,8 @@ endif()
 
 set(LLAMADART_CPU_REQUIRED_FEATURES "" CACHE STRING
     "Semicolon-separated GGML_USE_* defines for Android arm64 CPU backend scoring")
+set(LLAMADART_MSVC_LLAMA_COMMON_IPO OFF CACHE BOOL
+    "Enable MSVC IPO/LTCG for llama-common")
 
 function(llamadart_attach_android_cpu_backend_score target_name)
     if (NOT ANDROID OR NOT TARGET ${target_name} OR NOT GGML_CPU_ARM_ARCH)
@@ -119,6 +121,22 @@ add_subdirectory(third_party/llama.cpp)
 if (TARGET ggml-vulkan AND LLAMADART_SPIRV_HEADERS_INCLUDE)
     target_include_directories(ggml-vulkan SYSTEM PRIVATE "${LLAMADART_SPIRV_HEADERS_INCLUDE}")
 endif()
+
+if (MSVC AND NOT LLAMADART_MSVC_LLAMA_COMMON_IPO)
+    # MSVC link.exe can access-violate while linking llama-common.dll with
+    # LTCG. Keep IPO elsewhere, but compile this utility stack without LTCG.
+    foreach(target_name llama-common llama-common-base cpp-httplib)
+        if (TARGET ${target_name})
+            set_target_properties(${target_name} PROPERTIES
+                INTERPROCEDURAL_OPTIMIZATION OFF
+                INTERPROCEDURAL_OPTIMIZATION_RELEASE OFF
+                INTERPROCEDURAL_OPTIMIZATION_RELWITHDEBINFO OFF
+                INTERPROCEDURAL_OPTIMIZATION_MINSIZEREL OFF
+            )
+        endif()
+    endforeach()
+endif()
+
 llamadart_attach_android_cpu_backend_score(ggml-cpu)
 
 add_library(llamadart_lib SHARED "src/llama_dart_wrapper.cpp")
