@@ -157,6 +157,15 @@ jobs:
 
           python3 tools/validate_android_artifacts.py --readelf "$READELF" "$OUT_DIR"
 
+          if [ "${{ matrix.include_core }}" = "true" ]; then
+            test -f "$OUT_DIR/libllamadart.so" || { echo "Missing $OUT_DIR/libllamadart.so"; exit 1; }
+            test -f "$OUT_DIR/libllama-common.so" || { echo "Missing $OUT_DIR/libllama-common.so"; exit 1; }
+            python3 tools/validate_exports.py \
+              --format readelf \
+              --tool "$READELF" \
+              "$OUT_DIR/libllamadart.so"
+          fi
+
           if [ "${{ matrix.android_abi }}" = "arm64-v8a" ]; then
             OBJDUMP="$(find "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt" -name llvm-objdump -print -quit)"
             if [ -z "$OBJDUMP" ]; then
@@ -275,6 +284,11 @@ jobs:
           ccache --zero-stats
       - name: Build
         run: python3 tools/build.py apple --target ${{ matrix.target }}
+      - name: Validate Apple MTP exports
+        run: |
+          OUT_LIB="bin/${{ matrix.out_dir }}/libllamadart.dylib"
+          test -f "$OUT_LIB" || { echo "Missing $OUT_LIB"; exit 1; }
+          python3 tools/validate_exports.py --format nm --tool nm "$OUT_LIB"
       - name: ccache stats
         if: always()
         run: ccache --show-stats || true
@@ -474,6 +488,13 @@ jobs:
         run: |
           OUT_DIR="bin/linux/${{ matrix.arch }}"
           test -f "$OUT_DIR/${{ matrix.backend_glob }}" || { echo "Missing $OUT_DIR/${{ matrix.backend_glob }}"; exit 1; }
+          if [ "${{ matrix.include_core }}" = "true" ]; then
+            test -f "$OUT_DIR/libllamadart.so" || { echo "Missing $OUT_DIR/libllamadart.so"; exit 1; }
+            python3 tools/validate_exports.py \
+              --format readelf \
+              --tool readelf \
+              "$OUT_DIR/libllamadart.so"
+          fi
           for lib in "$OUT_DIR"/*.so; do
             readelf -d "$lib" | grep -E 'Library runpath: \[\$ORIGIN(:|\])' >/dev/null || {
               echo "Expected RUNPATH to start with \$ORIGIN in $lib" >&2
@@ -862,9 +883,11 @@ jobs:
             }
           }
           if ("${{ matrix.include_core }}" -eq "true") {
-            if (-not (Get-ChildItem $out -Filter "*llamadart*.dll" -ErrorAction SilentlyContinue | Select-Object -First 1)) {
+            $wrapper = Get-ChildItem $out -Filter "*llamadart*.dll" -ErrorAction SilentlyContinue | Select-Object -First 1
+            if (-not $wrapper) {
               throw "Missing core wrapper DLL in $out"
             }
+            python tools/validate_exports.py --format dumpbin --tool dumpbin $wrapper.FullName
           }
           if ("${{ matrix.arch }}" -eq "arm64") {
             $cache = "build/wa64/CMakeCache.txt"

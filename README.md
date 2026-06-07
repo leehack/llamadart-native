@@ -60,7 +60,7 @@ Release assets contain:
 - Apple SPM: `llamadart-native-apple-xcframework-<tag>.zip`, a
   `llamadart_native.xcframework` built from the same Apple slices and wrapper
   code as the native-assets tarballs.
-- Non-Apple core libs: `llamadart`, `llama`, `ggml`, `ggml-base` (and `mtmd` where produced)
+- Non-Apple core libs: `llamadart`, `llama`, `llama-common`, `ggml`, `ggml-base` (and `mtmd` where produced)
 - Non-Apple backend libs: `ggml-<backend>` modules (`ggml-vulkan`, `ggml-opencl`, etc.)
 - Windows backend runtime deps:
   - CUDA lanes include CUDA runtime DLLs required by `ggml-cuda` (for example `cudart64_*.dll`, `cublas64_*.dll`).
@@ -94,6 +94,8 @@ Assets are suffixed with platform/arch, for example:
 - `third_party/OpenCL-ICD-Loader`: OpenCL loader submodule used to produce Android `libOpenCL.so` when NDK does not provide one.
 - `third_party/opencl-stubs`: optional local fallback location for OpenCL headers/stubs.
 - `tools/build.py`: cross-platform build entrypoint.
+- `tools/validate_exports.py`: verifies required wrapper C exports, including
+  MTP symbols, in release artifacts.
 - `tools/package_apple_xcframework.py`: packages Apple `libllamadart` slices as
   an SPM-compatible XCFramework zip.
 - `scripts/generate_assets_manifest.sh`: builds `assets.json` + checksums.
