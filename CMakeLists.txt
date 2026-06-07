@@ -53,7 +53,7 @@ set(LLAMA_BUILD_NUMBER 0 CACHE STRING "Llama build number" FORCE)
 set(LLAMA_INSTALL_VERSION 0.0.0 CACHE STRING "Llama install version" FORCE)
 
 # Common llama.cpp options
-set(LLAMA_BUILD_COMMON OFF CACHE BOOL "Build llama.cpp common library" FORCE)
+set(LLAMA_BUILD_COMMON ON CACHE BOOL "Build llama.cpp common library" FORCE)
 set(LLAMA_BUILD_TESTS OFF CACHE BOOL "Build llama.cpp tests" FORCE)
 set(LLAMA_BUILD_EXAMPLES OFF CACHE BOOL "Build llama.cpp examples" FORCE)
 set(LLAMA_BUILD_SERVER OFF CACHE BOOL "Build llama.cpp server" FORCE)
@@ -129,11 +129,16 @@ endif()
 
 if (APPLE AND LLAMADART_CONSOLIDATE)
     # Ensure static libs are fully embedded into libllamadart.dylib.
-    target_link_libraries(llamadart_lib PUBLIC -Wl,-force_load llama -Wl,-force_load mtmd)
+    target_link_libraries(llamadart_lib PUBLIC
+        -Wl,-force_load llama
+        -Wl,-force_load mtmd
+        -Wl,-force_load llama-common)
 else()
     # Thin wrapper library; llama.cpp / ggml remain separate dynamic libraries.
-    target_link_libraries(llamadart_lib PUBLIC llama mtmd)
+    target_link_libraries(llamadart_lib PUBLIC llama mtmd llama-common)
 endif()
+
+target_compile_features(llamadart_lib PRIVATE cxx_std_17)
 
 set_target_properties(llamadart_lib PROPERTIES
     OUTPUT_NAME llamadart
@@ -143,5 +148,6 @@ set_target_properties(llamadart_lib PROPERTIES
 target_include_directories(llamadart_lib PRIVATE
     third_party/llama.cpp/include
     third_party/llama.cpp/src
+    third_party/llama.cpp/common
     src
 )
