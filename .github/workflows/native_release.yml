@@ -693,7 +693,7 @@ jobs:
             backend_glob: "*ggml-vulkan*.dll"
           - arch: x64
             vcpkg_triplet: x64-windows
-            runs_on: windows-latest
+            runs_on: windows-2022
             backend: cuda
             include_core: false
             needs_cuda: true
