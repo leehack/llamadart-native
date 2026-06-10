@@ -106,12 +106,14 @@ LLAMADART_API void llama_dart_set_log_level(int level) {
   ggml_log_set(llama_dart_native_log_callback, nullptr);
 }
 
-LLAMADART_API struct llama_dart_mtp *llama_dart_mtp_init(
-    struct llama_model *model, struct llama_context *ctx_tgt,
+static struct llama_dart_mtp *llama_dart_mtp_init_impl(
+    struct llama_model *draft_model, struct llama_context *ctx_tgt,
     struct llama_context_params ctx_params, int32_t draft_token_max,
     int32_t draft_token_min, float min_probability, bool backend_sampling) {
-  if (model == nullptr || ctx_tgt == nullptr) {
-    LOG_WRN("%s: missing model or target context\n", __func__);
+  if (draft_model == nullptr || ctx_tgt == nullptr) {
+    if (draft_model != nullptr || ctx_tgt != nullptr) {
+      LOG_WRN("%s: missing draft model or target context\n", __func__);
+    }
     return nullptr;
   }
 
@@ -131,8 +133,9 @@ LLAMADART_API struct llama_dart_mtp *llama_dart_mtp_init(
   ctx_params.n_seq_max = 1;
   ctx_params.n_rs_seq = 0;
   ctx_params.n_outputs_max = 1;
+  ctx_params.ctx_other = ctx_tgt;
 
-  llama_context *ctx_dft = llama_init_from_model(model, ctx_params);
+  llama_context *ctx_dft = llama_init_from_model(draft_model, ctx_params);
   if (ctx_dft == nullptr) {
     LOG_WRN("%s: failed to create MTP draft context\n", __func__);
     return nullptr;
@@ -175,6 +178,24 @@ LLAMADART_API struct llama_dart_mtp *llama_dart_mtp_init(
   mtp->ctx_dft = ctx_dft;
   mtp->spec = spec;
   return mtp;
+}
+
+LLAMADART_API struct llama_dart_mtp *llama_dart_mtp_init(
+    struct llama_model *model, struct llama_context *ctx_tgt,
+    struct llama_context_params ctx_params, int32_t draft_token_max,
+    int32_t draft_token_min, float min_probability, bool backend_sampling) {
+  return llama_dart_mtp_init_impl(model, ctx_tgt, ctx_params, draft_token_max,
+                                  draft_token_min, min_probability,
+                                  backend_sampling);
+}
+
+LLAMADART_API struct llama_dart_mtp *llama_dart_mtp_init_with_draft_model(
+    struct llama_model *draft_model, struct llama_context *ctx_tgt,
+    struct llama_context_params ctx_params, int32_t draft_token_max,
+    int32_t draft_token_min, float min_probability, bool backend_sampling) {
+  return llama_dart_mtp_init_impl(draft_model, ctx_tgt, ctx_params,
+                                  draft_token_max, draft_token_min,
+                                  min_probability, backend_sampling);
 }
 
 LLAMADART_API void llama_dart_mtp_free(struct llama_dart_mtp *mtp) {

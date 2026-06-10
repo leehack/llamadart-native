@@ -34,6 +34,17 @@ LLAMADART_API struct llama_dart_mtp * llama_dart_mtp_init(
     float min_probability,
     bool backend_sampling);
 
+// Creates a llama.cpp draft-mtp speculative decoding state against a separately
+// loaded draft model, equivalent to llama.cpp's --model-draft path.
+LLAMADART_API struct llama_dart_mtp * llama_dart_mtp_init_with_draft_model(
+    struct llama_model * draft_model,
+    struct llama_context * ctx_tgt,
+    struct llama_context_params ctx_params,
+    int32_t draft_token_max,
+    int32_t draft_token_min,
+    float min_probability,
+    bool backend_sampling);
+
 LLAMADART_API void llama_dart_mtp_free(struct llama_dart_mtp * mtp);
 
 LLAMADART_API struct llama_context * llama_dart_mtp_get_draft_context(

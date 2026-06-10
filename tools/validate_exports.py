@@ -12,6 +12,7 @@ from pathlib import Path
 
 DEFAULT_MTP_SYMBOLS = [
     "llama_dart_mtp_init",
+    "llama_dart_mtp_init_with_draft_model",
     "llama_dart_mtp_free",
     "llama_dart_mtp_get_draft_context",
     "llama_dart_mtp_begin",
