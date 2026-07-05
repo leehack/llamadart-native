@@ -22,8 +22,90 @@ struct llama_dart_mtp;
 // Opaque n-gram speculative decoding state owned by libllamadart.
 struct llama_dart_ngram;
 
+// Opaque upstream speculative decoding state owned by libllamadart.
+struct llama_dart_speculative;
+
+// Primitive C mirror of the upstream common_params_speculative knobs used by
+// libllamadart. Most positive integer controls override upstream defaults.
+// Fields that accept zero as a meaningful override use negative values as
+// their "use upstream default" sentinel.
+struct llama_dart_speculative_params {
+    // Optional comma-separated upstream speculative type names, e.g.
+    // "ngram-mod,draft-mtp". When set, this is preferred over type_mask so
+    // callers do not depend on upstream enum ordinals.
+    const char * type_names;
+
+    // Fallback bit mask of upstream common_speculative_type values. For
+    // example, 1 << 3 enables draft-mtp. A zero mask disables speculation.
+    uint32_t type_mask;
+
+    // Pass negative values for nullable numeric controls to preserve upstream
+    // llama.cpp defaults.
+    int32_t draft_token_max;
+    int32_t draft_token_min;
+    float draft_min_probability;
+    float draft_split_probability;
+    bool backend_sampling;
+
+    int32_t ngram_size_n;
+    int32_t ngram_size_m;
+    int32_t ngram_min_hits;
+
+    int32_t ngram_match;
+    int32_t ngram_token_min;
+    int32_t ngram_token_max;
+
+    const char * ngram_cache_static_path;
+    const char * ngram_cache_dynamic_path;
+};
+
 // Sets the log level for llama.cpp
 LLAMADART_API void llama_dart_set_log_level(int level);
+
+LLAMADART_API struct llama_dart_speculative * llama_dart_speculative_init(
+    struct llama_model * target_model,
+    struct llama_model * draft_model,
+    struct llama_context * target_context,
+    struct llama_context_params context_params,
+    const struct llama_dart_speculative_params * params);
+
+LLAMADART_API void llama_dart_speculative_free(
+    struct llama_dart_speculative * speculative);
+
+LLAMADART_API struct llama_context * llama_dart_speculative_get_draft_context(
+    struct llama_dart_speculative * speculative);
+
+LLAMADART_API bool llama_dart_speculative_need_embd(
+    struct llama_dart_speculative * speculative);
+
+LLAMADART_API bool llama_dart_speculative_need_embd_nextn(
+    struct llama_dart_speculative * speculative);
+
+LLAMADART_API bool llama_dart_speculative_begin(
+    struct llama_dart_speculative * speculative,
+    llama_seq_id seq_id,
+    const llama_token * prompt,
+    int32_t prompt_count);
+
+LLAMADART_API bool llama_dart_speculative_process_batch(
+    struct llama_dart_speculative * speculative,
+    struct llama_batch batch);
+
+LLAMADART_API int32_t llama_dart_speculative_draft(
+    struct llama_dart_speculative * speculative,
+    llama_seq_id seq_id,
+    llama_pos n_past,
+    llama_token id_last,
+    const llama_token * prompt,
+    int32_t prompt_count,
+    int32_t draft_token_max,
+    llama_token * out_tokens,
+    int32_t out_capacity);
+
+LLAMADART_API void llama_dart_speculative_accept(
+    struct llama_dart_speculative * speculative,
+    llama_seq_id seq_id,
+    uint16_t accepted_count);
 
 // Creates a llama.cpp draft-mtp speculative decoding state against the target
 // model. The draft context is owned by the returned handle and is freed with

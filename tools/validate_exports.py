@@ -11,6 +11,15 @@ from pathlib import Path
 
 
 DEFAULT_REQUIRED_SYMBOLS = [
+    "llama_dart_speculative_init",
+    "llama_dart_speculative_free",
+    "llama_dart_speculative_get_draft_context",
+    "llama_dart_speculative_need_embd",
+    "llama_dart_speculative_need_embd_nextn",
+    "llama_dart_speculative_begin",
+    "llama_dart_speculative_process_batch",
+    "llama_dart_speculative_draft",
+    "llama_dart_speculative_accept",
     "llama_dart_mtp_init",
     "llama_dart_mtp_init_with_draft_model",
     "llama_dart_mtp_free",

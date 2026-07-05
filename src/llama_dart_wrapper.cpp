@@ -9,10 +9,9 @@
 #include <atomic>
 #include <cstdlib>
 #include <cstring>
+#include <string>
 #include <limits>
 #include <vector>
-
-#include <string>
 
 #if defined(__APPLE__)
 #include <TargetConditionals.h>
@@ -51,6 +50,15 @@ struct llama_dart_mtp {
 };
 
 struct llama_dart_ngram {
+  common_speculative *spec = nullptr;
+  std::vector<llama_token> prompt;
+  std::vector<llama_token> draft;
+  bool has_last_draft = false;
+};
+
+struct llama_dart_speculative {
+  llama_context *ctx_tgt = nullptr;
+  llama_context *ctx_dft = nullptr;
   common_speculative *spec = nullptr;
   std::vector<llama_token> prompt;
   std::vector<llama_token> draft;
@@ -107,6 +115,159 @@ static uint16_t llama_dart_uint16_or_default(int32_t value,
   return static_cast<uint16_t>(value);
 }
 
+static bool llama_dart_type_mask_has(uint32_t type_mask,
+                                     common_speculative_type type) {
+  return (type_mask & (1u << static_cast<uint32_t>(type))) != 0;
+}
+
+static uint32_t llama_dart_type_mask_from_types(
+    const std::vector<common_speculative_type> &types) {
+  uint32_t result = 0;
+  for (const auto type : types) {
+    result |= (1u << static_cast<uint32_t>(type));
+  }
+  return result;
+}
+
+static std::vector<std::string>
+llama_dart_split_speculative_type_names(const char *type_names) {
+  std::vector<std::string> result;
+  if (type_names == nullptr) {
+    return result;
+  }
+
+  std::string value(type_names);
+  size_t start = 0;
+  while (start <= value.size()) {
+    const size_t end = value.find(',', start);
+    auto item = value.substr(
+        start, end == std::string::npos ? std::string::npos : end - start);
+    const auto first = item.find_first_not_of(" \t\r\n");
+    if (first != std::string::npos) {
+      const auto last = item.find_last_not_of(" \t\r\n");
+      result.push_back(item.substr(first, last - first + 1));
+    }
+    if (end == std::string::npos) {
+      break;
+    }
+    start = end + 1;
+  }
+  return result;
+}
+
+static bool llama_dart_type_mask_has_draft_context(uint32_t type_mask) {
+  return llama_dart_type_mask_has(type_mask, COMMON_SPECULATIVE_TYPE_DRAFT_SIMPLE) ||
+         llama_dart_type_mask_has(type_mask, COMMON_SPECULATIVE_TYPE_DRAFT_EAGLE3) ||
+         llama_dart_type_mask_has(type_mask, COMMON_SPECULATIVE_TYPE_DRAFT_MTP) ||
+         llama_dart_type_mask_has(type_mask, COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH);
+}
+
+static bool llama_dart_type_mask_has_non_mtp_draft_context(uint32_t type_mask) {
+  return llama_dart_type_mask_has(type_mask, COMMON_SPECULATIVE_TYPE_DRAFT_SIMPLE) ||
+         llama_dart_type_mask_has(type_mask, COMMON_SPECULATIVE_TYPE_DRAFT_EAGLE3) ||
+         llama_dart_type_mask_has(type_mask, COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH);
+}
+
+static int llama_dart_count_draft_context_types(uint32_t type_mask) {
+  int count = 0;
+  if (llama_dart_type_mask_has(type_mask, COMMON_SPECULATIVE_TYPE_DRAFT_SIMPLE)) {
+    ++count;
+  }
+  if (llama_dart_type_mask_has(type_mask, COMMON_SPECULATIVE_TYPE_DRAFT_EAGLE3)) {
+    ++count;
+  }
+  if (llama_dart_type_mask_has(type_mask, COMMON_SPECULATIVE_TYPE_DRAFT_MTP)) {
+    ++count;
+  }
+  if (llama_dart_type_mask_has(type_mask, COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH)) {
+    ++count;
+  }
+  return count;
+}
+
+static std::vector<common_speculative_type>
+llama_dart_speculative_types_from_mask(uint32_t type_mask) {
+  std::vector<common_speculative_type> result;
+  if (type_mask == 0 ||
+      llama_dart_type_mask_has(type_mask, COMMON_SPECULATIVE_TYPE_NONE)) {
+    result.push_back(COMMON_SPECULATIVE_TYPE_NONE);
+    return result;
+  }
+
+  for (int i = 1; i < static_cast<int>(COMMON_SPECULATIVE_TYPE_COUNT); ++i) {
+    auto type = static_cast<common_speculative_type>(i);
+    if (llama_dart_type_mask_has(type_mask, type)) {
+      result.push_back(type);
+    }
+  }
+  return result.empty()
+      ? std::vector<common_speculative_type>{COMMON_SPECULATIVE_TYPE_NONE}
+      : result;
+}
+
+static std::vector<common_speculative_type>
+llama_dart_speculative_types_from_params(
+    const llama_dart_speculative_params &params) {
+  const auto names = llama_dart_split_speculative_type_names(params.type_names);
+  if (!names.empty()) {
+    return common_speculative_types_from_names(names);
+  }
+  return llama_dart_speculative_types_from_mask(params.type_mask);
+}
+
+static void llama_dart_apply_ngram_map_params(
+    common_params_speculative_ngram_map &dst,
+    const llama_dart_speculative_params &src) {
+  dst.size_n = llama_dart_uint16_or_default(src.ngram_size_n, dst.size_n);
+  dst.size_m = llama_dart_uint16_or_default(src.ngram_size_m, dst.size_m);
+  dst.min_hits = llama_dart_uint16_or_default(src.ngram_min_hits, dst.min_hits);
+}
+
+static common_params_speculative llama_dart_build_speculative_params(
+    const llama_dart_speculative_params &src, llama_context *ctx_tgt,
+    llama_context *ctx_dft) {
+  common_params_speculative params;
+  params.types = llama_dart_speculative_types_from_params(src);
+
+  if (src.draft_token_max > 0) {
+    params.draft.n_max = src.draft_token_max;
+  }
+  if (src.draft_token_min >= 0) {
+    params.draft.n_min = src.draft_token_min;
+  }
+  if (src.draft_min_probability >= 0.0f) {
+    params.draft.p_min = std::min(src.draft_min_probability, 1.0f);
+  }
+  if (src.draft_split_probability >= 0.0f) {
+    params.draft.p_split = std::min(src.draft_split_probability, 1.0f);
+  }
+  params.draft.backend_sampling = src.backend_sampling;
+  params.draft.ctx_tgt = ctx_tgt;
+  params.draft.ctx_dft = ctx_dft;
+
+  llama_dart_apply_ngram_map_params(params.ngram_simple, src);
+  llama_dart_apply_ngram_map_params(params.ngram_map_k, src);
+  llama_dart_apply_ngram_map_params(params.ngram_map_k4v, src);
+
+  if (src.ngram_match > 0) {
+    params.ngram_mod.n_match = src.ngram_match;
+  }
+  if (src.ngram_token_min >= 0) {
+    params.ngram_mod.n_min = src.ngram_token_min;
+  }
+  if (src.ngram_token_max > 0) {
+    params.ngram_mod.n_max = src.ngram_token_max;
+  }
+  if (src.ngram_cache_static_path != nullptr) {
+    params.ngram_cache.lookup_cache_static = src.ngram_cache_static_path;
+  }
+  if (src.ngram_cache_dynamic_path != nullptr) {
+    params.ngram_cache.lookup_cache_dynamic = src.ngram_cache_dynamic_path;
+  }
+
+  return params;
+}
+
 extern "C" {
 
 LLAMADART_API void llama_dart_set_log_level(int level) {
@@ -122,6 +283,214 @@ LLAMADART_API void llama_dart_set_log_level(int level) {
   // Set callbacks every time to ensure they are active
   llama_log_set(llama_dart_native_log_callback, nullptr);
   ggml_log_set(llama_dart_native_log_callback, nullptr);
+}
+
+LLAMADART_API struct llama_dart_speculative *llama_dart_speculative_init(
+    struct llama_model *target_model, struct llama_model *draft_model,
+    struct llama_context *target_context,
+    struct llama_context_params context_params,
+    const struct llama_dart_speculative_params *dart_params) {
+  if (target_context == nullptr) {
+    return nullptr;
+  }
+
+  llama_dart_speculative_params default_params{};
+  const llama_dart_speculative_params &params_input =
+      dart_params == nullptr ? default_params : *dart_params;
+
+  const auto types = llama_dart_speculative_types_from_params(params_input);
+  const uint32_t type_mask = llama_dart_type_mask_from_types(types);
+  if (type_mask == 0 ||
+      llama_dart_type_mask_has(type_mask, COMMON_SPECULATIVE_TYPE_NONE)) {
+    return nullptr;
+  }
+
+  if (llama_dart_count_draft_context_types(type_mask) > 1) {
+    LOG_WRN("%s: selected speculative types require more than one draft "
+            "context; choose at most one draft model strategy\n",
+            __func__);
+    return nullptr;
+  }
+
+  llama_context *ctx_dft = nullptr;
+  if (llama_dart_type_mask_has_draft_context(type_mask)) {
+    const bool has_mtp =
+        llama_dart_type_mask_has(type_mask, COMMON_SPECULATIVE_TYPE_DRAFT_MTP);
+    const bool needs_external_draft =
+        llama_dart_type_mask_has_non_mtp_draft_context(type_mask);
+
+    llama_model *resolved_draft_model = draft_model;
+    if (resolved_draft_model == nullptr && has_mtp && !needs_external_draft) {
+      resolved_draft_model = target_model;
+    }
+    if (resolved_draft_model == nullptr) {
+      LOG_WRN("%s: draft model is required for selected speculative types\n",
+              __func__);
+      return nullptr;
+    }
+
+    if (has_mtp) {
+      context_params.ctx_type = LLAMA_CONTEXT_TYPE_MTP;
+    }
+    context_params.n_seq_max = 1;
+    context_params.n_rs_seq = 0;
+    context_params.n_outputs_max = 1;
+    context_params.ctx_other = target_context;
+
+    ctx_dft = llama_init_from_model(resolved_draft_model, context_params);
+    if (ctx_dft == nullptr) {
+      LOG_WRN("%s: failed to create speculative draft context\n", __func__);
+      return nullptr;
+    }
+  }
+
+  common_params_speculative params =
+      llama_dart_build_speculative_params(params_input, target_context, ctx_dft);
+
+  common_speculative *spec = nullptr;
+  try {
+    spec = common_speculative_init(params, 1);
+  } catch (const std::exception &e) {
+    LOG_WRN("%s: failed to initialize common_speculative: %s\n", __func__,
+            e.what());
+  } catch (...) {
+    LOG_WRN("%s: failed to initialize common_speculative\n", __func__);
+  }
+  if (spec == nullptr) {
+    if (ctx_dft != nullptr) {
+      llama_free(ctx_dft);
+    }
+    return nullptr;
+  }
+
+  auto *speculative = new llama_dart_speculative();
+  speculative->ctx_tgt = target_context;
+  speculative->ctx_dft = ctx_dft;
+  speculative->spec = spec;
+  return speculative;
+}
+
+LLAMADART_API void
+llama_dart_speculative_free(struct llama_dart_speculative *speculative) {
+  if (speculative == nullptr) {
+    return;
+  }
+  if (speculative->spec != nullptr) {
+    common_speculative_free(speculative->spec);
+    speculative->spec = nullptr;
+  }
+  if (speculative->ctx_tgt != nullptr) {
+    llama_set_embeddings(speculative->ctx_tgt, false);
+    llama_set_embeddings_nextn(speculative->ctx_tgt, false, false);
+  }
+  if (speculative->ctx_dft != nullptr) {
+    llama_free(speculative->ctx_dft);
+    speculative->ctx_dft = nullptr;
+  }
+  delete speculative;
+}
+
+LLAMADART_API struct llama_context *
+llama_dart_speculative_get_draft_context(
+    struct llama_dart_speculative *speculative) {
+  if (speculative == nullptr) {
+    return nullptr;
+  }
+  return speculative->ctx_dft;
+}
+
+LLAMADART_API bool
+llama_dart_speculative_need_embd(struct llama_dart_speculative *speculative) {
+  return speculative != nullptr && speculative->spec != nullptr &&
+         common_speculative_need_embd(speculative->spec);
+}
+
+LLAMADART_API bool llama_dart_speculative_need_embd_nextn(
+    struct llama_dart_speculative *speculative) {
+  return speculative != nullptr && speculative->spec != nullptr &&
+         common_speculative_need_embd_nextn(speculative->spec);
+}
+
+LLAMADART_API bool llama_dart_speculative_begin(
+    struct llama_dart_speculative *speculative, llama_seq_id seq_id,
+    const llama_token *prompt, int32_t prompt_count) {
+  if (speculative == nullptr || speculative->spec == nullptr ||
+      prompt_count < 0 || seq_id != 0) {
+    return false;
+  }
+
+  speculative->prompt.clear();
+  speculative->has_last_draft = false;
+  if (prompt != nullptr && prompt_count > 0) {
+    speculative->prompt.assign(prompt, prompt + prompt_count);
+  }
+
+  common_speculative_begin(speculative->spec, seq_id, speculative->prompt);
+  return true;
+}
+
+LLAMADART_API bool llama_dart_speculative_process_batch(
+    struct llama_dart_speculative *speculative, struct llama_batch batch) {
+  if (speculative == nullptr || speculative->spec == nullptr) {
+    return false;
+  }
+  return common_speculative_process(speculative->spec, batch);
+}
+
+LLAMADART_API int32_t llama_dart_speculative_draft(
+    struct llama_dart_speculative *speculative, llama_seq_id seq_id,
+    llama_pos n_past, llama_token id_last, const llama_token *prompt,
+    int32_t prompt_count, int32_t draft_token_max, llama_token *out_tokens,
+    int32_t out_capacity) {
+  if (speculative == nullptr || speculative->spec == nullptr ||
+      out_tokens == nullptr || out_capacity < 0 || prompt_count < 0 ||
+      draft_token_max <= 0 || seq_id != 0) {
+    if (speculative != nullptr) {
+      speculative->has_last_draft = false;
+    }
+    return -1;
+  }
+
+  speculative->prompt.clear();
+  if (prompt != nullptr && prompt_count > 0) {
+    speculative->prompt.assign(prompt, prompt + prompt_count);
+  }
+  speculative->draft.clear();
+  speculative->has_last_draft = false;
+  speculative->draft.reserve(static_cast<size_t>(draft_token_max));
+
+  common_speculative_get_draft_params(speculative->spec, seq_id) = {
+      /* .drafting = */ true,
+      /* .n_max    = */ draft_token_max,
+      /* .n_past   = */ n_past,
+      /* .id_last  = */ id_last,
+      /* .prompt   = */ &speculative->prompt,
+      /* .result   = */ &speculative->draft,
+  };
+
+  common_speculative_draft(speculative->spec);
+
+  const int32_t count = std::min<int32_t>(
+      static_cast<int32_t>(speculative->draft.size()),
+      std::min(draft_token_max, out_capacity));
+  speculative->has_last_draft = count > 0;
+  for (int32_t i = 0; i < count; ++i) {
+    out_tokens[i] = speculative->draft[static_cast<size_t>(i)];
+  }
+  return count;
+}
+
+LLAMADART_API void llama_dart_speculative_accept(
+    struct llama_dart_speculative *speculative, llama_seq_id seq_id,
+    uint16_t accepted_count) {
+  if (speculative == nullptr || speculative->spec == nullptr || seq_id != 0) {
+    return;
+  }
+  if (!speculative->has_last_draft) {
+    return;
+  }
+  common_speculative_accept(speculative->spec, seq_id, accepted_count);
+  speculative->has_last_draft = false;
 }
 
 static struct llama_dart_mtp *llama_dart_mtp_init_impl(
