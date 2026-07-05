@@ -170,6 +170,8 @@ fi
 
 count="$(printf '%s\n' "$files" | sed '/^$/d' | wc -l | tr -d ' ')"
 timestamp="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+llama_cpp_tag="${LLAMADART_LLAMA_CPP_TAG:-$tag}"
+native_commit="${LLAMADART_NATIVE_COMMIT:-}"
 
 : > "$output_checksums"
 while IFS= read -r f; do
@@ -184,6 +186,10 @@ EOF_FILES
 {
   echo "{"
   echo "  \"tag\": \"$tag\"," 
+  echo "  \"llama_cpp_tag\": \"$llama_cpp_tag\","
+  if [ -n "$native_commit" ]; then
+    echo "  \"native_commit\": \"$native_commit\","
+  fi
   echo "  \"generated_at\": \"$timestamp\"," 
   echo "  \"hook_contract_version\": 1,"
   echo "  \"artifacts\": ["

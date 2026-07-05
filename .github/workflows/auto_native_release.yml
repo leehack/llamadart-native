@@ -45,6 +45,7 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --ref "${{ github.ref_name }}" \
             -f llama_cpp_tag="$tag" \
+            -f native_release_tag="$tag" \
             -f publish_release=true
 
           echo "Dispatched native_release.yml for tag $tag."

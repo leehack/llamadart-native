@@ -7,6 +7,10 @@ on:
         description: 'llama.cpp ref to build (e.g., b8011, latest, submodule)'
         required: true
         default: 'latest'
+      native_release_tag:
+        description: 'llamadart-native release tag/archive suffix (blank = resolved llama.cpp tag)'
+        required: false
+        default: ''
       publish_release:
         description: 'Publish GitHub release'
         required: true
@@ -33,6 +37,8 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       tag: ${{ steps.tag.outputs.tag }}
+      llama_cpp_ref: ${{ steps.tag.outputs.tag }}
+      release_tag: ${{ steps.tag.outputs.release_tag }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -52,8 +58,45 @@ jobs:
             TAG=$(git -C third_party/llama.cpp describe --tags --exact-match 2>/dev/null || git -C third_party/llama.cpp rev-parse --short HEAD)
           fi
 
+          RELEASE_TAG="${{ github.event.inputs.native_release_tag }}"
+          if [ -z "$RELEASE_TAG" ]; then
+            RELEASE_TAG="$TAG"
+          fi
+          if ! [[ "$RELEASE_TAG" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
+            echo "Invalid native_release_tag: $RELEASE_TAG" >&2
+            exit 1
+          fi
+
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          echo "Resolved tag: $TAG"
+          echo "release_tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+          echo "Resolved llama.cpp tag: $TAG"
+          echo "Resolved native release tag: $RELEASE_TAG"
+
+          if [ "${{ github.event.inputs.publish_release }}" = "true" ]; then
+            git fetch --tags --force origin
+
+            existing_sha="$(git rev-parse -q --verify "refs/tags/${RELEASE_TAG}^{commit}" || true)"
+            if [ -n "$existing_sha" ]; then
+              echo "Release tag $RELEASE_TAG already exists at $existing_sha." >&2
+              echo "Use a new native_release_tag for wrapper-only rebuilds, for example ${TAG}-llamadart.1." >&2
+              exit 1
+            fi
+
+            set +e
+            release_url="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" --jq '.html_url' 2>&1)"
+            release_status=$?
+            set -e
+            if [ "$release_status" -eq 0 ]; then
+              echo "GitHub release $RELEASE_TAG already exists at $release_url." >&2
+              echo "Use a new native_release_tag for wrapper-only rebuilds, for example ${TAG}-llamadart.1." >&2
+              exit 1
+            fi
+            if ! grep -q "HTTP 404" <<< "$release_url"; then
+              echo "Unable to verify whether GitHub release $RELEASE_TAG already exists:" >&2
+              echo "$release_url" >&2
+              exit 1
+            fi
+          fi
 
   build-android:
     needs: resolve-tag
@@ -94,7 +137,7 @@ jobs:
         if: ${{ github.event.inputs.llama_cpp_tag != 'submodule' }}
         uses: ./.github/actions/checkout-llama-ref
         with:
-          tag: ${{ needs.resolve-tag.outputs.tag }}
+          tag: ${{ needs.resolve-tag.outputs.llama_cpp_ref }}
           github_token: ${{ github.token }}
       - name: Set up JDK
         uses: actions/setup-java@v4
@@ -266,7 +309,7 @@ jobs:
         if: ${{ github.event.inputs.llama_cpp_tag != 'submodule' }}
         uses: ./.github/actions/checkout-llama-ref
         with:
-          tag: ${{ needs.resolve-tag.outputs.tag }}
+          tag: ${{ needs.resolve-tag.outputs.llama_cpp_ref }}
           github_token: ${{ github.token }}
       - name: Install build deps
         run: brew install ccache
@@ -361,7 +404,7 @@ jobs:
         if: ${{ github.event.inputs.llama_cpp_tag != 'submodule' }}
         uses: ./.github/actions/checkout-llama-ref
         with:
-          tag: ${{ needs.resolve-tag.outputs.tag }}
+          tag: ${{ needs.resolve-tag.outputs.llama_cpp_ref }}
           github_token: ${{ github.token }}
       - name: Install build deps
         run: |
@@ -603,7 +646,7 @@ jobs:
         if: ${{ github.event.inputs.llama_cpp_tag != 'submodule' }}
         uses: ./.github/actions/checkout-llama-ref
         with:
-          tag: ${{ needs.resolve-tag.outputs.tag }}
+          tag: ${{ needs.resolve-tag.outputs.llama_cpp_ref }}
           github_token: ${{ github.token }}
       - name: Install build deps
         run: |
@@ -748,7 +791,7 @@ jobs:
         if: ${{ github.event.inputs.llama_cpp_tag != 'submodule' }}
         uses: ./.github/actions/checkout-llama-ref
         with:
-          tag: ${{ needs.resolve-tag.outputs.tag }}
+          tag: ${{ needs.resolve-tag.outputs.llama_cpp_ref }}
           github_token: ${{ github.token }}
       - name: Install Ninja
         if: ${{ matrix.arch == 'x64' }}
@@ -954,7 +997,7 @@ jobs:
         if: ${{ github.event.inputs.llama_cpp_tag != 'submodule' }}
         uses: ./.github/actions/checkout-llama-ref
         with:
-          tag: ${{ needs.resolve-tag.outputs.tag }}
+          tag: ${{ needs.resolve-tag.outputs.llama_cpp_ref }}
           github_token: ${{ github.token }}
       - name: Download artifacts
         uses: actions/download-artifact@v4
@@ -1010,12 +1053,12 @@ jobs:
               continue
             fi
             bundle_name="$(basename "$bundle_dir")"
-            archive="llamadart-native-${bundle_name}-${{ needs.resolve-tag.outputs.tag }}.tar.gz"
+            archive="llamadart-native-${bundle_name}-${{ needs.resolve-tag.outputs.release_tag }}.tar.gz"
             tar -czf "release_assets/${archive}" -C "$bundle_dir" .
           done
 
           python3 tools/package_apple_xcframework.py \
-            --tag "${{ needs.resolve-tag.outputs.tag }}" \
+            --tag "${{ needs.resolve-tag.outputs.release_tag }}" \
             --input-dir bundles \
             --output-dir release_assets \
             --clean
@@ -1036,29 +1079,69 @@ jobs:
           for hdr in third_party/llama.cpp/tools/mtmd/*.{h,hpp}; do
             cp "$hdr" headers_bundle/llama_cpp/tools/mtmd/
           done
-          HEADER_ARCHIVE="llamadart-native-headers-${{ needs.resolve-tag.outputs.tag }}.tar.gz"
+          HEADER_ARCHIVE="llamadart-native-headers-${{ needs.resolve-tag.outputs.release_tag }}.tar.gz"
           tar -czf "release_assets/${HEADER_ARCHIVE}" -C headers_bundle libllamadart llama_cpp
 
           ls -la release_assets
           test -n "$(find release_assets -maxdepth 1 -type f -print -quit)"
 
       - name: Generate manifest + checksums
+        env:
+          LLAMADART_LLAMA_CPP_TAG: ${{ needs.resolve-tag.outputs.llama_cpp_ref }}
+          LLAMADART_NATIVE_COMMIT: ${{ github.sha }}
         run: |
           chmod +x scripts/generate_assets_manifest.sh
           scripts/generate_assets_manifest.sh \
-            "${{ needs.resolve-tag.outputs.tag }}" \
+            "${{ needs.resolve-tag.outputs.release_tag }}" \
             release_assets \
             release_assets/assets.json \
             release_assets/SHA256SUMS
+
+      - name: Verify release tag is still unused
+        if: ${{ github.event.inputs.publish_release == 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ needs.resolve-tag.outputs.release_tag }}
+          LLAMA_CPP_REF: ${{ needs.resolve-tag.outputs.llama_cpp_ref }}
+        run: |
+          set -euo pipefail
+
+          git fetch --tags --force origin
+
+          existing_sha="$(git rev-parse -q --verify "refs/tags/${RELEASE_TAG}^{commit}" || true)"
+          if [ -n "$existing_sha" ]; then
+            echo "Release tag $RELEASE_TAG already exists at $existing_sha." >&2
+            echo "Use a new native_release_tag for wrapper-only rebuilds, for example ${LLAMA_CPP_REF}-llamadart.1." >&2
+            exit 1
+          fi
+
+          set +e
+          release_url="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" --jq '.html_url' 2>&1)"
+          release_status=$?
+          set -e
+          if [ "$release_status" -eq 0 ]; then
+            echo "GitHub release $RELEASE_TAG already exists at $release_url." >&2
+            echo "Use a new native_release_tag for wrapper-only rebuilds, for example ${LLAMA_CPP_REF}-llamadart.1." >&2
+            exit 1
+          fi
+          if ! grep -q "HTTP 404" <<< "$release_url"; then
+            echo "Unable to verify whether GitHub release $RELEASE_TAG already exists:" >&2
+            echo "$release_url" >&2
+            exit 1
+          fi
 
       - name: Create release
         if: ${{ github.event.inputs.publish_release == 'true' }}
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ needs.resolve-tag.outputs.tag }}
-          name: ${{ needs.resolve-tag.outputs.tag }}
+          tag_name: ${{ needs.resolve-tag.outputs.release_tag }}
+          name: ${{ needs.resolve-tag.outputs.release_tag }}
+          body: |
+            llama.cpp tag/ref: `${{ needs.resolve-tag.outputs.llama_cpp_ref }}`
+            llamadart-native commit: `${{ github.sha }}`
           files: release_assets/*
           prerelease: false
+          target_commitish: ${{ github.sha }}
 
   update-llama-submodule:
     needs: [resolve-tag, package-and-release]
@@ -1072,21 +1155,21 @@ jobs:
       - name: Move llama.cpp submodule to released tag
         uses: ./.github/actions/checkout-llama-ref
         with:
-          tag: ${{ needs.resolve-tag.outputs.tag }}
+          tag: ${{ needs.resolve-tag.outputs.llama_cpp_ref }}
           github_token: ${{ github.token }}
       - name: Commit and push submodule update
         run: |
           set -euo pipefail
 
           if git diff --quiet -- third_party/llama.cpp; then
-            echo "llama.cpp submodule already at ${{ needs.resolve-tag.outputs.tag }}"
+            echo "llama.cpp submodule already at ${{ needs.resolve-tag.outputs.llama_cpp_ref }}"
             exit 0
           fi
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add third_party/llama.cpp
-          git commit -m "chore: bump llama.cpp submodule to ${{ needs.resolve-tag.outputs.tag }}"
+          git commit -m "chore: bump llama.cpp submodule to ${{ needs.resolve-tag.outputs.llama_cpp_ref }}"
 
           # main can move while this long workflow is running. Rebase and retry
           # so submodule bump is applied on top of the latest branch tip.
