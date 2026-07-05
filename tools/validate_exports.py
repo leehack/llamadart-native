@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 
 
-DEFAULT_MTP_SYMBOLS = [
+DEFAULT_REQUIRED_SYMBOLS = [
     "llama_dart_mtp_init",
     "llama_dart_mtp_init_with_draft_model",
     "llama_dart_mtp_free",
@@ -19,6 +19,12 @@ DEFAULT_MTP_SYMBOLS = [
     "llama_dart_mtp_process_batch",
     "llama_dart_mtp_draft",
     "llama_dart_mtp_accept",
+    "llama_dart_ngram_simple_init",
+    "llama_dart_ngram_free",
+    "llama_dart_ngram_begin",
+    "llama_dart_ngram_process_batch",
+    "llama_dart_ngram_draft",
+    "llama_dart_ngram_accept",
     "llama_dart_sampler_sample_and_accept_n",
 ]
 
@@ -41,7 +47,7 @@ def parse_args() -> argparse.Namespace:
         "--symbol",
         action="append",
         dest="symbols",
-        help="Required symbol. Defaults to the llamadart MTP export set.",
+        help="Required symbol. Defaults to the llamadart speculative export set.",
     )
     return parser.parse_args()
 
@@ -114,7 +120,7 @@ def main() -> int:
         "nm": exported_symbols_from_nm,
         "dumpbin": exported_symbols_from_dumpbin,
     }[args.format](output)
-    required = args.symbols or DEFAULT_MTP_SYMBOLS
+    required = args.symbols or DEFAULT_REQUIRED_SYMBOLS
     missing = [symbol for symbol in required if symbol not in exported]
     if missing:
         print(f"Missing exports in {args.library}:", file=sys.stderr)

@@ -19,6 +19,9 @@ extern "C" {
 // Opaque MTP speculative decoding state owned by libllamadart.
 struct llama_dart_mtp;
 
+// Opaque n-gram speculative decoding state owned by libllamadart.
+struct llama_dart_ngram;
+
 // Sets the log level for llama.cpp
 LLAMADART_API void llama_dart_set_log_level(int level);
 
@@ -73,6 +76,40 @@ LLAMADART_API int32_t llama_dart_mtp_draft(
 
 LLAMADART_API void llama_dart_mtp_accept(
     struct llama_dart_mtp * mtp,
+    llama_seq_id seq_id,
+    uint16_t accepted_count);
+
+// Creates a llama.cpp ngram-simple speculative decoding state. The returned
+// handle uses token history only; it does not allocate a draft model/context.
+LLAMADART_API struct llama_dart_ngram * llama_dart_ngram_simple_init(
+    int32_t ngram_size,
+    int32_t draft_token_max);
+
+LLAMADART_API void llama_dart_ngram_free(struct llama_dart_ngram * ngram);
+
+LLAMADART_API bool llama_dart_ngram_begin(
+    struct llama_dart_ngram * ngram,
+    llama_seq_id seq_id,
+    const llama_token * prompt,
+    int32_t prompt_count);
+
+LLAMADART_API bool llama_dart_ngram_process_batch(
+    struct llama_dart_ngram * ngram,
+    struct llama_batch batch);
+
+LLAMADART_API int32_t llama_dart_ngram_draft(
+    struct llama_dart_ngram * ngram,
+    llama_seq_id seq_id,
+    llama_pos n_past,
+    llama_token id_last,
+    const llama_token * prompt,
+    int32_t prompt_count,
+    int32_t draft_token_max,
+    llama_token * out_tokens,
+    int32_t out_capacity);
+
+LLAMADART_API void llama_dart_ngram_accept(
+    struct llama_dart_ngram * ngram,
     llama_seq_id seq_id,
     uint16_t accepted_count);
 

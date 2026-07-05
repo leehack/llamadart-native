@@ -5,14 +5,14 @@
 #include "log.h"
 #include "speculative.h"
 
-#include <atomic>
 #include <algorithm>
+#include <atomic>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <vector>
 
 #include <string>
-#include <vector>
 
 #if defined(__APPLE__)
 #include <TargetConditionals.h>
@@ -48,6 +48,13 @@ struct llama_dart_mtp {
   common_speculative *spec = nullptr;
   std::vector<llama_token> prompt;
   std::vector<llama_token> draft;
+};
+
+struct llama_dart_ngram {
+  common_speculative *spec = nullptr;
+  std::vector<llama_token> prompt;
+  std::vector<llama_token> draft;
+  bool has_last_draft = false;
 };
 
 #if defined(__APPLE__) && (TARGET_OS_IOS || TARGET_OS_TV || TARGET_OS_VISION)
@@ -87,6 +94,17 @@ static void llama_dart_native_log_callback(ggml_log_level level,
     fputs(text, stderr);
     fflush(stderr);
   }
+}
+
+static uint16_t llama_dart_uint16_or_default(int32_t value,
+                                             uint16_t default_value) {
+  if (value <= 0) {
+    return default_value;
+  }
+  if (value > std::numeric_limits<uint16_t>::max()) {
+    return std::numeric_limits<uint16_t>::max();
+  }
+  return static_cast<uint16_t>(value);
 }
 
 extern "C" {
@@ -293,6 +311,123 @@ LLAMADART_API void llama_dart_mtp_accept(struct llama_dart_mtp *mtp,
     return;
   }
   common_speculative_accept(mtp->spec, seq_id, accepted_count);
+}
+
+LLAMADART_API struct llama_dart_ngram *
+llama_dart_ngram_simple_init(int32_t ngram_size, int32_t draft_token_max) {
+  common_params_speculative params;
+  params.types = {COMMON_SPECULATIVE_TYPE_NGRAM_SIMPLE};
+  params.ngram_simple.size_n = llama_dart_uint16_or_default(ngram_size, 12);
+  params.ngram_simple.size_m =
+      llama_dart_uint16_or_default(draft_token_max, 48);
+
+  common_speculative *spec = common_speculative_init(params, 1);
+  if (spec == nullptr) {
+    LOG_WRN("%s: failed to initialize common_speculative ngram-simple state\n",
+            __func__);
+    return nullptr;
+  }
+
+  auto *ngram = new llama_dart_ngram();
+  ngram->spec = spec;
+  return ngram;
+}
+
+LLAMADART_API void llama_dart_ngram_free(struct llama_dart_ngram *ngram) {
+  if (ngram == nullptr) {
+    return;
+  }
+
+  if (ngram->spec != nullptr) {
+    common_speculative_free(ngram->spec);
+    ngram->spec = nullptr;
+  }
+  delete ngram;
+}
+
+LLAMADART_API bool llama_dart_ngram_begin(struct llama_dart_ngram *ngram,
+                                          llama_seq_id seq_id,
+                                          const llama_token *prompt,
+                                          int32_t prompt_count) {
+  if (ngram == nullptr || ngram->spec == nullptr || prompt_count < 0) {
+    return false;
+  }
+  if (seq_id != 0) {
+    return false;
+  }
+
+  ngram->prompt.clear();
+  ngram->has_last_draft = false;
+  if (prompt != nullptr && prompt_count > 0) {
+    ngram->prompt.assign(prompt, prompt + prompt_count);
+  }
+
+  common_speculative_begin(ngram->spec, seq_id, ngram->prompt);
+  return true;
+}
+
+LLAMADART_API bool
+llama_dart_ngram_process_batch(struct llama_dart_ngram *ngram,
+                               struct llama_batch batch) {
+  if (ngram == nullptr || ngram->spec == nullptr) {
+    return false;
+  }
+  return common_speculative_process(ngram->spec, batch);
+}
+
+LLAMADART_API int32_t llama_dart_ngram_draft(
+    struct llama_dart_ngram *ngram, llama_seq_id seq_id, llama_pos n_past,
+    llama_token id_last, const llama_token *prompt, int32_t prompt_count,
+    int32_t draft_token_max, llama_token *out_tokens, int32_t out_capacity) {
+  if (ngram == nullptr || ngram->spec == nullptr || out_tokens == nullptr ||
+      out_capacity < 0 || prompt_count < 0 || draft_token_max <= 0) {
+    return -1;
+  }
+  if (seq_id != 0) {
+    ngram->has_last_draft = false;
+    return -1;
+  }
+
+  ngram->prompt.clear();
+  if (prompt != nullptr && prompt_count > 0) {
+    ngram->prompt.assign(prompt, prompt + prompt_count);
+  }
+  ngram->draft.clear();
+  ngram->has_last_draft = false;
+  ngram->draft.reserve(static_cast<size_t>(draft_token_max));
+
+  common_speculative_get_draft_params(ngram->spec, seq_id) = {
+      /* .drafting = */ true,
+      /* .n_max    = */ draft_token_max,
+      /* .n_past   = */ n_past,
+      /* .id_last  = */ id_last,
+      /* .prompt   = */ &ngram->prompt,
+      /* .result   = */ &ngram->draft,
+  };
+
+  common_speculative_draft(ngram->spec);
+
+  const int32_t count = std::min<int32_t>(
+      static_cast<int32_t>(ngram->draft.size()),
+      std::min(draft_token_max, out_capacity));
+  ngram->has_last_draft = count > 0;
+  for (int32_t i = 0; i < count; ++i) {
+    out_tokens[i] = ngram->draft[static_cast<size_t>(i)];
+  }
+  return count;
+}
+
+LLAMADART_API void llama_dart_ngram_accept(struct llama_dart_ngram *ngram,
+                                           llama_seq_id seq_id,
+                                           uint16_t accepted_count) {
+  if (ngram == nullptr || ngram->spec == nullptr) {
+    return;
+  }
+  if (seq_id != 0 || !ngram->has_last_draft) {
+    return;
+  }
+  common_speculative_accept(ngram->spec, seq_id, accepted_count);
+  ngram->has_last_draft = false;
 }
 
 LLAMADART_API int32_t llama_dart_sampler_sample_and_accept_n(
