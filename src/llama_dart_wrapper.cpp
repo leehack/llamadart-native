@@ -847,8 +847,20 @@ LLAMADART_API int32_t llama_dart_sampler_sample_and_accept_n(
 
   int32_t count = 0;
   int32_t i = 0;
+  const auto sample_and_accept = [sampler, ctx](int32_t idx) {
+    // llama_sampler_sample accepts CPU-sampled tokens itself, but returns
+    // backend-preselected tokens before that accept path.
+    const bool backend_sampled =
+        llama_get_sampled_token_ith(ctx, idx) != LLAMA_TOKEN_NULL;
+    const llama_token id = llama_sampler_sample(sampler, ctx, idx);
+    if (backend_sampled) {
+      llama_sampler_accept(sampler, id);
+    }
+    return id;
+  };
+
   for (; i < draft_count; ++i) {
-    const llama_token id = llama_sampler_sample(sampler, ctx, idxs[i]);
+    const llama_token id = sample_and_accept(idxs[i]);
     out_tokens[count++] = id;
     if (draft_tokens[i] != id) {
       break;
@@ -856,7 +868,7 @@ LLAMADART_API int32_t llama_dart_sampler_sample_and_accept_n(
   }
 
   if (i == draft_count) {
-    const llama_token id = llama_sampler_sample(sampler, ctx, idxs[i]);
+    const llama_token id = sample_and_accept(idxs[i]);
     out_tokens[count++] = id;
   }
 
