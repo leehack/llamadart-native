@@ -28,8 +28,12 @@ The Dart API/runtime stays in the main `llamadart` repository.
 ## Native Version Management
 
 The published tag is the native version contract consumed by downstream package
-hooks and Swift Package manifests. When changing the upstream `llama.cpp`
-version:
+hooks and Swift Package manifests. `llama_cpp_tag` selects the upstream
+`llama.cpp` ref to build. `native_release_tag` selects the
+`llamadart-native` release tag and archive suffix; when blank, it defaults to
+the resolved `llama_cpp_tag`.
+
+When changing the upstream `llama.cpp` version:
 
 1. Run `Native Build & Release` for the selected `llama_cpp_tag`, or let
    `Auto Trigger Native Release` dispatch it for the latest upstream tag.
@@ -38,6 +42,14 @@ version:
    `SHA256SUMS`.
 3. Update downstream `llamadart` pins, SPM URLs, and SPM checksums together so
    native-assets and SPM consumers use the same wrapper/runtime build.
+
+When rebuilding the wrapper without changing the upstream `llama.cpp` ref,
+dispatch `Native Build & Release` with the same `llama_cpp_tag` and a new
+`native_release_tag`, for example `b9873-llamadart.1`. Do not republish
+different source under an existing raw upstream tag; downstream caches are
+tag-keyed and the GitHub source tag should identify the native wrapper commit
+that produced the assets. Publish mode fails if the selected
+`native_release_tag` already exists as a tag or GitHub Release.
 
 ## Backend Policy (Worthy Sets)
 

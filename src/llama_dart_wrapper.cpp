@@ -62,6 +62,8 @@ struct llama_dart_speculative {
   common_speculative *spec = nullptr;
   std::vector<llama_token> prompt;
   std::vector<llama_token> draft;
+  std::vector<int8_t> process_output_mask;
+  bool caps_draft_process_outputs = false;
   bool has_last_draft = false;
 };
 
@@ -118,6 +120,33 @@ static uint16_t llama_dart_uint16_or_default(int32_t value,
 static bool llama_dart_type_mask_has(uint32_t type_mask,
                                      common_speculative_type type) {
   return (type_mask & (1u << static_cast<uint32_t>(type))) != 0;
+}
+
+static llama_batch llama_dart_cap_batch_outputs(llama_batch batch,
+                                                std::vector<int8_t> &mask) {
+  mask.clear();
+
+  if (batch.n_tokens <= 0 || batch.logits == nullptr) {
+    return batch;
+  }
+
+  int32_t output_count = 0;
+  int32_t last_output = -1;
+  for (int32_t i = 0; i < batch.n_tokens; ++i) {
+    if (batch.logits[i] != 0) {
+      ++output_count;
+      last_output = i;
+    }
+  }
+
+  if (output_count <= 1) {
+    return batch;
+  }
+
+  mask.assign(static_cast<size_t>(batch.n_tokens), 0);
+  mask[static_cast<size_t>(last_output)] = 1;
+  batch.logits = mask.data();
+  return batch;
 }
 
 static uint32_t llama_dart_type_mask_from_types(
@@ -335,6 +364,7 @@ LLAMADART_API struct llama_dart_speculative *llama_dart_speculative_init(
     context_params.n_seq_max = 1;
     context_params.n_rs_seq = 0;
     context_params.n_outputs_max = 1;
+    context_params.embeddings = false;
     context_params.ctx_other = target_context;
 
     ctx_dft = llama_init_from_model(resolved_draft_model, context_params);
@@ -367,6 +397,8 @@ LLAMADART_API struct llama_dart_speculative *llama_dart_speculative_init(
   speculative->ctx_tgt = target_context;
   speculative->ctx_dft = ctx_dft;
   speculative->spec = spec;
+  speculative->caps_draft_process_outputs =
+      llama_dart_type_mask_has(type_mask, COMMON_SPECULATIVE_TYPE_DRAFT_SIMPLE);
   return speculative;
 }
 
@@ -433,6 +465,9 @@ LLAMADART_API bool llama_dart_speculative_process_batch(
     struct llama_dart_speculative *speculative, struct llama_batch batch) {
   if (speculative == nullptr || speculative->spec == nullptr) {
     return false;
+  }
+  if (speculative->caps_draft_process_outputs) {
+    batch = llama_dart_cap_batch_outputs(batch, speculative->process_output_mask);
   }
   return common_speculative_process(speculative->spec, batch);
 }
@@ -520,6 +555,7 @@ static struct llama_dart_mtp *llama_dart_mtp_init_impl(
   ctx_params.n_seq_max = 1;
   ctx_params.n_rs_seq = 0;
   ctx_params.n_outputs_max = 1;
+  ctx_params.embeddings = false;
   ctx_params.ctx_other = ctx_tgt;
 
   llama_context *ctx_dft = llama_init_from_model(draft_model, ctx_params);
