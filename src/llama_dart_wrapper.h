@@ -62,6 +62,23 @@ struct llama_dart_speculative_params {
 // Sets the log level for llama.cpp
 LLAMADART_API void llama_dart_set_log_level(int level);
 
+// Creates a sampler that applies llama.cpp's reasoning-token budget before an
+// optional grammar sampler. The returned sampler owns grammar_sampler.
+//
+// When pause_grammar_while_reasoning is true, grammar constraints are paused
+// while generation is inside the reasoning block. prompt_tokens determine
+// whether a template already leaves generation inside a reasoning block.
+LLAMADART_API struct llama_sampler * llama_dart_sampler_init_reasoning_budget(
+    const struct llama_vocab * vocab,
+    const char * start_tag,
+    const char * end_tag,
+    const char * forced_message,
+    int32_t budget_tokens,
+    bool pause_grammar_while_reasoning,
+    struct llama_sampler * grammar_sampler,
+    const llama_token * prompt_tokens,
+    int32_t prompt_token_count);
+
 LLAMADART_API struct llama_dart_speculative * llama_dart_speculative_init(
     struct llama_model * target_model,
     struct llama_model * draft_model,
