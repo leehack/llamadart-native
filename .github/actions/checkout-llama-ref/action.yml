@@ -4,13 +4,21 @@ inputs:
   tag:
     description: llama.cpp tag or ref
     required: true
+  expected_commit:
+    description: Fully resolved llama.cpp commit that every build must use
+    required: false
   github_token:
     description: GitHub token used to fetch tags from ggml-org/llama.cpp
     required: true
+outputs:
+  commit:
+    description: Resolved llama.cpp commit
+    value: ${{ steps.checkout.outputs.commit }}
 runs:
   using: composite
   steps:
     - name: Fetch and checkout llama.cpp ref
+      id: checkout
       shell: bash
       run: |
         set -euo pipefail
@@ -30,3 +38,13 @@ runs:
         done
 
         git -C third_party/llama.cpp checkout --detach "$TAG"
+
+        ACTUAL_COMMIT="$(git -C third_party/llama.cpp rev-parse HEAD)"
+        EXPECTED_COMMIT="${{ inputs.expected_commit }}"
+        if [ -n "$EXPECTED_COMMIT" ] && [ "$ACTUAL_COMMIT" != "$EXPECTED_COMMIT" ]; then
+          echo "llama.cpp provenance mismatch: expected $EXPECTED_COMMIT, checked out $ACTUAL_COMMIT" >&2
+          exit 1
+        fi
+
+        echo "commit=$ACTUAL_COMMIT" >> "$GITHUB_OUTPUT"
+        echo "Checked out llama.cpp $TAG at $ACTUAL_COMMIT"

@@ -171,6 +171,7 @@ fi
 count="$(printf '%s\n' "$files" | sed '/^$/d' | wc -l | tr -d ' ')"
 timestamp="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 llama_cpp_tag="${LLAMADART_LLAMA_CPP_TAG:-$tag}"
+llama_cpp_commit="${LLAMADART_LLAMA_CPP_COMMIT:-}"
 native_commit="${LLAMADART_NATIVE_COMMIT:-}"
 
 : > "$output_checksums"
@@ -187,6 +188,9 @@ EOF_FILES
   echo "{"
   echo "  \"tag\": \"$tag\"," 
   echo "  \"llama_cpp_tag\": \"$llama_cpp_tag\","
+  if [ -n "$llama_cpp_commit" ]; then
+    echo "  \"llama_cpp_commit\": \"$llama_cpp_commit\","
+  fi
   if [ -n "$native_commit" ]; then
     echo "  \"native_commit\": \"$native_commit\","
   fi
