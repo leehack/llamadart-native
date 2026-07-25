@@ -1,0 +1,30 @@
+name: Validate Release Provenance
+
+on:
+  pull_request:
+    paths:
+      - '.github/actions/checkout-llama-ref/action.yml'
+      - '.github/workflows/native_release.yml'
+      - '.github/workflows/validate_release_provenance.yml'
+      - 'scripts/generate_assets_manifest.sh'
+      - 'scripts/verify_release_provenance.py'
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/actions/checkout-llama-ref/action.yml'
+      - '.github/workflows/native_release.yml'
+      - '.github/workflows/validate_release_provenance.yml'
+      - 'scripts/generate_assets_manifest.sh'
+      - 'scripts/verify_release_provenance.py'
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify release provenance contracts
+        run: python3 scripts/verify_release_provenance.py

@@ -20,6 +20,8 @@ The Dart API/runtime stays in the main `llamadart` repository.
   - Fails when any enabled backend in that target fails.
   - Publishes per-target native assets (Apple consolidated, others split core/backend libs).
   - Generates `assets.json` and `SHA256SUMS`.
+  - Pins every build to one resolved `llama.cpp` commit and publishes a source
+    tag whose submodule entry identifies that exact commit.
 - `Auto Trigger Native Release` (`.github/workflows/auto_native_release.yml`)
   - Daily schedule plus manual dispatch.
   - Resolves latest upstream `ggml-org/llama.cpp` release tag.
@@ -50,6 +52,11 @@ different source under an existing raw upstream tag; downstream caches are
 tag-keyed and the GitHub source tag should identify the native wrapper commit
 that produced the assets. Publish mode fails if the selected
 `native_release_tag` already exists as a tag or GitHub Release.
+
+`assets.json` records both the requested `llama_cpp_tag` and its resolved
+`llama_cpp_commit`, plus the `native_commit` targeted by the published source
+tag. Consumers can therefore verify the built source independently of a moving
+ref or release label.
 
 ## Backend Policy (Worthy Sets)
 
@@ -111,6 +118,8 @@ Assets are suffixed with platform/arch, for example:
 - `tools/package_apple_xcframework.py`: packages Apple `libllamadart` slices as
   an SPM-compatible XCFramework zip.
 - `scripts/generate_assets_manifest.sh`: builds `assets.json` + checksums.
+- `scripts/verify_release_provenance.py`: verifies exact-source checkout, source
+  tag, and manifest provenance contracts.
 - `docs/platform_backend_strategy.md`: platform/backend matrix.
 
 ## Local Build (Preferred)
