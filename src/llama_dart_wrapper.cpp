@@ -10,8 +10,9 @@
 #include <atomic>
 #include <cstdlib>
 #include <cstring>
-#include <string>
 #include <limits>
+#include <string>
+#include <type_traits>
 #include <vector>
 
 #if defined(__APPLE__)
@@ -358,6 +359,27 @@ llama_dart_reasoning_budget_initial_state(
   return state;
 }
 
+template <typename ReasoningBudgetInit>
+static llama_sampler *llama_dart_reasoning_budget_init_compat(
+    ReasoningBudgetInit init, const llama_vocab *vocab,
+    const llama_tokens &start_tokens, const llama_tokens &end_tokens,
+    const llama_tokens &forced_tokens, int32_t budget_tokens,
+    common_reasoning_budget_state initial_state) {
+  using llama_token_sequences = std::vector<llama_tokens>;
+  if constexpr (std::is_invocable_r_v<
+                    llama_sampler *, ReasoningBudgetInit, const llama_vocab *,
+                    const llama_token_sequences &,
+                    const llama_token_sequences &, const llama_tokens &,
+                    int32_t, common_reasoning_budget_state>) {
+    return init(vocab, llama_token_sequences{start_tokens},
+                llama_token_sequences{end_tokens}, forced_tokens, budget_tokens,
+                initial_state);
+  } else {
+    return init(vocab, start_tokens, end_tokens, forced_tokens, budget_tokens,
+                initial_state);
+  }
+}
+
 static const char *
 llama_dart_reasoning_budget_name(const struct llama_sampler * /*sampler*/) {
   return "llamadart-reasoning-budget";
@@ -507,9 +529,9 @@ LLAMADART_API struct llama_sampler *llama_dart_sampler_init_reasoning_budget(
 
   const auto initial_state = llama_dart_reasoning_budget_initial_state(
       start_tokens, end_tokens, prompt_tokens, prompt_token_count);
-  auto *budget_sampler = common_reasoning_budget_init(
-      vocab, start_tokens, end_tokens, forced_tokens, budget_tokens,
-      initial_state);
+  auto *budget_sampler = llama_dart_reasoning_budget_init_compat(
+      &common_reasoning_budget_init, vocab, start_tokens, end_tokens,
+      forced_tokens, budget_tokens, initial_state);
   if (budget_sampler == nullptr) {
     return nullptr;
   }
