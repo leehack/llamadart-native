@@ -62,6 +62,7 @@ struct llama_dart_speculative {
   llama_context *ctx_tgt = nullptr;
   llama_context *ctx_dft = nullptr;
   common_speculative *spec = nullptr;
+  std::vector<uint32_t> target_output_layer_ids;
   std::vector<llama_token> prompt;
   std::vector<llama_token> draft;
   std::vector<int8_t> process_output_mask;
@@ -190,13 +191,15 @@ static bool llama_dart_type_mask_has_draft_context(uint32_t type_mask) {
   return llama_dart_type_mask_has(type_mask, COMMON_SPECULATIVE_TYPE_DRAFT_SIMPLE) ||
          llama_dart_type_mask_has(type_mask, COMMON_SPECULATIVE_TYPE_DRAFT_EAGLE3) ||
          llama_dart_type_mask_has(type_mask, COMMON_SPECULATIVE_TYPE_DRAFT_MTP) ||
-         llama_dart_type_mask_has(type_mask, COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH);
+         llama_dart_type_mask_has(type_mask, COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH) ||
+         llama_dart_type_mask_has(type_mask, COMMON_SPECULATIVE_TYPE_DRAFT_DSPARK);
 }
 
 static bool llama_dart_type_mask_has_non_mtp_draft_context(uint32_t type_mask) {
   return llama_dart_type_mask_has(type_mask, COMMON_SPECULATIVE_TYPE_DRAFT_SIMPLE) ||
          llama_dart_type_mask_has(type_mask, COMMON_SPECULATIVE_TYPE_DRAFT_EAGLE3) ||
-         llama_dart_type_mask_has(type_mask, COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH);
+         llama_dart_type_mask_has(type_mask, COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH) ||
+         llama_dart_type_mask_has(type_mask, COMMON_SPECULATIVE_TYPE_DRAFT_DSPARK);
 }
 
 static int llama_dart_count_draft_context_types(uint32_t type_mask) {
@@ -213,7 +216,47 @@ static int llama_dart_count_draft_context_types(uint32_t type_mask) {
   if (llama_dart_type_mask_has(type_mask, COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH)) {
     ++count;
   }
+  if (llama_dart_type_mask_has(type_mask, COMMON_SPECULATIVE_TYPE_DRAFT_DSPARK)) {
+    ++count;
+  }
   return count;
+}
+
+static std::vector<uint32_t> llama_dart_speculative_target_output_layer_ids(
+    const llama_model *target_model, const llama_model *draft_model) {
+  std::vector<uint32_t> result;
+  if (target_model == nullptr || draft_model == nullptr) {
+    return result;
+  }
+
+  const int32_t n_layer_tgt = llama_model_n_layer(target_model);
+  const int32_t *target_layer_ids =
+      llama_model_target_layer_ids(draft_model);
+  const uint32_t target_layer_ids_n =
+      llama_model_target_layer_ids_n(draft_model);
+  result.reserve(target_layer_ids_n);
+  for (uint32_t i = 0; i < target_layer_ids_n; ++i) {
+    const int32_t layer_id = target_layer_ids[i];
+    if (layer_id >= 0 && layer_id < n_layer_tgt) {
+      result.push_back(static_cast<uint32_t>(layer_id));
+    }
+  }
+  std::sort(result.begin(), result.end());
+  result.erase(std::unique(result.begin(), result.end()), result.end());
+  return result;
+}
+
+static void llama_dart_reset_speculative_target_outputs(
+    llama_context *target_context,
+    const std::vector<uint32_t> &target_output_layer_ids) {
+  if (target_context == nullptr) {
+    return;
+  }
+  for (const uint32_t layer_id : target_output_layer_ids) {
+    llama_set_embeddings_layer_inp(target_context, layer_id, false);
+  }
+  llama_set_embeddings(target_context, false);
+  llama_set_embeddings_nextn(target_context, false, false);
 }
 
 static std::vector<common_speculative_type>
@@ -566,7 +609,17 @@ LLAMADART_API struct llama_dart_speculative *llama_dart_speculative_init(
   const llama_dart_speculative_params &params_input =
       dart_params == nullptr ? default_params : *dart_params;
 
-  const auto types = llama_dart_speculative_types_from_params(params_input);
+  std::vector<common_speculative_type> types;
+  try {
+    types = llama_dart_speculative_types_from_params(params_input);
+  } catch (const std::exception &e) {
+    LOG_WRN("%s: failed to resolve speculative types: %s\n", __func__,
+            e.what());
+    return nullptr;
+  } catch (...) {
+    LOG_WRN("%s: failed to resolve speculative types\n", __func__);
+    return nullptr;
+  }
   const uint32_t type_mask = llama_dart_type_mask_from_types(types);
   if (type_mask == 0 ||
       llama_dart_type_mask_has(type_mask, COMMON_SPECULATIVE_TYPE_NONE)) {
@@ -615,6 +668,9 @@ LLAMADART_API struct llama_dart_speculative *llama_dart_speculative_init(
 
   common_params_speculative params =
       llama_dart_build_speculative_params(params_input, target_context, ctx_dft);
+  const auto target_output_layer_ids =
+      llama_dart_speculative_target_output_layer_ids(
+          target_model, ctx_dft == nullptr ? nullptr : llama_get_model(ctx_dft));
 
   common_speculative *spec = nullptr;
   try {
@@ -629,6 +685,8 @@ LLAMADART_API struct llama_dart_speculative *llama_dart_speculative_init(
     if (ctx_dft != nullptr) {
       llama_free(ctx_dft);
     }
+    llama_dart_reset_speculative_target_outputs(target_context,
+                                                 target_output_layer_ids);
     return nullptr;
   }
 
@@ -636,6 +694,7 @@ LLAMADART_API struct llama_dart_speculative *llama_dart_speculative_init(
   speculative->ctx_tgt = target_context;
   speculative->ctx_dft = ctx_dft;
   speculative->spec = spec;
+  speculative->target_output_layer_ids = target_output_layer_ids;
   speculative->caps_draft_process_outputs =
       llama_dart_type_mask_has(type_mask, COMMON_SPECULATIVE_TYPE_DRAFT_SIMPLE);
   return speculative;
@@ -651,8 +710,8 @@ llama_dart_speculative_free(struct llama_dart_speculative *speculative) {
     speculative->spec = nullptr;
   }
   if (speculative->ctx_tgt != nullptr) {
-    llama_set_embeddings(speculative->ctx_tgt, false);
-    llama_set_embeddings_nextn(speculative->ctx_tgt, false, false);
+    llama_dart_reset_speculative_target_outputs(
+        speculative->ctx_tgt, speculative->target_output_layer_ids);
   }
   if (speculative->ctx_dft != nullptr) {
     llama_free(speculative->ctx_dft);
