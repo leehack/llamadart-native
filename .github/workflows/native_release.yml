@@ -335,7 +335,7 @@ jobs:
           ccache --zero-stats
       - name: Build
         run: python3 tools/build.py apple --target ${{ matrix.target }}
-      - name: Validate Apple MTP exports
+      - name: Validate Apple wrapper exports
         run: |
           OUT_LIB="bin/${{ matrix.out_dir }}/libllamadart.dylib"
           test -f "$OUT_LIB" || { echo "Missing $OUT_LIB"; exit 1; }

@@ -25,6 +25,89 @@ struct llama_dart_ngram;
 // Opaque upstream speculative decoding state owned by libllamadart.
 struct llama_dart_speculative;
 
+// Opaque experimental text-to-speech state owned by libllamadart.
+struct llama_dart_tts;
+
+// Opaque mtmd context supplied by the caller.
+struct mtmd_context;
+
+#define LLAMA_DART_TTS_API_VERSION 1
+
+enum llama_dart_tts_status {
+    LLAMA_DART_TTS_STATUS_OK = 0,
+    LLAMA_DART_TTS_STATUS_INVALID_ARGUMENT = -1,
+    LLAMA_DART_TTS_STATUS_UNSUPPORTED = -2,
+    LLAMA_DART_TTS_STATUS_INVALID_STATE = -3,
+    LLAMA_DART_TTS_STATUS_SPEAKER_DECODE_FAILED = -4,
+    LLAMA_DART_TTS_STATUS_UPSTREAM_ERROR = -5,
+    LLAMA_DART_TTS_STATUS_CANCELLED = -6,
+};
+
+enum llama_dart_tts_model_type {
+    LLAMA_DART_TTS_MODEL_TYPE_NONE = 0,
+    LLAMA_DART_TTS_MODEL_TYPE_QWEN3 = 1,
+    LLAMA_DART_TTS_MODEL_TYPE_UNKNOWN = 255,
+};
+
+enum llama_dart_tts_capability {
+    LLAMA_DART_TTS_CAPABILITY_LANGUAGE = 1u << 0,
+    LLAMA_DART_TTS_CAPABILITY_SPEAKER_REFERENCE = 1u << 1,
+};
+
+enum llama_dart_tts_state {
+    LLAMA_DART_TTS_STATE_IDLE = 0,
+    LLAMA_DART_TTS_STATE_PROCESSING_PROMPT = 1,
+    LLAMA_DART_TTS_STATE_GENERATING = 2,
+    LLAMA_DART_TTS_STATE_COMPLETED = 3,
+    LLAMA_DART_TTS_STATE_CANCELLED = 4,
+    LLAMA_DART_TTS_STATE_FAILED = 5,
+};
+
+struct llama_dart_tts_info {
+    // Set to sizeof(struct llama_dart_tts_info) before calling get_info.
+    uint32_t struct_size;
+    uint32_t api_version;
+    int32_t model_type;
+    uint32_t capabilities;
+    int32_t sample_rate;
+    int32_t channels;
+};
+
+struct llama_dart_tts_request {
+    // Set by llama_dart_tts_request_default. Callers should start from it.
+    uint32_t struct_size;
+    const char * text;
+    size_t text_length;
+    const unsigned char * speaker_audio;
+    size_t speaker_audio_length;
+    const char * language;
+    llama_seq_id sequence_id;
+    int32_t prompt_batch_size;
+    int32_t max_frames;
+    int32_t top_k;
+    float top_p;
+    float min_p;
+    float temperature;
+    uint32_t seed;
+};
+
+struct llama_dart_tts_progress {
+    // Set to sizeof(struct llama_dart_tts_progress) before each step call.
+    uint32_t struct_size;
+    int32_t state;
+    int32_t prompt_tokens_remaining;
+    int32_t frames_generated;
+    bool truncated;
+};
+
+struct llama_dart_tts_output_info {
+    // Set to sizeof(struct llama_dart_tts_output_info) before calling.
+    uint32_t struct_size;
+    int32_t sample_rate;
+    int32_t channels;
+    int64_t sample_count;
+};
+
 // Primitive C mirror of the upstream common_params_speculative knobs used by
 // libllamadart. Most positive integer controls override upstream defaults.
 // Fields that accept zero as a meaningful override use negative values as
@@ -61,6 +144,67 @@ struct llama_dart_speculative_params {
 
 // Sets the log level for llama.cpp
 LLAMADART_API void llama_dart_set_log_level(int level);
+
+// Returns the version of libllamadart's stable symbol contract around
+// experimental upstream audio-generation internals.
+LLAMADART_API uint32_t llama_dart_tts_api_version(void);
+
+// Returns model-independent defaults for a TTS request.
+LLAMADART_API struct llama_dart_tts_request llama_dart_tts_request_default(void);
+
+// Reads audio-generation capability from an initialized mtmd context.
+// Model type UNKNOWN is intentionally rejected by llama_dart_tts_init until a
+// stable capability contract is defined for that upstream generator.
+LLAMADART_API enum llama_dart_tts_status llama_dart_tts_get_info(
+    const struct mtmd_context * mtmd,
+    struct llama_dart_tts_info * out_info);
+
+// Creates a TTS task wrapper. The caller retains the llama and mtmd contexts.
+LLAMADART_API struct llama_dart_tts * llama_dart_tts_init(
+    struct llama_context * llama,
+    struct mtmd_context * mtmd,
+    enum llama_dart_tts_status * out_status);
+
+LLAMADART_API void llama_dart_tts_free(struct llama_dart_tts * tts);
+
+// Starts one synthesis task. The llama context must have embeddings enabled.
+// Other calls on the llama context must remain idle until the task completes,
+// is cancelled, or is reset.
+LLAMADART_API enum llama_dart_tts_status llama_dart_tts_start(
+    struct llama_dart_tts * tts,
+    const struct llama_dart_tts_request * request);
+
+// Performs one prompt batch or one generation-frame step. Upstream currently
+// exposes complete PCM only after generation ends; this is not chunked audio
+// streaming.
+LLAMADART_API enum llama_dart_tts_status llama_dart_tts_step(
+    struct llama_dart_tts * tts,
+    struct llama_dart_tts_progress * out_progress);
+
+// May be called from another thread. Cancellation is observed between native
+// prompt and generation steps.
+LLAMADART_API void llama_dart_tts_cancel(struct llama_dart_tts * tts);
+
+// Clears task state and the task sequence from the caller-owned llama context.
+LLAMADART_API enum llama_dart_tts_status llama_dart_tts_reset(
+    struct llama_dart_tts * tts);
+
+LLAMADART_API enum llama_dart_tts_status llama_dart_tts_get_output_info(
+    const struct llama_dart_tts * tts,
+    struct llama_dart_tts_output_info * out_info);
+
+// Copies float32 mono PCM from the completed task. out_samples may be NULL to
+// query the number of samples remaining from sample_offset.
+LLAMADART_API enum llama_dart_tts_status llama_dart_tts_read_pcm(
+    const struct llama_dart_tts * tts,
+    int64_t sample_offset,
+    float * out_samples,
+    size_t out_capacity,
+    size_t * out_count);
+
+// Returns a task-owned diagnostic string, valid until the next task call.
+LLAMADART_API const char * llama_dart_tts_last_error(
+    const struct llama_dart_tts * tts);
 
 // Creates a sampler that applies llama.cpp's reasoning-token budget before an
 // optional grammar sampler. The returned sampler owns grammar_sampler.

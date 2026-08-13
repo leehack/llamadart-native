@@ -11,6 +11,18 @@ from pathlib import Path
 
 
 DEFAULT_REQUIRED_SYMBOLS = [
+    "llama_dart_tts_api_version",
+    "llama_dart_tts_request_default",
+    "llama_dart_tts_get_info",
+    "llama_dart_tts_init",
+    "llama_dart_tts_free",
+    "llama_dart_tts_start",
+    "llama_dart_tts_step",
+    "llama_dart_tts_cancel",
+    "llama_dart_tts_reset",
+    "llama_dart_tts_get_output_info",
+    "llama_dart_tts_read_pcm",
+    "llama_dart_tts_last_error",
     "llama_dart_speculative_init",
     "llama_dart_speculative_free",
     "llama_dart_speculative_get_draft_context",

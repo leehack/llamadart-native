@@ -114,7 +114,7 @@ Assets are suffixed with platform/arch, for example:
 - `third_party/opencl-stubs`: optional local fallback location for OpenCL headers/stubs.
 - `tools/build.py`: cross-platform build entrypoint.
 - `tools/validate_exports.py`: verifies required wrapper C exports, including
-  MTP symbols, in release artifacts.
+  speculative-decoding and TTS symbols, in release artifacts.
 - `tools/package_apple_xcframework.py`: packages Apple `libllamadart` slices as
   an SPM-compatible XCFramework zip.
 - `scripts/generate_assets_manifest.sh`: builds `assets.json` + checksums.
@@ -160,6 +160,44 @@ Initialize submodules after clone:
 ```bash
 git submodule update --init --recursive
 ```
+
+## Experimental TTS Wrapper
+
+`libllamadart` exposes a versioned, opaque C symbol contract around llama.cpp's
+experimental audio-generation helpers. The wrapper currently recognizes
+Qwen3-TTS projectors, exposes model capability metadata, and
+provides task start/step/cancel/reset plus caller-buffered float32 mono PCM
+reads after synthesis completes. The caller owns the `llama_context` and
+`mtmd_context`, must create the llama context with embeddings enabled, and must
+give the TTS task exclusive access to both contexts until completion or reset.
+
+The upstream API does not currently expose completed PCM incrementally, so the
+wrapper's step API is cancellable between prompt batches and generation frames
+but is not a real-time audio stream. Public Dart support should remain
+experimental and capability-gated until artifact and platform validation is
+complete.
+
+The local smoke target is opt-in because it requires large model artifacts:
+
+```bash
+cmake -S . -B build/tts-smoke -G Ninja \
+  -DGGML_CCACHE=OFF \
+  -DGGML_METAL=OFF \
+  -DLLAMADART_BUILD_TESTS=ON \
+  -DLLAMADART_BUILD_TTS_SMOKE=ON
+cmake --build build/tts-smoke --target \
+  llamadart_tts_api_test llamadart_tts_smoke
+ctest --test-dir build/tts-smoke --output-on-failure
+build/tts-smoke/llamadart_tts_smoke \
+  /path/to/Qwen3-TTS-model.gguf \
+  /path/to/mmproj-Qwen3-TTS.gguf \
+  /tmp/tts-smoke.wav \
+  "Hello from Llama Dart." en
+```
+
+The smoke checks capability metadata, cancellation/reset, two consecutive
+syntheses, 24 kHz mono PCM metadata, finite/non-silent output, and WAV writing.
+An optional final argument supplies encoded speaker-reference audio.
 
 ## Windows Build Notes
 

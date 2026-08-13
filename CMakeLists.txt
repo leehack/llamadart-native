@@ -3,6 +3,9 @@ project(llamadart_native)
 
 find_package(Threads REQUIRED)
 
+option(LLAMADART_BUILD_TESTS "Build libllamadart wrapper tests" OFF)
+option(LLAMADART_BUILD_TTS_SMOKE "Build the local Qwen3-TTS smoke tool" OFF)
+
 # Keep all targets PIC-safe for shared linking.
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
@@ -169,3 +172,22 @@ target_include_directories(llamadart_lib PRIVATE
     third_party/llama.cpp/common
     src
 )
+
+if (LLAMADART_BUILD_TESTS)
+    enable_testing()
+    add_executable(llamadart_tts_api_test tests/tts_api_test.c)
+    target_link_libraries(llamadart_tts_api_test PRIVATE llamadart_lib)
+    target_include_directories(llamadart_tts_api_test PRIVATE src)
+    add_test(NAME llamadart_tts_api_test COMMAND llamadart_tts_api_test)
+endif()
+
+if (LLAMADART_BUILD_TTS_SMOKE)
+    add_executable(llamadart_tts_smoke tools/tts_smoke.cpp)
+    target_compile_features(llamadart_tts_smoke PRIVATE cxx_std_17)
+    target_link_libraries(llamadart_tts_smoke PRIVATE llamadart_lib)
+    target_include_directories(llamadart_tts_smoke PRIVATE
+        third_party/llama.cpp/include
+        third_party/llama.cpp/tools/mtmd
+        src
+    )
+endif()

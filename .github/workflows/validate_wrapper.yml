@@ -1,0 +1,47 @@
+name: Validate Wrapper
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/validate_wrapper.yml'
+      - 'CMakeLists.txt'
+      - 'src/**'
+      - 'tests/**'
+      - 'tools/validate_exports.py'
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/validate_wrapper.yml'
+      - 'CMakeLists.txt'
+      - 'src/**'
+      - 'tests/**'
+      - 'tools/validate_exports.py'
+
+permissions:
+  contents: read
+
+jobs:
+  wrapper-contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Configure wrapper contract tests
+        run: >-
+          cmake -S . -B build/wrapper-contract -G Ninja
+          -DCMAKE_BUILD_TYPE=Debug
+          -DGGML_NATIVE=OFF
+          -DGGML_OPENMP=OFF
+          -DLLAMADART_BUILD_TESTS=ON
+      - name: Build wrapper contract tests
+        run: cmake --build build/wrapper-contract --target llamadart_tts_api_test
+      - name: Run wrapper contract tests
+        run: ctest --test-dir build/wrapper-contract --output-on-failure
+      - name: Validate wrapper exports
+        run: >-
+          python3 tools/validate_exports.py
+          --format nm
+          --tool nm
+          build/wrapper-contract/libllamadart.so
