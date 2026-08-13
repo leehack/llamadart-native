@@ -179,6 +179,23 @@ static llama_sampler *llama_dart_tts_sampler_init(
   return sampler;
 }
 
+static int32_t llama_dart_tts_step_gen(
+    int32_t (*step_gen)(mtmd_helper_gen_audio *, llama_token, const float *,
+                        const float **),
+    mtmd_helper_gen_audio *generator, llama_token sampled, const float *state,
+    const float **next_state, bool *stop) {
+  *stop = false;
+  return step_gen(generator, sampled, state, next_state);
+}
+
+static int32_t llama_dart_tts_step_gen(
+    int32_t (*step_gen)(mtmd_helper_gen_audio *, llama_token, const float *,
+                        const float **, bool *),
+    mtmd_helper_gen_audio *generator, llama_token sampled, const float *state,
+    const float **next_state, bool *stop) {
+  return step_gen(generator, sampled, state, next_state, stop);
+}
+
 static llama_dart_tts_status llama_dart_tts_finish_output(
     llama_dart_tts *tts) {
   int32_t sample_rate = 0;
@@ -915,9 +932,11 @@ LLAMADART_API enum llama_dart_tts_status llama_dart_tts_step(
     }
     const float *state = llama_get_embeddings_ith(tts->llama, -1);
     const float *next_state = nullptr;
-    if (state == nullptr || mtmd_helper_gen_audio_step_gen(
-                                tts->generator, sampled, state,
-                                &next_state) != 0) {
+    bool stop = false;
+    if (state == nullptr ||
+        llama_dart_tts_step_gen(&mtmd_helper_gen_audio_step_gen,
+                                tts->generator, sampled, state, &next_state,
+                                &stop) != 0) {
       const auto status = llama_dart_tts_fail(
           tts, LLAMA_DART_TTS_STATUS_UPSTREAM_ERROR,
           "TTS generation step failed");
@@ -927,7 +946,7 @@ LLAMADART_API enum llama_dart_tts_status llama_dart_tts_step(
     if (next_state != nullptr) {
       ++tts->frames_generated;
     }
-    if (next_state == nullptr) {
+    if (stop || next_state == nullptr) {
       const auto status = llama_dart_tts_finish_output(tts);
       llama_dart_tts_write_progress(tts, out_progress);
       return status;
