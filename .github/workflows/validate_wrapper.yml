@@ -7,6 +7,7 @@ on:
       - 'CMakeLists.txt'
       - 'src/**'
       - 'tests/**'
+      - 'tools/tts_smoke.cpp'
       - 'tools/validate_exports.py'
   push:
     branches:
@@ -16,6 +17,7 @@ on:
       - 'CMakeLists.txt'
       - 'src/**'
       - 'tests/**'
+      - 'tools/tts_smoke.cpp'
       - 'tools/validate_exports.py'
 
 permissions:
@@ -35,8 +37,12 @@ jobs:
           -DGGML_NATIVE=OFF
           -DGGML_OPENMP=OFF
           -DLLAMADART_BUILD_TESTS=ON
-      - name: Build wrapper contract tests
-        run: cmake --build build/wrapper-contract --target llamadart_tts_api_test
+          -DLLAMADART_BUILD_TTS_SMOKE=ON
+      - name: Build wrapper contract tests and smoke tool
+        run: >-
+          cmake --build build/wrapper-contract --target
+          llamadart_tts_api_test
+          llamadart_tts_smoke
       - name: Run wrapper contract tests
         run: ctest --test-dir build/wrapper-contract --output-on-failure
       - name: Validate wrapper exports

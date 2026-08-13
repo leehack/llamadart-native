@@ -169,7 +169,8 @@ Qwen3-TTS projectors, exposes model capability metadata, and
 provides task start/step/cancel/reset plus caller-buffered float32 mono PCM
 reads after synthesis completes. The caller owns the `llama_context` and
 `mtmd_context`, must create the llama context with embeddings enabled, and must
-give the TTS task exclusive access to both contexts until completion or reset.
+give the TTS task exclusive access to both contexts until the task reaches a
+terminal state or is reset.
 
 The upstream API does not currently expose completed PCM incrementally, so the
 wrapper's step API is cancellable between prompt batches and generation frames
@@ -192,12 +193,14 @@ build/tts-smoke/llamadart_tts_smoke \
   /path/to/Qwen3-TTS-model.gguf \
   /path/to/mmproj-Qwen3-TTS.gguf \
   /tmp/tts-smoke.wav \
-  "Hello from Llama Dart." en
+  "Hello from Llama Dart." en \
+  --gpu
 ```
 
 The smoke checks capability metadata, cancellation/reset, two consecutive
 syntheses, 24 kHz mono PCM metadata, finite/non-silent output, and WAV writing.
-An optional final argument supplies encoded speaker-reference audio.
+Omit `--gpu` for a CPU-only run. An optional speaker-reference audio path may
+appear before the final `--gpu` flag.
 
 ## Windows Build Notes
 

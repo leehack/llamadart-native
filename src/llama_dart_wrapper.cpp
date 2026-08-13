@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <limits>
@@ -207,7 +208,11 @@ static llama_dart_tts_status llama_dart_tts_finish_output(
     return llama_dart_tts_fail(tts, LLAMA_DART_TTS_STATUS_UPSTREAM_ERROR,
                                "audio output conversion failed");
   }
-  if (sample_rate <= 0 || sample_count <= 0 ||
+  const bool sample_count_overflows =
+      sample_count > 0 &&
+      static_cast<uint64_t>(sample_count) >
+          std::numeric_limits<size_t>::max() / sizeof(float);
+  if (sample_rate <= 0 || sample_count <= 0 || sample_count_overflows ||
       data_len != static_cast<size_t>(sample_count) * sizeof(float) ||
       (data_len > 0 && data == nullptr)) {
     return llama_dart_tts_fail(tts, LLAMA_DART_TTS_STATUS_UPSTREAM_ERROR,
@@ -743,9 +748,9 @@ LLAMADART_API enum llama_dart_tts_status llama_dart_tts_get_info(
   out_info->model_type =
       llama_dart_tts_model_type_from_upstream(upstream.type);
   out_info->capabilities = llama_dart_tts_capabilities(mtmd, upstream.type);
-  out_info->sample_rate = upstream.sample_rate;
-  out_info->channels = upstream.type == MTMD_GEN_AUDIO_TYPE_NONE ? 0 : 1;
   const bool supported = upstream.type == MTMD_GEN_AUDIO_TYPE_QWEN3TTS;
+  out_info->sample_rate = supported ? upstream.sample_rate : 0;
+  out_info->channels = supported ? 1 : 0;
   return !supported
              ? LLAMA_DART_TTS_STATUS_UNSUPPORTED
              : LLAMA_DART_TTS_STATUS_OK;
@@ -809,8 +814,10 @@ LLAMADART_API enum llama_dart_tts_status llama_dart_tts_start(
       request->text == nullptr ||
       request->text_length == 0 || request->prompt_batch_size <= 0 ||
       request->max_frames <= 0 || request->sequence_id < 0 ||
-      request->top_k < 0 || request->top_p < 0.0f || request->top_p > 1.0f ||
-      request->min_p < 0.0f || request->min_p > 1.0f ||
+      request->top_k < 0 || !std::isfinite(request->top_p) ||
+      request->top_p < 0.0f || request->top_p > 1.0f ||
+      !std::isfinite(request->min_p) || request->min_p < 0.0f ||
+      request->min_p > 1.0f || !std::isfinite(request->temperature) ||
       request->temperature < 0.0f ||
       (request->speaker_audio_length > 0 &&
        request->speaker_audio == nullptr)) {
@@ -911,11 +918,15 @@ LLAMADART_API enum llama_dart_tts_status llama_dart_tts_step(
       llama_dart_tts_write_progress(tts, out_progress);
       return status;
     }
-    const mtmd_gen_audio_info info = mtmd_gen_audio_get_info(tts->mtmd);
-    const llama_token sampled = info.type == MTMD_GEN_AUDIO_TYPE_QWEN3TTS
-                                    ? llama_sampler_sample(tts->sampler,
-                                                           tts->llama, -1)
-                                    : LLAMA_TOKEN_NULL;
+    const llama_token sampled =
+        llama_sampler_sample(tts->sampler, tts->llama, -1);
+    if (sampled == LLAMA_TOKEN_NULL) {
+      const auto status = llama_dart_tts_fail(
+          tts, LLAMA_DART_TTS_STATUS_UPSTREAM_ERROR,
+          "TTS token sampling failed");
+      llama_dart_tts_write_progress(tts, out_progress);
+      return status;
+    }
     const llama_vocab *vocab = llama_model_get_vocab(
         llama_get_model(tts->llama));
     if (vocab == nullptr) {

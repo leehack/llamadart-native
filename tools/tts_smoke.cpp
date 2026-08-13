@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <fstream>
 #include <iterator>
 #include <limits>
@@ -137,16 +138,20 @@ static bool synthesize(llama_dart_tts *tts,
 }
 
 int main(int argc, char **argv) {
-    if (argc < 4 || argc > 7) {
+    const bool use_gpu = argc > 1 && std::strcmp(argv[argc - 1], "--gpu") == 0;
+    const int value_argc = argc - (use_gpu ? 1 : 0);
+    if (value_argc < 4 || value_argc > 7) {
         std::fprintf(stderr,
-                     "usage: %s MODEL MMPROJ OUTPUT_WAV [TEXT] [LANGUAGE] [SPEAKER_AUDIO]\n",
+                     "usage: %s MODEL MMPROJ OUTPUT_WAV [TEXT] [LANGUAGE] "
+                     "[SPEAKER_AUDIO] [--gpu]\n",
                      argv[0]);
         return 2;
     }
-    const char *text = argc >= 5 ? argv[4] : "Hello from Llama Dart.";
-    const char *language = argc >= 6 ? argv[5] : "en";
-    const std::vector<unsigned char> speaker = argc >= 7 ? read_file(argv[6]) : std::vector<unsigned char>();
-    if (argc >= 7 && speaker.empty()) {
+    const char *text = value_argc >= 5 ? argv[4] : "Hello from Llama Dart.";
+    const char *language = value_argc >= 6 ? argv[5] : "en";
+    const std::vector<unsigned char> speaker =
+        value_argc >= 7 ? read_file(argv[6]) : std::vector<unsigned char>();
+    if (value_argc >= 7 && speaker.empty()) {
         std::fprintf(stderr, "failed to read speaker audio\n");
         return 2;
     }
@@ -154,7 +159,7 @@ int main(int argc, char **argv) {
     const llama_backend_guard backend;
     llama_dart_set_log_level(4);
     llama_model_params model_params = llama_model_default_params();
-    model_params.n_gpu_layers = 0;
+    model_params.n_gpu_layers = use_gpu ? 99 : 0;
     std::unique_ptr<llama_model, decltype(&llama_model_free)> model(
         llama_model_load_from_file(argv[1], model_params), llama_model_free);
     if (model == nullptr) {
@@ -174,7 +179,7 @@ int main(int argc, char **argv) {
         return 1;
     }
     mtmd_context_params mtmd_params = mtmd_context_params_default();
-    mtmd_params.use_gpu = false;
+    mtmd_params.use_gpu = use_gpu;
     std::unique_ptr<mtmd_context, decltype(&mtmd_free)> mtmd(
         mtmd_init_from_file(argv[2], model.get(), mtmd_params), mtmd_free);
     if (mtmd == nullptr) {
@@ -212,6 +217,13 @@ int main(int argc, char **argv) {
     request.seed = 1;
     request.speaker_audio = speaker.empty() ? nullptr : speaker.data();
     request.speaker_audio_length = speaker.size();
+    llama_dart_tts_request invalid_request = request;
+    invalid_request.top_p = std::numeric_limits<float>::quiet_NaN();
+    if (llama_dart_tts_start(tts.get(), &invalid_request) !=
+        LLAMA_DART_TTS_STATUS_INVALID_ARGUMENT) {
+        std::fprintf(stderr, "non-finite sampling validation failed\n");
+        return 1;
+    }
     if (llama_dart_tts_start(tts.get(), &request) != LLAMA_DART_TTS_STATUS_OK) {
         std::fprintf(stderr, "failed to start cancellation probe: %s\n",
                      llama_dart_tts_last_error(tts.get()));
@@ -249,9 +261,11 @@ int main(int argc, char **argv) {
         std::fprintf(stderr, "failed to write WAV output\n");
         return 1;
     }
-    std::printf("PASS model_type=%d sample_rate=%d first_samples=%zu second_samples=%zu "
+    std::printf("PASS backend=%s model_type=%d sample_rate=%d "
+                "first_samples=%zu second_samples=%zu "
                 "first_frames=%d second_frames=%d first_rms=%.6f second_rms=%.6f\n",
-                static_cast<int>(info.model_type), info.sample_rate, first_pcm.size(),
+                use_gpu ? "gpu" : "cpu", static_cast<int>(info.model_type),
+                info.sample_rate, first_pcm.size(),
                 second_pcm.size(), first_progress.frames_generated,
                 second_progress.frames_generated, first_rms, second_rms);
     return 0;
