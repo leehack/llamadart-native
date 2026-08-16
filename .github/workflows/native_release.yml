@@ -908,6 +908,7 @@ jobs:
           if (($probeHits -lt 1) -or ($probeMisses -lt 1)) {
             throw "Direct NVCC probe did not record both a cache miss and hit (hits=$probeHits misses=$probeMisses)"
           }
+          & $env:SCCACHE_PATH --zero-stats
 
           cmake --preset windows-x64-full `
             -DGGML_VULKAN=OFF `
@@ -918,10 +919,18 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
             throw "Windows CUDA cache-wiring configure failed"
           }
-          $cudaRules = Get-ChildItem "build/wx64" -Recurse -File -Include *.ninja |
-            Select-String -Pattern 'sccache(?:\.exe)?.*nvcc(?:\.exe)?'
-          if (-not $cudaRules) {
-            throw "Generated Windows CUDA Ninja rules do not invoke NVCC through sccache"
+          $cache = "build/wx64/CMakeCache.txt"
+          $launcherLine = Select-String -Path $cache -Pattern '^CMAKE_CUDA_COMPILER_LAUNCHER:[^=]*='
+          $launcher = ($launcherLine.Line -split '=', 2)[1].Trim('"').Replace('\', '/')
+          $expectedLauncher = $env:SCCACHE_PATH.Trim('"').Replace('\', '/')
+          if ($launcher -ne $expectedLauncher) {
+            throw "Windows CUDA configure did not retain the action-provided sccache path"
+          }
+          $configureStats = & $env:SCCACHE_PATH --show-stats --stats-format=json | ConvertFrom-Json
+          $configureHits = [int64]$configureStats.stats.cache_hits.adv_counts.'cuda [nvcc]'
+          $configureMisses = [int64]$configureStats.stats.cache_misses.adv_counts.'cuda [nvcc]'
+          if (($configureHits + $configureMisses) -eq 0) {
+            throw "Windows CUDA configure did not invoke NVCC through sccache"
           }
           & $env:SCCACHE_PATH --zero-stats
       - name: Disable sccache for arm64 Visual Studio builds
@@ -960,10 +969,10 @@ jobs:
               throw "Missing CMake cache at $cache"
             }
             $launcherLine = Select-String -Path $cache -Pattern '^CMAKE_CUDA_COMPILER_LAUNCHER:[^=]*='
-            $launcher = ($launcherLine.Line -split '=', 2)[1].Trim('"')
-            if ((-not [System.IO.Path]::IsPathFullyQualified($launcher)) -or
-                ((Split-Path $launcher -Leaf) -notmatch '^sccache(?:\.exe)?$')) {
-              throw "Windows CUDA build did not configure the absolute sccache path as the compiler launcher"
+            $launcher = ($launcherLine.Line -split '=', 2)[1].Trim('"').Replace('\', '/')
+            $expectedLauncher = $env:SCCACHE_PATH.Trim('"').Replace('\', '/')
+            if ($launcher -ne $expectedLauncher) {
+              throw "Windows CUDA build did not retain the action-provided sccache path"
             }
             $sccacheStats = & $env:SCCACHE_PATH --show-stats --stats-format=json | ConvertFrom-Json
             $nvccHits = [int64]$sccacheStats.stats.cache_hits.adv_counts.'cuda [nvcc]'
