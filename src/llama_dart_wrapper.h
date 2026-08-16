@@ -236,9 +236,13 @@ LLAMADART_API void llama_dart_speculative_free(
 LLAMADART_API struct llama_context * llama_dart_speculative_get_draft_context(
     struct llama_dart_speculative * speculative);
 
+// Legacy ABI query. Current upstream speculative implementations configure
+// their required target outputs during initialization.
 LLAMADART_API bool llama_dart_speculative_need_embd(
     struct llama_dart_speculative * speculative);
 
+// Preserves the historical true result for MTP sessions. Current upstream
+// configures next-token embeddings during speculative initialization.
 LLAMADART_API bool llama_dart_speculative_need_embd_nextn(
     struct llama_dart_speculative * speculative);
 
