@@ -874,7 +874,11 @@ jobs:
         if: ${{ matrix.arch == 'x64' }}
         run: |
           Add-Content $env:GITHUB_ENV "SCCACHE_GHA_ENABLED=true"
-          Add-Content $env:GITHUB_ENV "SCCACHE_IGNORE_SERVER_IO_ERROR=1"
+      - name: Start sccache
+        if: ${{ matrix.arch == 'x64' }}
+        run: |
+          sccache --start-server
+          sccache --zero-stats
       - name: Disable sccache for arm64 Visual Studio builds
         if: ${{ matrix.arch == 'arm64' }}
         run: |
@@ -913,6 +917,13 @@ jobs:
             if (-not (Select-String -Path $cache -Pattern '^CMAKE_CUDA_COMPILER_LAUNCHER:[^=]*=sccache$' -Quiet)) {
               throw "Windows CUDA build did not configure sccache as the compiler launcher"
             }
+            $sccacheStats = sccache --show-stats --stats-format=json | ConvertFrom-Json
+            $nvccHits = [int64]$sccacheStats.stats.cache_hits.adv_counts.'cuda [nvcc]'
+            $nvccMisses = [int64]$sccacheStats.stats.cache_misses.adv_counts.'cuda [nvcc]'
+            if (($nvccHits + $nvccMisses) -eq 0) {
+              throw "Windows CUDA build did not record any sccache NVCC requests"
+            }
+            Write-Host "sccache NVCC requests: hits=$nvccHits misses=$nvccMisses"
             $cudaArchFiles = Get-ChildItem "build/wx64" -Recurse -File -Include CMakeCache.txt,*.ninja,*.vcxproj
             if (-not ($cudaArchFiles | Select-String -Pattern "120a-real|compute_120a|sm_120a" -Quiet)) {
               throw "Expected CUDA Blackwell architecture marker in windows CUDA build"
