@@ -187,7 +187,7 @@ cmake -S . -B build/tts-smoke -G Ninja \
   -DLLAMADART_BUILD_TESTS=ON \
   -DLLAMADART_BUILD_TTS_SMOKE=ON
 cmake --build build/tts-smoke --target \
-  llamadart_tts_api_test llamadart_tts_smoke
+  llamadart_speculative_api_test llamadart_tts_api_test llamadart_tts_smoke
 ctest --test-dir build/tts-smoke --output-on-failure
 build/tts-smoke/llamadart_tts_smoke \
   /path/to/Qwen3-TTS-model.gguf \

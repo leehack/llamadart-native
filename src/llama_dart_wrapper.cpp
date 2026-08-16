@@ -1,4 +1,5 @@
 #include "llama_dart_wrapper.h"
+#include "llama_dart_speculative_compat.h"
 
 #include "common.h"
 #include "llama-ext.h"
@@ -70,6 +71,7 @@ struct llama_dart_speculative {
   std::vector<llama_token> prompt;
   std::vector<llama_token> draft;
   std::vector<int8_t> process_output_mask;
+  llama_dart_speculative_embedding_requirements embedding_requirements;
   bool caps_draft_process_outputs = false;
   bool has_last_draft = false;
 };
@@ -1196,6 +1198,8 @@ LLAMADART_API struct llama_dart_speculative *llama_dart_speculative_init(
   speculative->ctx_dft = ctx_dft;
   speculative->spec = spec;
   speculative->target_output_layer_ids = target_output_layer_ids;
+  speculative->embedding_requirements =
+      llama_dart_speculative_embedding_requirements_for(types);
   speculative->caps_draft_process_outputs =
       llama_dart_type_mask_has(type_mask, COMMON_SPECULATIVE_TYPE_DRAFT_SIMPLE);
   return speculative;
@@ -1232,14 +1236,14 @@ llama_dart_speculative_get_draft_context(
 
 LLAMADART_API bool
 llama_dart_speculative_need_embd(struct llama_dart_speculative *speculative) {
-  return speculative != nullptr && speculative->spec != nullptr &&
-         common_speculative_need_embd(speculative->spec);
+  return speculative != nullptr &&
+         speculative->embedding_requirements.need_embd;
 }
 
 LLAMADART_API bool llama_dart_speculative_need_embd_nextn(
     struct llama_dart_speculative *speculative) {
-  return speculative != nullptr && speculative->spec != nullptr &&
-         common_speculative_need_embd_nextn(speculative->spec);
+  return speculative != nullptr &&
+         speculative->embedding_requirements.need_embd_nextn;
 }
 
 LLAMADART_API bool llama_dart_speculative_begin(

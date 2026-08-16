@@ -41,6 +41,7 @@ jobs:
       - name: Build wrapper contract tests and smoke tool
         run: >-
           cmake --build build/wrapper-contract --target
+          llamadart_speculative_api_test
           llamadart_tts_api_test
           llamadart_tts_smoke
       - name: Run wrapper contract tests

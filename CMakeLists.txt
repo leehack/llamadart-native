@@ -175,6 +175,15 @@ target_include_directories(llamadart_lib PRIVATE
 
 if (LLAMADART_BUILD_TESTS)
     enable_testing()
+    add_executable(llamadart_speculative_api_test tests/speculative_api_test.cpp)
+    target_compile_features(llamadart_speculative_api_test PRIVATE cxx_std_17)
+    target_link_libraries(llamadart_speculative_api_test PRIVATE llamadart_lib)
+    target_include_directories(llamadart_speculative_api_test PRIVATE
+        third_party/llama.cpp/common
+        src
+    )
+    add_test(NAME llamadart_speculative_api_test COMMAND llamadart_speculative_api_test)
+
     add_executable(llamadart_tts_api_test tests/tts_api_test.c)
     target_link_libraries(llamadart_tts_api_test PRIVATE llamadart_lib)
     target_include_directories(llamadart_tts_api_test PRIVATE src)
