@@ -728,7 +728,7 @@ jobs:
     env:
       CMAKE_C_COMPILER_LAUNCHER: sccache
       CMAKE_CXX_COMPILER_LAUNCHER: sccache
-      CMAKE_CUDA_COMPILER_LAUNCHER: ""
+      CMAKE_CUDA_COMPILER_LAUNCHER: sccache
     strategy:
       fail-fast: false
       matrix:
@@ -868,10 +868,13 @@ jobs:
       - name: Setup sccache
         if: ${{ matrix.arch == 'x64' }}
         uses: mozilla-actions/sccache-action@v0.0.9
+        with:
+          version: v0.17.0
       - name: Configure sccache
         if: ${{ matrix.arch == 'x64' }}
         run: |
-          echo "SCCACHE_GHA_ENABLED=true" >> $env:GITHUB_ENV
+          Add-Content $env:GITHUB_ENV "SCCACHE_GHA_ENABLED=true"
+          Add-Content $env:GITHUB_ENV "SCCACHE_IGNORE_SERVER_IO_ERROR=1"
       - name: Disable sccache for arm64 Visual Studio builds
         if: ${{ matrix.arch == 'arm64' }}
         run: |
@@ -906,6 +909,9 @@ jobs:
             $cache = "build/wx64/CMakeCache.txt"
             if (-not (Test-Path $cache)) {
               throw "Missing CMake cache at $cache"
+            }
+            if (-not (Select-String -Path $cache -Pattern '^CMAKE_CUDA_COMPILER_LAUNCHER:[^=]*=sccache$' -Quiet)) {
+              throw "Windows CUDA build did not configure sccache as the compiler launcher"
             }
             $cudaArchFiles = Get-ChildItem "build/wx64" -Recurse -File -Include CMakeCache.txt,*.ninja,*.vcxproj
             if (-not ($cudaArchFiles | Select-String -Pattern "120a-real|compute_120a|sm_120a" -Quiet)) {
