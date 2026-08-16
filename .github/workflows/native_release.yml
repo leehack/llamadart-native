@@ -874,11 +874,56 @@ jobs:
         if: ${{ matrix.arch == 'x64' }}
         run: |
           Add-Content $env:GITHUB_ENV "SCCACHE_GHA_ENABLED=true"
+          Add-Content $env:GITHUB_ENV "CMAKE_C_COMPILER_LAUNCHER=$env:SCCACHE_PATH"
+          Add-Content $env:GITHUB_ENV "CMAKE_CXX_COMPILER_LAUNCHER=$env:SCCACHE_PATH"
+          Add-Content $env:GITHUB_ENV "CMAKE_CUDA_COMPILER_LAUNCHER=$env:SCCACHE_PATH"
       - name: Start sccache
         if: ${{ matrix.arch == 'x64' }}
         run: |
-          sccache --start-server
-          sccache --zero-stats
+          & $env:SCCACHE_PATH --start-server
+          & $env:SCCACHE_PATH --zero-stats
+      - name: Validate Windows CUDA cache wiring
+        if: ${{ matrix.needs_cuda }}
+        run: |
+          $probeDir = Join-Path $env:RUNNER_TEMP "sccache-nvcc-probe"
+          New-Item -ItemType Directory -Force -Path $probeDir | Out-Null
+          $source = Join-Path $probeDir "probe.cu"
+          $object = Join-Path $probeDir "probe.obj"
+          $nvcc = Join-Path $env:CUDA_PATH "bin\nvcc.exe"
+          Set-Content -Path $source -Encoding utf8 -Value '__global__ void probe() {}'
+
+          & $env:SCCACHE_PATH $nvcc --compile $source --output-file $object
+          if ($LASTEXITCODE -ne 0) {
+            throw "Direct sccache NVCC cache-miss probe failed"
+          }
+          Remove-Item $object
+          & $env:SCCACHE_PATH $nvcc --compile $source --output-file $object
+          if ($LASTEXITCODE -ne 0) {
+            throw "Direct sccache NVCC cache-hit probe failed"
+          }
+
+          $probeStats = & $env:SCCACHE_PATH --show-stats --stats-format=json | ConvertFrom-Json
+          $probeHits = [int64]$probeStats.stats.cache_hits.adv_counts.'cuda [nvcc]'
+          $probeMisses = [int64]$probeStats.stats.cache_misses.adv_counts.'cuda [nvcc]'
+          if (($probeHits -lt 1) -or ($probeMisses -lt 1)) {
+            throw "Direct NVCC probe did not record both a cache miss and hit (hits=$probeHits misses=$probeMisses)"
+          }
+
+          cmake --preset windows-x64-full `
+            -DGGML_VULKAN=OFF `
+            -DGGML_OPENCL=OFF `
+            -DGGML_CUDA=ON `
+            -DGGML_BLAS=OFF `
+            -DGGML_CPU_KLEIDIAI=OFF
+          if ($LASTEXITCODE -ne 0) {
+            throw "Windows CUDA cache-wiring configure failed"
+          }
+          $cudaRules = Get-ChildItem "build/wx64" -Recurse -File -Include *.ninja |
+            Select-String -Pattern 'sccache(?:\.exe)?.*nvcc(?:\.exe)?'
+          if (-not $cudaRules) {
+            throw "Generated Windows CUDA Ninja rules do not invoke NVCC through sccache"
+          }
+          & $env:SCCACHE_PATH --zero-stats
       - name: Disable sccache for arm64 Visual Studio builds
         if: ${{ matrix.arch == 'arm64' }}
         run: |
@@ -914,10 +959,13 @@ jobs:
             if (-not (Test-Path $cache)) {
               throw "Missing CMake cache at $cache"
             }
-            if (-not (Select-String -Path $cache -Pattern '^CMAKE_CUDA_COMPILER_LAUNCHER:[^=]*=sccache$' -Quiet)) {
-              throw "Windows CUDA build did not configure sccache as the compiler launcher"
+            $launcherLine = Select-String -Path $cache -Pattern '^CMAKE_CUDA_COMPILER_LAUNCHER:[^=]*='
+            $launcher = ($launcherLine.Line -split '=', 2)[1].Trim('"')
+            if ((-not [System.IO.Path]::IsPathFullyQualified($launcher)) -or
+                ((Split-Path $launcher -Leaf) -notmatch '^sccache(?:\.exe)?$')) {
+              throw "Windows CUDA build did not configure the absolute sccache path as the compiler launcher"
             }
-            $sccacheStats = sccache --show-stats --stats-format=json | ConvertFrom-Json
+            $sccacheStats = & $env:SCCACHE_PATH --show-stats --stats-format=json | ConvertFrom-Json
             $nvccHits = [int64]$sccacheStats.stats.cache_hits.adv_counts.'cuda [nvcc]'
             $nvccMisses = [int64]$sccacheStats.stats.cache_misses.adv_counts.'cuda [nvcc]'
             if (($nvccHits + $nvccMisses) -eq 0) {
