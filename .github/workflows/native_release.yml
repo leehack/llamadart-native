@@ -890,7 +890,7 @@ jobs:
           $source = Join-Path $probeDir "probe.cu"
           $object = Join-Path $probeDir "probe.obj"
           $nvcc = Join-Path $env:CUDA_PATH "bin\nvcc.exe"
-          Set-Content -Path $source -Encoding utf8 -Value '__global__ void probe() {}'
+          Set-Content -Path $source -Encoding utf8 -Value "__global__ void probe_${env:GITHUB_RUN_ID}() {}"
 
           & $env:SCCACHE_PATH $nvcc -c $source -o $object
           if ($LASTEXITCODE -ne 0) {
