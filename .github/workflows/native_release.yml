@@ -874,6 +874,7 @@ jobs:
         if: ${{ matrix.arch == 'x64' }}
         run: |
           Add-Content $env:GITHUB_ENV "SCCACHE_GHA_ENABLED=true"
+          Add-Content $env:GITHUB_ENV "SCCACHE_IDLE_TIMEOUT=0"
           Add-Content $env:GITHUB_ENV "CMAKE_C_COMPILER_LAUNCHER=$env:SCCACHE_PATH"
           Add-Content $env:GITHUB_ENV "CMAKE_CXX_COMPILER_LAUNCHER=$env:SCCACHE_PATH"
           Add-Content $env:GITHUB_ENV "CMAKE_CUDA_COMPILER_LAUNCHER=$env:SCCACHE_PATH"
