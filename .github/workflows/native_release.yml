@@ -927,11 +927,16 @@ jobs:
             throw "Windows CUDA configure did not retain the action-provided sccache path"
           }
           $configureStats = & $env:SCCACHE_PATH --show-stats --stats-format=json | ConvertFrom-Json
-          $configureHits = [int64]$configureStats.stats.cache_hits.adv_counts.'cuda [nvcc]'
-          $configureMisses = [int64]$configureStats.stats.cache_misses.adv_counts.'cuda [nvcc]'
+          $configureHits = [int64](($configureStats.stats.cache_hits.adv_counts.PSObject.Properties |
+            Where-Object Name -Match '^(cuda|ptx|cubin) \[' |
+            Measure-Object -Property Value -Sum).Sum)
+          $configureMisses = [int64](($configureStats.stats.cache_misses.adv_counts.PSObject.Properties |
+            Where-Object Name -Match '^(cuda|ptx|cubin) \[' |
+            Measure-Object -Property Value -Sum).Sum)
           if (($configureHits + $configureMisses) -eq 0) {
-            throw "Windows CUDA configure did not invoke NVCC through sccache"
+            throw "Windows CUDA configure did not record CUDA pipeline cache activity"
           }
+          Write-Host "sccache CUDA configure requests: hits=$configureHits misses=$configureMisses"
           & $env:SCCACHE_PATH --zero-stats
       - name: Disable sccache for arm64 Visual Studio builds
         if: ${{ matrix.arch == 'arm64' }}
@@ -975,12 +980,16 @@ jobs:
               throw "Windows CUDA build did not retain the action-provided sccache path"
             }
             $sccacheStats = & $env:SCCACHE_PATH --show-stats --stats-format=json | ConvertFrom-Json
-            $nvccHits = [int64]$sccacheStats.stats.cache_hits.adv_counts.'cuda [nvcc]'
-            $nvccMisses = [int64]$sccacheStats.stats.cache_misses.adv_counts.'cuda [nvcc]'
-            if (($nvccHits + $nvccMisses) -eq 0) {
-              throw "Windows CUDA build did not record any sccache NVCC requests"
+            $cudaHits = [int64](($sccacheStats.stats.cache_hits.adv_counts.PSObject.Properties |
+              Where-Object Name -Match '^(cuda|ptx|cubin) \[' |
+              Measure-Object -Property Value -Sum).Sum)
+            $cudaMisses = [int64](($sccacheStats.stats.cache_misses.adv_counts.PSObject.Properties |
+              Where-Object Name -Match '^(cuda|ptx|cubin) \[' |
+              Measure-Object -Property Value -Sum).Sum)
+            if (($cudaHits + $cudaMisses) -eq 0) {
+              throw "Windows CUDA build did not record any sccache CUDA pipeline requests"
             }
-            Write-Host "sccache NVCC requests: hits=$nvccHits misses=$nvccMisses"
+            Write-Host "sccache CUDA pipeline requests: hits=$cudaHits misses=$cudaMisses"
             $cudaArchFiles = Get-ChildItem "build/wx64" -Recurse -File -Include CMakeCache.txt,*.ninja,*.vcxproj
             if (-not ($cudaArchFiles | Select-String -Pattern "120a-real|compute_120a|sm_120a" -Quiet)) {
               throw "Expected CUDA Blackwell architecture marker in windows CUDA build"
