@@ -892,12 +892,12 @@ jobs:
           $nvcc = Join-Path $env:CUDA_PATH "bin\nvcc.exe"
           Set-Content -Path $source -Encoding utf8 -Value '__global__ void probe() {}'
 
-          & $env:SCCACHE_PATH $nvcc --compile $source --output-file $object
+          & $env:SCCACHE_PATH $nvcc -c $source -o $object
           if ($LASTEXITCODE -ne 0) {
             throw "Direct sccache NVCC cache-miss probe failed"
           }
           Remove-Item $object
-          & $env:SCCACHE_PATH $nvcc --compile $source --output-file $object
+          & $env:SCCACHE_PATH $nvcc -c $source -o $object
           if ($LASTEXITCODE -ne 0) {
             throw "Direct sccache NVCC cache-hit probe failed"
           }
