@@ -23,6 +23,12 @@ import tarfile
 import tempfile
 import zipfile
 
+from cuda_pack_contract import (
+    CUDA_VARIANTS,
+    CudaContractError,
+    inspect_device_code,
+)
+
 
 PE_MACHINE_AMD64 = 0x8664
 PE32_PLUS_MAGIC = 0x20B
@@ -303,9 +309,12 @@ def package(args: argparse.Namespace) -> Path:
         raise PackagingError(f"Invalid llama.cpp tag: {args.tag}")
     if re.fullmatch(r"[0-9a-fA-F]{40}", args.llama_commit) is None:
         raise PackagingError("llama.cpp commit must be a full 40-character SHA")
-    cuda_major = args.cuda_version.split(".", 1)[0]
-    if cuda_major not in {"12", "13"}:
-        raise PackagingError("Only CUDA 12.x and CUDA 13.x packs are supported")
+    variant = CUDA_VARIANTS.get(args.cuda_version)
+    if variant is None:
+        raise PackagingError(
+            "Only the audited CUDA 12.4 and CUDA 13.3 packs are supported"
+        )
+    cuda_major = str(variant.cuda_major)
 
     expected_backend_name = (
         f"llama-{args.tag}-bin-win-cuda-{args.cuda_version}-x64.zip"
@@ -334,6 +343,7 @@ def package(args: argparse.Namespace) -> Path:
         backend_name = f"ggml-cuda-{cuda_major}.dll"
         backend_path = staging / backend_name
         extract_member(args.backend_archive, "ggml-cuda.dll", backend_path)
+        device_code = inspect_device_code(args.cuobjdump, backend_path, variant)
 
         runtime_names = [
             f"cudart64_{cuda_major}.dll",
@@ -356,7 +366,7 @@ def package(args: argparse.Namespace) -> Path:
             )
 
         metadata = {
-            "contract_version": 1,
+            "contract_version": 2,
             "llama_cpp_tag": args.tag,
             "llama_cpp_commit": args.llama_commit,
             "platform": "windows",
@@ -365,6 +375,11 @@ def package(args: argparse.Namespace) -> Path:
             "cuda_version": args.cuda_version,
             "cuda_major": int(cuda_major),
             "backend_library": backend_name,
+            "compatibility": {
+                "minimum_compute_capability": variant.minimum_compute_capability,
+                "minimum_driver_family": variant.minimum_driver_family,
+            },
+            "device_code": device_code,
             "source_assets": [
                 {
                     "name": args.backend_archive.name,
@@ -408,6 +423,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--runtime-archive", required=True, type=Path)
     parser.add_argument("--runtime-sha256", required=True)
     parser.add_argument("--core-dll", required=True, type=Path)
+    parser.add_argument("--cuobjdump", required=True, type=Path)
     parser.add_argument("--output-dir", required=True, type=Path)
     return parser.parse_args()
 
@@ -415,7 +431,7 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     try:
         output = package(parse_args())
-    except (PackagingError, OSError, zipfile.BadZipFile) as error:
+    except (CudaContractError, PackagingError, OSError, zipfile.BadZipFile) as error:
         print(f"ERROR: {error}")
         return 1
     print(output)

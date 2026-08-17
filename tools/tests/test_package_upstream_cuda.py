@@ -105,6 +105,7 @@ class PackageUpstreamCudaTest(unittest.TestCase):
             runtime_archive=Path("cudart-llama-bin-win-cuda-13.3-x64.zip"),
             runtime_sha256="0" * 64,
             core_dll=Path("ggml-base.dll"),
+            cuobjdump=Path("cuobjdump.exe"),
             output_dir=Path("output"),
         )
         with self.assertRaisesRegex(subject.PackagingError, "version mismatch"):
@@ -156,6 +157,7 @@ class PackageUpstreamCudaTest(unittest.TestCase):
                 runtime_archive=runtime_archive,
                 runtime_sha256=digest(runtime_archive),
                 core_dll=core,
+                cuobjdump=Path("cuobjdump.exe"),
                 output_dir=root / "output",
             )
             inspections = [
@@ -165,7 +167,21 @@ class PackageUpstreamCudaTest(unittest.TestCase):
                 core_info,
                 core_info,
             ]
-            with mock.patch.object(subject, "inspect_pe", side_effect=inspections):
+            device_code = {
+                "inspector": {
+                    "name": "NVIDIA cuobjdump",
+                    "sha256": "b6f56c1eb5edd046949f9c947e730a1bf0ed5beff6fc20f8ccafd8a1f5d2eff1",
+                    "version": "cuobjdump release 13.3, V13.3.29",
+                },
+                "ptx_architectures": ["75", "80", "90"],
+                "sass_architectures": ["86", "89", "120a", "121a"],
+            }
+            with (
+                mock.patch.object(subject, "inspect_pe", side_effect=inspections),
+                mock.patch.object(
+                    subject, "inspect_device_code", return_value=device_code
+                ),
+            ):
                 output = subject.package(args)
 
             self.assertTrue(output.is_file())
@@ -180,6 +196,16 @@ class PackageUpstreamCudaTest(unittest.TestCase):
                     "cublas64_13.dll",
                     "cublasLt64_13.dll",
                 },
+            )
+            with subject.tarfile.open(output, "r:gz") as archive:
+                metadata = subject.json.loads(
+                    archive.extractfile("cuda-pack.json").read()
+                )
+            self.assertEqual(metadata["contract_version"], 2)
+            self.assertEqual(metadata["device_code"], device_code)
+            self.assertEqual(
+                metadata["compatibility"],
+                {"minimum_compute_capability": 75, "minimum_driver_family": 580},
             )
 
     def test_archive_is_reproducible_across_output_names(self) -> None:

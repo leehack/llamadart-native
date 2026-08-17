@@ -98,11 +98,15 @@ def verify_workflow_contract(errors: list[str]) -> None:
     require(
         "windows-cuda-prebuilt-experiment:" in workflow
         and "github.event.inputs.publish_release == 'false'" in workflow
+        and "Install exact GPU-less fatbin inspector" in workflow
+        and "CUDA_CUOBJDUMP_ARCHIVE_SHA256" in workflow
+        and "--cuobjdump $env:CUDA_CUOBJDUMP" in workflow
         and "python tools/package_upstream_cuda.py" in workflow
+        and "python tools/verify_cuda_pack.py" in workflow
         and "tools/smoke_windows_cuda_pack.py" in workflow
         and "python @smokeArgs" in workflow
         and "compression-level: 0" in workflow,
-        "the non-publishing Windows experiment must package, loader-smoke, and upload precompressed CUDA packs",
+        "the non-publishing Windows experiment must inspect fatbins, independently verify, loader-smoke, and upload precompressed CUDA packs",
         errors,
     )
 

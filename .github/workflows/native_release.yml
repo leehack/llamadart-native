@@ -1014,6 +1014,8 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       LLAMA_CPP_TAG: ${{ needs.resolve-tag.outputs.llama_cpp_ref }}
       LLAMA_CPP_COMMIT: ${{ needs.resolve-tag.outputs.llama_cpp_commit }}
+      CUDA_CUOBJDUMP_VERSION: '13.3.29'
+      CUDA_CUOBJDUMP_ARCHIVE_SHA256: '50c8ab72fdfec7e5958fbd61988719460093d7ac86e2893377e77c8d908a2350'
     steps:
       - uses: actions/checkout@v4
         with:
@@ -1021,6 +1023,31 @@ jobs:
 
       - name: Verify packaging unit contracts
         run: python -m unittest discover -s tools/tests -v
+
+      - name: Install exact GPU-less fatbin inspector
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $archiveName = "cuda_cuobjdump-windows-x86_64-$env:CUDA_CUOBJDUMP_VERSION-archive.zip"
+          $archive = Join-Path $env:RUNNER_TEMP $archiveName
+          $url = "https://developer.download.nvidia.com/compute/cuda/redist/cuda_cuobjdump/windows-x86_64/$archiveName"
+          Invoke-WebRequest -Uri $url -OutFile $archive
+          $actual = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -ne $env:CUDA_CUOBJDUMP_ARCHIVE_SHA256) {
+            throw "NVIDIA cuobjdump archive digest mismatch: expected $env:CUDA_CUOBJDUMP_ARCHIVE_SHA256, got $actual"
+          }
+          $destination = Join-Path $env:RUNNER_TEMP 'cuda-cuobjdump'
+          Expand-Archive -Path $archive -DestinationPath $destination
+          $tools = @(Get-ChildItem $destination -Recurse -File -Filter 'cuobjdump.exe')
+          if ($tools.Count -ne 1) {
+            throw "Expected exactly one cuobjdump.exe, found $($tools.Count)"
+          }
+          & $tools[0].FullName --version
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Pinned cuobjdump executable failed its version probe'
+          }
+          "CUDA_CUOBJDUMP=$($tools[0].FullName)" | Out-File `
+            -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Resolve and download exact release assets
         shell: pwsh
@@ -1134,6 +1161,7 @@ jobs:
               --runtime-archive (Join-Path $env:CUDA_PREBUILT_DOWNLOAD_DIR $runtimeName) `
               --runtime-sha256 $metadata[$runtimeName] `
               --core-dll $core `
+              --cuobjdump $env:CUDA_CUOBJDUMP `
               --output-dir $outputDir
             if ($LASTEXITCODE -ne 0) {
               throw "CUDA $version packaging failed"
@@ -1144,6 +1172,21 @@ jobs:
             -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "CUDA pack preparation: $([math]::Round($timer.Elapsed.TotalSeconds, 1)) seconds" |
             Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+
+      - name: Independently verify finished CUDA packs
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python tools/verify_cuda_pack.py `
+            --pack (Join-Path $env:CUDA_PREBUILT_OUTPUT_DIR `
+              "llamadart-native-windows-x64-cuda12-$env:LLAMA_CPP_TAG.tar.gz") `
+            --pack (Join-Path $env:CUDA_PREBUILT_OUTPUT_DIR `
+              "llamadart-native-windows-x64-cuda13-$env:LLAMA_CPP_TAG.tar.gz") `
+            --expected-tag $env:LLAMA_CPP_TAG `
+            --expected-commit $env:LLAMA_CPP_COMMIT
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Finished CUDA pack verification failed'
+          }
 
       - name: Smoke renamed CUDA backends through ggml loader
         shell: pwsh
