@@ -307,6 +307,12 @@ def write_deterministic_tar_gz(source_dir: Path, output: Path) -> None:
 def package(args: argparse.Namespace) -> Path:
     if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", args.tag) is None:
         raise PackagingError(f"Invalid llama.cpp tag: {args.tag}")
+    if re.fullmatch(
+        r"[A-Za-z0-9][A-Za-z0-9._-]*", args.native_release_tag
+    ) is None:
+        raise PackagingError(
+            f"Invalid llamadart-native release tag: {args.native_release_tag}"
+        )
     if re.fullmatch(r"[0-9a-fA-F]{40}", args.llama_commit) is None:
         raise PackagingError("llama.cpp commit must be a full 40-character SHA")
     variant = CUDA_VARIANTS.get(args.cuda_version)
@@ -366,7 +372,8 @@ def package(args: argparse.Namespace) -> Path:
             )
 
         metadata = {
-            "contract_version": 2,
+            "contract_version": 3,
+            "native_release_tag": args.native_release_tag,
             "llama_cpp_tag": args.tag,
             "llama_cpp_commit": args.llama_commit,
             "platform": "windows",
@@ -375,9 +382,14 @@ def package(args: argparse.Namespace) -> Path:
             "cuda_version": args.cuda_version,
             "cuda_major": int(cuda_major),
             "backend_library": backend_name,
+            "core_compatibility": {
+                "library": "ggml-base.dll",
+                "sha256": sha256(args.core_dll),
+            },
             "compatibility": {
                 "minimum_compute_capability": variant.minimum_compute_capability,
                 "minimum_driver_family": variant.minimum_driver_family,
+                "minimum_driver_api": variant.minimum_driver_api,
             },
             "device_code": device_code,
             "source_assets": [
@@ -407,7 +419,8 @@ def package(args: argparse.Namespace) -> Path:
         )
 
         output = args.output_dir / (
-            f"llamadart-native-windows-x64-cuda{cuda_major}-{args.tag}.tar.gz"
+            "llamadart-native-windows-x64-"
+            f"cuda{cuda_major}-{args.native_release_tag}.tar.gz"
         )
         write_deterministic_tar_gz(staging, output)
         return output
@@ -416,6 +429,7 @@ def package(args: argparse.Namespace) -> Path:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--tag", required=True)
+    parser.add_argument("--native-release-tag", required=True)
     parser.add_argument("--llama-commit", required=True)
     parser.add_argument("--cuda-version", required=True)
     parser.add_argument("--backend-archive", required=True, type=Path)

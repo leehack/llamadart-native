@@ -98,6 +98,7 @@ class PackageUpstreamCudaTest(unittest.TestCase):
     def test_package_rejects_asset_from_a_different_tag(self) -> None:
         args = argparse.Namespace(
             tag="b-new",
+            native_release_tag="native-test",
             llama_commit="1" * 40,
             cuda_version="13.3",
             backend_archive=Path("llama-b-old-bin-win-cuda-13.3-x64.zip"),
@@ -150,6 +151,7 @@ class PackageUpstreamCudaTest(unittest.TestCase):
             )
             args = argparse.Namespace(
                 tag="b-test",
+                native_release_tag="native-test",
                 llama_commit="1" * 40,
                 cuda_version="13.3",
                 backend_archive=backend_archive,
@@ -201,11 +203,24 @@ class PackageUpstreamCudaTest(unittest.TestCase):
                 metadata = subject.json.loads(
                     archive.extractfile("cuda-pack.json").read()
                 )
-            self.assertEqual(metadata["contract_version"], 2)
+            self.assertEqual(
+                output.name,
+                "llamadart-native-windows-x64-cuda13-native-test.tar.gz",
+            )
+            self.assertEqual(metadata["contract_version"], 3)
+            self.assertEqual(metadata["native_release_tag"], "native-test")
+            self.assertEqual(
+                metadata["core_compatibility"],
+                {"library": "ggml-base.dll", "sha256": digest(core)},
+            )
             self.assertEqual(metadata["device_code"], device_code)
             self.assertEqual(
                 metadata["compatibility"],
-                {"minimum_compute_capability": 75, "minimum_driver_family": 580},
+                {
+                    "minimum_compute_capability": 75,
+                    "minimum_driver_family": 580,
+                    "minimum_driver_api": 13000,
+                },
             )
 
     def test_archive_is_reproducible_across_output_names(self) -> None:

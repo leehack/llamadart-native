@@ -110,6 +110,35 @@ def verify_workflow_contract(errors: list[str]) -> None:
         errors,
     )
 
+    windows_build = workflow.split("  build-windows:", 1)[1].split(
+        "  package-windows-cuda:", 1
+    )[0]
+    cuda_packaging = workflow.split("  package-windows-cuda:", 1)[1].split(
+        "  windows-cuda-prebuilt-experiment:", 1
+    )[0]
+    require(
+        "backend: cuda" not in windows_build
+        and "Install CUDA Toolkit" not in windows_build,
+        "Windows release builds must not compile the replaced CUDA backend lane",
+        errors,
+    )
+    require(
+        "needs: [resolve-tag, build-windows]" in cuda_packaging
+        and "name: native_windows_x64_vulkan" in cuda_packaging
+        and "--native-release-tag $env:NATIVE_RELEASE_TAG" in cuda_packaging
+        and "--core-dll $env:CUDA_PREBUILT_CORE_DLL" in cuda_packaging
+        and "name: windows_cuda_packs" in cuda_packaging,
+        "production CUDA sidecars must be verified against and follow the same-run Windows core",
+        errors,
+    )
+    require(
+        "package-windows-cuda]" in workflow
+        and 'cuda_pack_dir="artifacts/windows_cuda_packs"' in workflow
+        and 'test "$cuda_pack_count" = "2"' in workflow,
+        "release packaging must require and publish both verified Windows CUDA sidecars",
+        errors,
+    )
+
 
 def verify_manifest_contract(errors: list[str]) -> None:
     with tempfile.TemporaryDirectory() as directory:
@@ -117,6 +146,9 @@ def verify_manifest_contract(errors: list[str]) -> None:
         assets = root / "assets"
         assets.mkdir()
         (assets / "libllamadart-linux-x64.so").write_bytes(b"native-test")
+        (assets / "llamadart-native-windows-x64-cuda13-native-test.tar.gz").write_bytes(
+            b"cuda-test"
+        )
         output_json = root / "assets.json"
         output_checksums = root / "SHA256SUMS"
         env = os.environ.copy()
@@ -150,6 +182,22 @@ def verify_manifest_contract(errors: list[str]) -> None:
         require(
             "libllamadart-linux-x64.so" in output_checksums.read_text(),
             "manifest generation must continue to emit asset checksums",
+            errors,
+        )
+        cuda_artifacts = [
+            artifact
+            for artifact in manifest.get("artifacts", [])
+            if artifact.get("file")
+            == "llamadart-native-windows-x64-cuda13-native-test.tar.gz"
+        ]
+        require(
+            len(cuda_artifacts) == 1
+            and cuda_artifacts[0].get("module") == "backend-cuda13"
+            and cuda_artifacts[0].get("platform") == "windows"
+            and cuda_artifacts[0].get("arch") == "x64"
+            and cuda_artifacts[0].get("backend") == "cuda"
+            and cuda_artifacts[0].get("size") == len(b"cuda-test"),
+            "assets.json must classify Windows CUDA sidecars as versioned CUDA backends",
             errors,
         )
 

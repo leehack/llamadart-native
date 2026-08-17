@@ -737,7 +737,6 @@ jobs:
     env:
       CMAKE_C_COMPILER_LAUNCHER: sccache
       CMAKE_CXX_COMPILER_LAUNCHER: sccache
-      CMAKE_CUDA_COMPILER_LAUNCHER: ""
     strategy:
       fail-fast: false
       matrix:
@@ -747,25 +746,14 @@ jobs:
             runs_on: windows-latest
             backend: vulkan
             include_core: true
-            needs_cuda: false
             needs_openblas: false
             needs_vulkan: true
             backend_glob: "*ggml-vulkan*.dll"
           - arch: x64
             vcpkg_triplet: x64-windows
-            runs_on: windows-2022
-            backend: cuda
-            include_core: false
-            needs_cuda: true
-            needs_openblas: false
-            needs_vulkan: false
-            backend_glob: "*ggml-cuda*.dll"
-          - arch: x64
-            vcpkg_triplet: x64-windows
             runs_on: windows-latest
             backend: blas
             include_core: false
-            needs_cuda: false
             needs_openblas: true
             needs_vulkan: false
             backend_glob: "*ggml-blas*.dll"
@@ -774,7 +762,6 @@ jobs:
             runs_on: windows-11-arm
             backend: vulkan
             include_core: true
-            needs_cuda: false
             needs_openblas: false
             needs_vulkan: true
             backend_glob: "*ggml-vulkan*.dll"
@@ -783,7 +770,6 @@ jobs:
             runs_on: windows-11-arm
             backend: blas
             include_core: false
-            needs_cuda: false
             needs_openblas: true
             needs_vulkan: false
             backend_glob: "*ggml-blas*.dll"
@@ -813,23 +799,6 @@ jobs:
       - name: Install Ninja
         if: ${{ matrix.arch == 'x64' }}
         run: choco install ninja -y
-      - name: Install CUDA Toolkit
-        if: ${{ matrix.needs_cuda }}
-        run: |
-          $cudaRoot = Join-Path $env:ProgramFiles "NVIDIA GPU Computing Toolkit\CUDA\v12.8"
-          python tools/install_cuda_redist.py `
-            --version "${env:CUDA_REDIST_VERSION}" `
-            --platform windows-x86_64 `
-            --destination "$cudaRoot"
-          Add-Content $env:GITHUB_PATH (Join-Path $cudaRoot "bin")
-          Add-Content $env:GITHUB_PATH (Join-Path $cudaRoot "nvvm\bin")
-          Add-Content $env:GITHUB_ENV "CUDA_PATH=$cudaRoot"
-          Add-Content $env:GITHUB_ENV "CUDAToolkit_ROOT=$cudaRoot"
-          $nvccVersion = & (Join-Path $cudaRoot "bin\nvcc.exe") --version
-          $nvccVersion
-          if (($nvccVersion -join "`n") -notmatch 'release 12\.8') {
-            throw "Expected CUDA ${env:CUDA_REDIST_VERSION} nvcc"
-          }
       - name: Restore vcpkg cache
         if: ${{ matrix.needs_openblas }}
         id: vcpkg-cache
@@ -902,41 +871,6 @@ jobs:
           if (-not (Get-ChildItem $out -Filter "${{ matrix.backend_glob }}" -ErrorAction SilentlyContinue | Select-Object -First 1)) {
             throw "Missing backend DLL '${{ matrix.backend_glob }}' in $out"
           }
-          if ("${{ matrix.backend }}" -eq "cuda") {
-            if (-not (Get-ChildItem $out -Filter "cudart64_*.dll" -ErrorAction SilentlyContinue | Select-Object -First 1)) {
-              throw "Missing CUDA runtime dependency (cudart64_*.dll) in $out"
-            }
-            if (-not (Get-ChildItem $out -Filter "cublas64_*.dll" -ErrorAction SilentlyContinue | Select-Object -First 1)) {
-              throw "Missing CUDA runtime dependency (cublas64_*.dll) in $out"
-            }
-            if (-not (Get-ChildItem $out -Filter "cublasLt64_*.dll" -ErrorAction SilentlyContinue | Select-Object -First 1)) {
-              throw "Missing CUDA runtime dependency (cublasLt64_*.dll) in $out"
-            }
-            $cache = "build/wx64/CMakeCache.txt"
-            if (-not (Test-Path $cache)) {
-              throw "Missing CMake cache at $cache"
-            }
-            $cudaArchFiles = Get-ChildItem "build/wx64" -Recurse -File -Include CMakeCache.txt,*.ninja,*.vcxproj
-            if (-not ($cudaArchFiles | Select-String -Pattern "120a-real|compute_120a|sm_120a" -Quiet)) {
-              throw "Expected CUDA Blackwell architecture marker in windows CUDA build"
-            }
-            $cudaBin = Join-Path $env:CUDA_PATH "bin"
-            $cudaDlls = @()
-            $cudaDlls += Get-ChildItem $out -Filter "cudart64_*.dll"
-            $cudaDlls += Get-ChildItem $out -Filter "cublas64_*.dll"
-            $cudaDlls += Get-ChildItem $out -Filter "cublasLt64_*.dll"
-            foreach ($dll in $cudaDlls) {
-              $source = Join-Path $cudaBin $dll.Name
-              if (-not (Test-Path $source)) {
-                throw "Packaged CUDA DLL $($dll.Name) is not present in CUDA_PATH"
-              }
-              $packagedHash = (Get-FileHash $dll.FullName -Algorithm SHA256).Hash
-              $sourceHash = (Get-FileHash $source -Algorithm SHA256).Hash
-              if ($packagedHash -ne $sourceHash) {
-                throw "Packaged CUDA DLL $($dll.Name) does not match CUDA_PATH"
-              }
-            }
-          }
           if ("${{ matrix.backend }}" -eq "blas") {
             if (-not (Get-ChildItem $out -Filter "openblas*.dll" -ErrorAction SilentlyContinue | Select-Object -First 1)) {
               throw "Missing BLAS runtime dependency (openblas*.dll) in $out"
@@ -970,11 +904,6 @@ jobs:
             $files = @(
               Get-ChildItem $out -Filter "${{ matrix.backend_glob }}" -ErrorAction Stop
             )
-            if ("${{ matrix.backend }}" -eq "cuda") {
-              $files += Get-ChildItem $out -Filter "cudart64_*.dll" -ErrorAction SilentlyContinue
-              $files += Get-ChildItem $out -Filter "cublas64_*.dll" -ErrorAction SilentlyContinue
-              $files += Get-ChildItem $out -Filter "cublasLt64_*.dll" -ErrorAction SilentlyContinue
-            }
             if ("${{ matrix.backend }}" -eq "blas") {
               $files += Get-ChildItem $out -Filter "openblas*.dll" -ErrorAction SilentlyContinue
             }
@@ -1002,6 +931,220 @@ jobs:
             C:\vcpkg\installed
           key: vcpkg-${{ runner.os }}-${{ matrix.vcpkg_triplet }}-${{ env.VCPKG_CACHE_VERSION }}
 
+  package-windows-cuda:
+    needs: [resolve-tag, build-windows]
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      LLAMA_CPP_TAG: ${{ needs.resolve-tag.outputs.llama_cpp_ref }}
+      LLAMA_CPP_COMMIT: ${{ needs.resolve-tag.outputs.llama_cpp_commit }}
+      NATIVE_RELEASE_TAG: ${{ needs.resolve-tag.outputs.release_tag }}
+      CUDA_CUOBJDUMP_VERSION: '13.3.29'
+      CUDA_CUOBJDUMP_ARCHIVE_SHA256: '50c8ab72fdfec7e5958fbd61988719460093d7ac86e2893377e77c8d908a2350'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify packaging unit contracts
+        run: python -m unittest discover -s tools/tests -v
+
+      - name: Download same-run Windows core
+        uses: actions/download-artifact@v4
+        with:
+          name: native_windows_x64_vulkan
+          path: ${{ runner.temp }}/native-core
+
+      - name: Resolve exact same-run core libraries
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $coreDir = Join-Path $env:RUNNER_TEMP 'native-core'
+          $base = @(Get-ChildItem $coreDir -File -Filter '*ggml-base*.dll')
+          if ($base.Count -ne 1) {
+            throw "Expected exactly one same-run ggml-base DLL, found $($base.Count)"
+          }
+          $ggml = @(Get-ChildItem $coreDir -File -Filter 'ggml.dll')
+          if ($ggml.Count -ne 1) {
+            throw "Expected exactly one same-run ggml.dll, found $($ggml.Count)"
+          }
+          "CUDA_PREBUILT_CORE_DIR=$coreDir" | Out-File `
+            -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "CUDA_PREBUILT_CORE_DLL=$($base[0].FullName)" | Out-File `
+            -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Install exact GPU-less fatbin inspector
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $archiveName = "cuda_cuobjdump-windows-x86_64-$env:CUDA_CUOBJDUMP_VERSION-archive.zip"
+          $archive = Join-Path $env:RUNNER_TEMP $archiveName
+          $url = "https://developer.download.nvidia.com/compute/cuda/redist/cuda_cuobjdump/windows-x86_64/$archiveName"
+          Invoke-WebRequest -Uri $url -OutFile $archive
+          $actual = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -ne $env:CUDA_CUOBJDUMP_ARCHIVE_SHA256) {
+            throw "NVIDIA cuobjdump archive digest mismatch: expected $env:CUDA_CUOBJDUMP_ARCHIVE_SHA256, got $actual"
+          }
+          $destination = Join-Path $env:RUNNER_TEMP 'cuda-cuobjdump'
+          Expand-Archive -Path $archive -DestinationPath $destination
+          $tools = @(Get-ChildItem $destination -Recurse -File -Filter 'cuobjdump.exe')
+          if ($tools.Count -ne 1) {
+            throw "Expected exactly one cuobjdump.exe, found $($tools.Count)"
+          }
+          & $tools[0].FullName --version
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Pinned cuobjdump executable failed its version probe'
+          }
+          "CUDA_CUOBJDUMP=$($tools[0].FullName)" | Out-File `
+            -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Resolve and download exact upstream CUDA assets
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $downloadDir = Join-Path $env:RUNNER_TEMP 'cuda-prebuilt-downloads'
+          New-Item -ItemType Directory -Force -Path $downloadDir | Out-Null
+
+          $upstreamRelease = gh api "repos/ggml-org/llama.cpp/releases/tags/$env:LLAMA_CPP_TAG" |
+            ConvertFrom-Json
+          if ($upstreamRelease.target_commitish -ne $env:LLAMA_CPP_COMMIT) {
+            throw "Upstream release target $($upstreamRelease.target_commitish) does not match resolved commit $env:LLAMA_CPP_COMMIT"
+          }
+
+          $assetNames = @(
+            "llama-$env:LLAMA_CPP_TAG-bin-win-cuda-12.4-x64.zip",
+            'cudart-llama-bin-win-cuda-12.4-x64.zip',
+            "llama-$env:LLAMA_CPP_TAG-bin-win-cuda-13.3-x64.zip",
+            'cudart-llama-bin-win-cuda-13.3-x64.zip'
+          )
+          $metadata = @{}
+          foreach ($assetName in $assetNames) {
+            $asset = $upstreamRelease.assets |
+              Where-Object name -EQ $assetName |
+              Select-Object -First 1
+            if (-not $asset) {
+              throw "Required upstream release asset is missing: $assetName"
+            }
+            if ($asset.digest -notmatch '^sha256:[0-9a-f]{64}$') {
+              throw "Upstream release asset has no usable SHA-256 digest: $assetName"
+            }
+            $metadata[$assetName] = $asset.digest.Substring(7)
+            gh release download $env:LLAMA_CPP_TAG `
+              --repo ggml-org/llama.cpp `
+              --pattern $assetName `
+              --dir $downloadDir
+            if ($LASTEXITCODE -ne 0) {
+              throw "Failed to download upstream release asset $assetName"
+            }
+            $path = Join-Path $downloadDir $assetName
+            $actual = (Get-FileHash $path -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($actual -ne $metadata[$assetName]) {
+              throw "Downloaded asset digest mismatch for $assetName"
+            }
+          }
+
+          $metadata | ConvertTo-Json | Set-Content `
+            (Join-Path $downloadDir 'release-assets.json')
+          "CUDA_PREBUILT_DOWNLOAD_DIR=$downloadDir" | Out-File `
+            -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Package CUDA 12.4 and CUDA 13.3
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $outputDir = Join-Path $env:RUNNER_TEMP 'cuda-packs'
+          New-Item -ItemType Directory -Force -Path $outputDir | Out-Null
+          $metadata = Get-Content `
+            (Join-Path $env:CUDA_PREBUILT_DOWNLOAD_DIR 'release-assets.json') |
+            ConvertFrom-Json -AsHashtable
+          $timer = [Diagnostics.Stopwatch]::StartNew()
+
+          foreach ($version in @('12.4', '13.3')) {
+            $backendName = "llama-$env:LLAMA_CPP_TAG-bin-win-cuda-$version-x64.zip"
+            $runtimeName = "cudart-llama-bin-win-cuda-$version-x64.zip"
+            python tools/package_upstream_cuda.py `
+              --tag $env:LLAMA_CPP_TAG `
+              --native-release-tag $env:NATIVE_RELEASE_TAG `
+              --llama-commit $env:LLAMA_CPP_COMMIT `
+              --cuda-version $version `
+              --backend-archive (Join-Path $env:CUDA_PREBUILT_DOWNLOAD_DIR $backendName) `
+              --backend-sha256 $metadata[$backendName] `
+              --runtime-archive (Join-Path $env:CUDA_PREBUILT_DOWNLOAD_DIR $runtimeName) `
+              --runtime-sha256 $metadata[$runtimeName] `
+              --core-dll $env:CUDA_PREBUILT_CORE_DLL `
+              --cuobjdump $env:CUDA_CUOBJDUMP `
+              --output-dir $outputDir
+            if ($LASTEXITCODE -ne 0) {
+              throw "CUDA $version packaging failed"
+            }
+          }
+          $timer.Stop()
+          "CUDA_PREBUILT_OUTPUT_DIR=$outputDir" | Out-File `
+            -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "CUDA pack preparation: $([math]::Round($timer.Elapsed.TotalSeconds, 1)) seconds" |
+            Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+
+      - name: Independently verify finished CUDA packs
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python tools/verify_cuda_pack.py `
+            --pack (Join-Path $env:CUDA_PREBUILT_OUTPUT_DIR `
+              "llamadart-native-windows-x64-cuda12-$env:NATIVE_RELEASE_TAG.tar.gz") `
+            --pack (Join-Path $env:CUDA_PREBUILT_OUTPUT_DIR `
+              "llamadart-native-windows-x64-cuda13-$env:NATIVE_RELEASE_TAG.tar.gz") `
+            --expected-native-tag $env:NATIVE_RELEASE_TAG `
+            --expected-tag $env:LLAMA_CPP_TAG `
+            --expected-commit $env:LLAMA_CPP_COMMIT `
+            --core-dll $env:CUDA_PREBUILT_CORE_DLL
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Finished CUDA pack verification failed'
+          }
+
+      - name: Smoke renamed CUDA backends through ggml loader
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          foreach ($major in @('12', '13')) {
+            $smokeDir = Join-Path $env:RUNNER_TEMP "cuda-smoke-$major"
+            New-Item -ItemType Directory -Force -Path $smokeDir | Out-Null
+            $pack = Join-Path $env:CUDA_PREBUILT_OUTPUT_DIR `
+              "llamadart-native-windows-x64-cuda$major-$env:NATIVE_RELEASE_TAG.tar.gz"
+            tar -xzf $pack -C $smokeDir
+            if ($LASTEXITCODE -ne 0) {
+              throw "Failed to extract CUDA $major pack"
+            }
+            Copy-Item $env:CUDA_PREBUILT_CORE_DLL `
+              (Join-Path $smokeDir 'ggml-base.dll') -Force
+            foreach ($name in @('ggml.dll', 'vcomp140.dll')) {
+              $source = Join-Path $env:CUDA_PREBUILT_CORE_DIR $name
+              if (Test-Path $source) {
+                Copy-Item $source $smokeDir
+              }
+            }
+            $smokeArgs = @(
+              'tools/smoke_windows_cuda_pack.py',
+              '--directory', $smokeDir,
+              '--backend', "ggml-cuda-$major.dll"
+            )
+            if ($major -eq '12') {
+              $smokeArgs += '--allow-missing-nvidia-driver'
+            }
+            python @smokeArgs
+            if ($LASTEXITCODE -ne 0) {
+              throw "CUDA $major loader smoke failed"
+            }
+          }
+
+      - name: Upload verified CUDA release sidecars
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows_cuda_packs
+          path: ${{ runner.temp }}/cuda-packs/*.tar.gz
+          compression-level: 0
+
   windows-cuda-prebuilt-experiment:
     needs: resolve-tag
     if: >-
@@ -1014,6 +1157,7 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       LLAMA_CPP_TAG: ${{ needs.resolve-tag.outputs.llama_cpp_ref }}
       LLAMA_CPP_COMMIT: ${{ needs.resolve-tag.outputs.llama_cpp_commit }}
+      NATIVE_RELEASE_TAG: ${{ needs.resolve-tag.outputs.release_tag }}
       CUDA_CUOBJDUMP_VERSION: '13.3.29'
       CUDA_CUOBJDUMP_ARCHIVE_SHA256: '50c8ab72fdfec7e5958fbd61988719460093d7ac86e2893377e77c8d908a2350'
     steps:
@@ -1154,6 +1298,7 @@ jobs:
             $runtimeName = "cudart-llama-bin-win-cuda-$version-x64.zip"
             python tools/package_upstream_cuda.py `
               --tag $env:LLAMA_CPP_TAG `
+              --native-release-tag $env:NATIVE_RELEASE_TAG `
               --llama-commit $env:LLAMA_CPP_COMMIT `
               --cuda-version $version `
               --backend-archive (Join-Path $env:CUDA_PREBUILT_DOWNLOAD_DIR $backendName) `
@@ -1179,11 +1324,13 @@ jobs:
           $ErrorActionPreference = 'Stop'
           python tools/verify_cuda_pack.py `
             --pack (Join-Path $env:CUDA_PREBUILT_OUTPUT_DIR `
-              "llamadart-native-windows-x64-cuda12-$env:LLAMA_CPP_TAG.tar.gz") `
+              "llamadart-native-windows-x64-cuda12-$env:NATIVE_RELEASE_TAG.tar.gz") `
             --pack (Join-Path $env:CUDA_PREBUILT_OUTPUT_DIR `
-              "llamadart-native-windows-x64-cuda13-$env:LLAMA_CPP_TAG.tar.gz") `
+              "llamadart-native-windows-x64-cuda13-$env:NATIVE_RELEASE_TAG.tar.gz") `
+            --expected-native-tag $env:NATIVE_RELEASE_TAG `
             --expected-tag $env:LLAMA_CPP_TAG `
-            --expected-commit $env:LLAMA_CPP_COMMIT
+            --expected-commit $env:LLAMA_CPP_COMMIT `
+            --core-dll (Join-Path $env:CUDA_PREBUILT_CORE_DIR 'ggml-base.dll')
           if ($LASTEXITCODE -ne 0) {
             throw 'Finished CUDA pack verification failed'
           }
@@ -1196,7 +1343,7 @@ jobs:
             $smokeDir = Join-Path $env:RUNNER_TEMP "cuda-smoke-$major"
             New-Item -ItemType Directory -Force -Path $smokeDir | Out-Null
             $pack = Join-Path $env:CUDA_PREBUILT_OUTPUT_DIR `
-              "llamadart-native-windows-x64-cuda$major-$env:LLAMA_CPP_TAG.tar.gz"
+              "llamadart-native-windows-x64-cuda$major-$env:NATIVE_RELEASE_TAG.tar.gz"
             tar -xzf $pack -C $smokeDir
             if ($LASTEXITCODE -ne 0) {
               throw "Failed to extract CUDA $major pack"
@@ -1242,7 +1389,7 @@ jobs:
           retention-days: 7
 
   package-and-release:
-    needs: [resolve-tag, build-android, build-apple, build-linux, build-linux-hip, build-windows]
+    needs: [resolve-tag, build-android, build-apple, build-linux, build-linux-hip, build-windows, package-windows-cuda]
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -1293,6 +1440,12 @@ jobs:
         run: |
           mkdir -p release_assets
           mkdir -p bundles
+
+          cuda_pack_dir="artifacts/windows_cuda_packs"
+          test -d "$cuda_pack_dir" || { echo "Missing verified Windows CUDA sidecars" >&2; exit 1; }
+          cuda_pack_count="$(find "$cuda_pack_dir" -maxdepth 1 -type f -name '*.tar.gz' | wc -l | tr -d ' ')"
+          test "$cuda_pack_count" = "2" || { echo "Expected two Windows CUDA sidecars, found $cuda_pack_count" >&2; exit 1; }
+          cp "$cuda_pack_dir"/*.tar.gz release_assets/
 
           for dir in artifacts/native_*; do
             [ -d "$dir" ] || continue

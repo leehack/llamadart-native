@@ -23,6 +23,7 @@ def manifest(version: str) -> dict[str, object]:
         "compatibility": {
             "minimum_compute_capability": variant.minimum_compute_capability,
             "minimum_driver_family": variant.minimum_driver_family,
+            "minimum_driver_api": variant.minimum_driver_api,
         },
         "device_code": {
             "ptx_architectures": sorted(variant.ptx_architectures),

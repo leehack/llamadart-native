@@ -25,6 +25,7 @@ class CudaVariant:
     cuda_major: int
     minimum_compute_capability: int
     minimum_driver_family: int
+    minimum_driver_api: int
     ptx_architectures: frozenset[str]
     sass_architectures: frozenset[str]
 
@@ -38,6 +39,7 @@ CUDA_VARIANTS: dict[str, CudaVariant] = {
         cuda_major=12,
         minimum_compute_capability=50,
         minimum_driver_family=525,
+        minimum_driver_api=12000,
         ptx_architectures=frozenset({"50", "61", "70", "75", "80", "90"}),
         sass_architectures=frozenset({"86", "89"}),
     ),
@@ -46,6 +48,7 @@ CUDA_VARIANTS: dict[str, CudaVariant] = {
         cuda_major=13,
         minimum_compute_capability=75,
         minimum_driver_family=580,
+        minimum_driver_api=13000,
         ptx_architectures=frozenset({"75", "80", "90"}),
         sass_architectures=frozenset({"86", "89", "120a", "121a"}),
     ),
@@ -145,6 +148,7 @@ def validate_variant_metadata(manifest: Mapping[str, Any]) -> CudaVariant:
     expected_compatibility = {
         "minimum_compute_capability": variant.minimum_compute_capability,
         "minimum_driver_family": variant.minimum_driver_family,
+        "minimum_driver_api": variant.minimum_driver_api,
     }
     if compatibility != expected_compatibility:
         raise CudaContractError(

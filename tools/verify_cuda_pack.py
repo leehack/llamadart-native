@@ -43,8 +43,10 @@ def _read_member(archive: tarfile.TarFile, member: tarfile.TarInfo) -> bytes:
 def verify_pack(
     path: Path,
     *,
+    expected_native_tag: str,
     expected_tag: str,
     expected_commit: str,
+    expected_core_sha256: str,
 ) -> dict[str, Any]:
     """Verify one pack and return its validated manifest."""
 
@@ -77,8 +79,12 @@ def verify_pack(
         if not isinstance(manifest, dict):
             raise VerificationError("Pack manifest must be a JSON object")
 
-        if manifest.get("contract_version") != 2:
-            raise VerificationError("Pack contract version must be 2")
+        if manifest.get("contract_version") != 3:
+            raise VerificationError("Pack contract version must be 3")
+        if manifest.get("native_release_tag") != expected_native_tag:
+            raise VerificationError(
+                "Pack native release tag does not match the requested release"
+            )
         if manifest.get("llama_cpp_tag") != expected_tag:
             raise VerificationError("Pack tag does not match the requested upstream tag")
         if manifest.get("llama_cpp_commit") != expected_commit:
@@ -92,6 +98,14 @@ def verify_pack(
             raise VerificationError(str(error)) from error
         major = str(variant.cuda_major)
         expected_backend = f"ggml-cuda-{major}.dll"
+        expected_archive = (
+            "llamadart-native-windows-x64-"
+            f"cuda{major}-{expected_native_tag}.tar.gz"
+        )
+        if path.name != expected_archive:
+            raise VerificationError(
+                f"Pack filename must be {expected_archive}, got {path.name}"
+            )
         expected_payload = {
             expected_backend,
             f"cudart64_{major}.dll",
@@ -100,6 +114,11 @@ def verify_pack(
         }
         if manifest.get("backend_library") != expected_backend:
             raise VerificationError("Pack backend filename is invalid")
+        if manifest.get("core_compatibility") != {
+            "library": "ggml-base.dll",
+            "sha256": expected_core_sha256,
+        }:
+            raise VerificationError("Pack core compatibility digest differs")
         if set(by_name) != expected_payload | {"cuda-pack.json"}:
             raise VerificationError("Pack contains missing or unexpected payload files")
 
@@ -199,19 +218,25 @@ def verify_selection_policy(manifests: list[Mapping[str, Any]]) -> None:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--pack", action="append", required=True, type=Path)
+    parser.add_argument("--expected-native-tag", required=True)
     parser.add_argument("--expected-tag", required=True)
     parser.add_argument("--expected-commit", required=True)
+    parser.add_argument("--core-dll", required=True, type=Path)
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
     try:
+        with args.core_dll.open("rb") as core_source:
+            expected_core_sha256 = stream_sha256(core_source)
         manifests = [
             verify_pack(
                 path,
+                expected_native_tag=args.expected_native_tag,
                 expected_tag=args.expected_tag,
                 expected_commit=args.expected_commit,
+                expected_core_sha256=expected_core_sha256,
             )
             for path in args.pack
         ]

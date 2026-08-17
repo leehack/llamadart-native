@@ -54,6 +54,10 @@ infer_meta() {
 
   # New naming convention: <libname>-<platform>-<arch>.<ext>
   case "$stem" in
+    llamadart-native-windows-x64-cuda12-*)
+      platform="windows"; arch="x64"; backend="cuda"; module="backend-cuda12"; libid="ggml-cuda-12" ;;
+    llamadart-native-windows-x64-cuda13-*)
+      platform="windows"; arch="x64"; backend="cuda"; module="backend-cuda13"; libid="ggml-cuda-13" ;;
     llamadart-native-apple-xcframework-*)
       platform="apple"; arch="universal"; backend="core"; module="spm-xcframework"; libid="llamadart-native-apple-xcframework" ;;
     *-windows-x64)
@@ -115,6 +119,13 @@ infer_meta() {
 
   local id_no_lib
   id_no_lib="${libid#lib}"
+
+  case "$module" in
+    backend-cuda12|backend-cuda13)
+      echo "$platform|$arch|$backend|$module"
+      return
+      ;;
+  esac
 
   case "$id_no_lib" in
     llamadart-native-apple-xcframework)

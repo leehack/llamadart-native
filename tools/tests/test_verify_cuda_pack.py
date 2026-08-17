@@ -29,6 +29,8 @@ def write_test_pack(
     path: Path,
     version: str,
     *,
+    native_release_tag: str = "native-test",
+    core_sha256: str = "2" * 64,
     corrupt_hash: bool = False,
     extra_name: str | None = None,
 ) -> None:
@@ -47,7 +49,8 @@ def write_test_pack(
             digest = "0" * 64
         files.append({"name": name, "sha256": digest, "size": len(contents)})
     manifest = {
-        "contract_version": 2,
+        "contract_version": 3,
+        "native_release_tag": native_release_tag,
         "llama_cpp_tag": "b-test",
         "llama_cpp_commit": "1" * 40,
         "platform": "windows",
@@ -56,9 +59,14 @@ def write_test_pack(
         "cuda_version": version,
         "cuda_major": variant.cuda_major,
         "backend_library": f"ggml-cuda-{major}.dll",
+        "core_compatibility": {
+            "library": "ggml-base.dll",
+            "sha256": core_sha256,
+        },
         "compatibility": {
             "minimum_compute_capability": variant.minimum_compute_capability,
             "minimum_driver_family": variant.minimum_driver_family,
+            "minimum_driver_api": variant.minimum_driver_api,
         },
         "device_code": {
             "inspector": {
@@ -100,29 +108,74 @@ def write_test_pack(
 class VerifyCudaPackTest(unittest.TestCase):
     def test_verifies_payload_hashes_and_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            pack = Path(directory) / "cuda13.tar.gz"
+            pack = Path(directory) / (
+                "llamadart-native-windows-x64-cuda13-native-test.tar.gz"
+            )
             write_test_pack(pack, "13.3")
             manifest = subject.verify_pack(
-                pack, expected_tag="b-test", expected_commit="1" * 40
+                pack,
+                expected_native_tag="native-test",
+                expected_tag="b-test",
+                expected_commit="1" * 40,
+                expected_core_sha256="2" * 64,
             )
             self.assertEqual(manifest["cuda_major"], 13)
 
     def test_rejects_corrupt_payload_hash(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            pack = Path(directory) / "cuda12.tar.gz"
+            pack = Path(directory) / (
+                "llamadart-native-windows-x64-cuda12-native-test.tar.gz"
+            )
             write_test_pack(pack, "12.4", corrupt_hash=True)
             with self.assertRaisesRegex(subject.VerificationError, "SHA-256"):
                 subject.verify_pack(
-                    pack, expected_tag="b-test", expected_commit="1" * 40
+                    pack,
+                    expected_native_tag="native-test",
+                    expected_tag="b-test",
+                    expected_commit="1" * 40,
+                    expected_core_sha256="2" * 64,
                 )
 
     def test_rejects_non_top_level_member(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            pack = Path(directory) / "cuda12.tar.gz"
+            pack = Path(directory) / (
+                "llamadart-native-windows-x64-cuda12-native-test.tar.gz"
+            )
             write_test_pack(pack, "12.4", extra_name="../escape.dll")
             with self.assertRaisesRegex(subject.VerificationError, "top-level"):
                 subject.verify_pack(
-                    pack, expected_tag="b-test", expected_commit="1" * 40
+                    pack,
+                    expected_native_tag="native-test",
+                    expected_tag="b-test",
+                    expected_commit="1" * 40,
+                    expected_core_sha256="2" * 64,
+                )
+
+    def test_rejects_native_release_or_core_version_skew(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            pack = Path(directory) / (
+                "llamadart-native-windows-x64-cuda13-native-test.tar.gz"
+            )
+            write_test_pack(pack, "13.3")
+            with self.assertRaisesRegex(
+                subject.VerificationError, "native release tag"
+            ):
+                subject.verify_pack(
+                    pack,
+                    expected_native_tag="native-other",
+                    expected_tag="b-test",
+                    expected_commit="1" * 40,
+                    expected_core_sha256="2" * 64,
+                )
+            with self.assertRaisesRegex(
+                subject.VerificationError, "core compatibility"
+            ):
+                subject.verify_pack(
+                    pack,
+                    expected_native_tag="native-test",
+                    expected_tag="b-test",
+                    expected_commit="1" * 40,
+                    expected_core_sha256="9" * 64,
                 )
 
 
