@@ -1388,6 +1388,135 @@ jobs:
           compression-level: 0
           retention-days: 7
 
+  windows-arm64-vulkan-parallel-experiment:
+    needs: resolve-tag
+    if: >-
+      ${{ github.event.inputs.native_release_tag == 'cuda-prebuilt-experiment' &&
+          github.event.inputs.publish_release == 'false' }}
+    runs-on: windows-11-arm
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - mode: jobs3
+            use_mtt: false
+          - mode: jobs3-mtt3
+            use_mtt: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Enable Git Long Paths
+        run: git config --global core.longpaths true
+
+      - name: Setup MSVC (arm64 cross)
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: arm64
+
+      - name: Verify pinned llama.cpp commit
+        shell: pwsh
+        env:
+          EXPECTED_LLAMA_CPP_COMMIT: ${{ needs.resolve-tag.outputs.llama_cpp_commit }}
+        run: |
+          $actual = git -C third_party/llama.cpp rev-parse HEAD
+          if ($LASTEXITCODE -ne 0 -or $actual -ne $env:EXPECTED_LLAMA_CPP_COMMIT) {
+            throw "Pinned llama.cpp commit $actual does not match $env:EXPECTED_LLAMA_CPP_COMMIT"
+          }
+
+      - name: Disable compiler launcher
+        shell: pwsh
+        run: |
+          Add-Content $env:GITHUB_ENV 'CMAKE_C_COMPILER_LAUNCHER='
+          Add-Content $env:GITHUB_ENV 'CMAKE_CXX_COMPILER_LAUNCHER='
+          Add-Content $env:GITHUB_ENV 'CMAKE_CUDA_COMPILER_LAUNCHER='
+
+      - name: Cap parallel compiler processes
+        if: ${{ matrix.use_mtt }}
+        shell: pwsh
+        run: |
+          Add-Content $env:GITHUB_ENV 'UseMultiToolTask=true'
+          Add-Content $env:GITHUB_ENV 'EnforceProcessCountAcrossBuilds=true'
+          Add-Content $env:GITHUB_ENV 'CL_MPCount=3'
+          Add-Content $env:GITHUB_ENV 'MultiProcMaxCount=3'
+
+      - name: Install Vulkan SDK
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $ver = '1.4.313.2'
+          $installer = Join-Path $env:RUNNER_TEMP 'VulkanSDK-Installer.exe'
+          curl.exe -o $installer -L "https://sdk.lunarg.com/sdk/download/$ver/windows/vulkansdk-windows-X64-$ver.exe"
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Failed to download Vulkan SDK installer'
+          }
+          & $installer --accept-licenses --default-answer --confirm-command install
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Failed to install Vulkan SDK'
+          }
+          Add-Content $env:GITHUB_ENV "VULKAN_SDK=C:\VulkanSDK\$ver"
+          Add-Content $env:GITHUB_PATH "C:\VulkanSDK\$ver\Bin"
+
+      - name: Build ARM64 Vulkan (${{ matrix.mode }})
+        id: build
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $timer = [Diagnostics.Stopwatch]::StartNew()
+          python tools/build.py windows --arch arm64 --backend vulkan --jobs 3
+          if ($LASTEXITCODE -ne 0) {
+            throw 'ARM64 Vulkan build failed'
+          }
+          $timer.Stop()
+          $seconds = [math]::Round($timer.Elapsed.TotalSeconds, 1)
+          "seconds=$seconds" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "ARM64 Vulkan ${{ matrix.mode }} build: $seconds seconds" |
+            Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+
+      - name: Validate ARM64 Vulkan artifacts
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $out = 'bin/windows/arm64'
+          $wrapper = Get-ChildItem $out -Filter '*llamadart*.dll' |
+            Select-Object -First 1
+          $vulkan = Get-ChildItem $out -Filter '*ggml-vulkan*.dll' |
+            Select-Object -First 1
+          $core = Get-ChildItem $out -Filter 'ggml-base.dll' |
+            Select-Object -First 1
+          foreach ($artifact in @($wrapper, $vulkan, $core)) {
+            if (-not $artifact) {
+              throw 'Missing required ARM64 Vulkan artifact'
+            }
+            $headers = dumpbin /headers $artifact.FullName | Out-String
+            if ($LASTEXITCODE -ne 0) {
+              throw "dumpbin failed for $($artifact.Name)"
+            }
+            if ($headers -notmatch '(?im)^\s*AA64 machine \(ARM64\)\s*$') {
+              throw "Expected ARM64 PE machine for $($artifact.Name)"
+            }
+          }
+          python tools/validate_exports.py --format dumpbin --tool dumpbin $wrapper.FullName
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Wrapper export validation failed'
+          }
+          $cache = 'build/wa64/CMakeCache.txt'
+          if (-not (Select-String -Path $cache -Pattern '^GGML_CPU_KLEIDIAI:BOOL=ON$' -Quiet)) {
+            throw 'Kleidi is not enabled in Windows ARM64 build'
+          }
+
+      - name: Upload non-publishing ARM64 Vulkan experiment
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-arm64-vulkan-${{ matrix.mode }}-${{ needs.resolve-tag.outputs.llama_cpp_ref }}
+          path: bin/windows/arm64/*
+          compression-level: 0
+          retention-days: 7
+
   package-and-release:
     needs: [resolve-tag, build-android, build-apple, build-linux, build-linux-hip, build-windows, package-windows-cuda]
     runs-on: macos-latest
