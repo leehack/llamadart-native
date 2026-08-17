@@ -67,6 +67,34 @@ class PackageUpstreamCudaTest(unittest.TestCase):
             with self.assertRaisesRegex(subject.PackagingError, "ggml_missing"):
                 subject.validate_backend(Path("backend"), Path("core"), "13")
 
+    def test_dependency_closure_rejects_unknown_runtime(self) -> None:
+        image = subject.PeInfo(
+            machine=subject.PE_MACHINE_AMD64,
+            optional_magic=subject.PE32_PLUS_MAGIC,
+            exports=frozenset(),
+            imports={"unexpected-runtime.dll": frozenset()},
+        )
+        with self.assertRaisesRegex(
+            subject.PackagingError, "unexpected-runtime.dll"
+        ):
+            subject.validate_dependency_closure({"backend.dll": image})
+
+    def test_dependency_closure_allows_nvidia_driver(self) -> None:
+        image = subject.PeInfo(
+            machine=subject.PE_MACHINE_AMD64,
+            optional_magic=subject.PE32_PLUS_MAGIC,
+            exports=frozenset(),
+            imports={
+                "nvcuda.dll": frozenset(),
+                "api-ms-win-crt-runtime-l1-1-0.dll": frozenset(),
+            },
+        )
+        external = subject.validate_dependency_closure({"backend.dll": image})
+        self.assertEqual(
+            external,
+            {"nvcuda.dll", "api-ms-win-crt-runtime-l1-1-0.dll"},
+        )
+
     def test_package_rejects_asset_from_a_different_tag(self) -> None:
         args = argparse.Namespace(
             tag="b-new",

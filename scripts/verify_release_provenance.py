@@ -99,7 +99,8 @@ def verify_workflow_contract(errors: list[str]) -> None:
         "windows-cuda-prebuilt-experiment:" in workflow
         and "github.event.inputs.publish_release == 'false'" in workflow
         and "python tools/package_upstream_cuda.py" in workflow
-        and "python tools/smoke_windows_cuda_pack.py" in workflow
+        and "tools/smoke_windows_cuda_pack.py" in workflow
+        and "python @smokeArgs" in workflow
         and "compression-level: 0" in workflow,
         "the non-publishing Windows experiment must package, loader-smoke, and upload precompressed CUDA packs",
         errors,

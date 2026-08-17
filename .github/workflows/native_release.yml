@@ -1164,9 +1164,15 @@ jobs:
                 Copy-Item $source $smokeDir
               }
             }
-            python tools/smoke_windows_cuda_pack.py `
-              --directory $smokeDir `
-              --backend "ggml-cuda-$major.dll"
+            $smokeArgs = @(
+              'tools/smoke_windows_cuda_pack.py',
+              '--directory', $smokeDir,
+              '--backend', "ggml-cuda-$major.dll"
+            )
+            if ($major -eq '12') {
+              $smokeArgs += '--allow-missing-nvidia-driver'
+            }
+            python @smokeArgs
             if ($LASTEXITCODE -ne 0) {
               throw "CUDA $major loader smoke failed"
             }

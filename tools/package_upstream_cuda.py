@@ -26,6 +26,16 @@ import zipfile
 
 PE_MACHINE_AMD64 = 0x8664
 PE32_PLUS_MAGIC = 0x20B
+WINDOWS_EXTERNAL_IMPORTS = frozenset(
+    {
+        "kernel32.dll",
+        "msvcp140.dll",
+        "nvcuda.dll",
+        "vcomp140.dll",
+        "vcruntime140.dll",
+        "vcruntime140_1.dll",
+    }
+)
 
 
 class PackagingError(RuntimeError):
@@ -249,6 +259,27 @@ def validate_backend(
     return backend, core
 
 
+def validate_dependency_closure(images: dict[str, PeInfo]) -> set[str]:
+    available = {name.lower() for name in images}
+    external: set[str] = set()
+    missing: set[str] = set()
+    for image in images.values():
+        for imported_name in image.imports:
+            name = imported_name.lower()
+            if name in available:
+                continue
+            if name.startswith("api-ms-win-") or name in WINDOWS_EXTERNAL_IMPORTS:
+                external.add(name)
+                continue
+            missing.add(name)
+    if missing:
+        raise PackagingError(
+            "CUDA pack has unresolved non-system DLL imports: "
+            + ", ".join(sorted(missing))
+        )
+    return external
+
+
 def write_deterministic_tar_gz(source_dir: Path, output: Path) -> None:
     output.parent.mkdir(parents=True, exist_ok=True)
     with output.open("wb") as raw:
@@ -312,9 +343,11 @@ def package(args: argparse.Namespace) -> Path:
         for runtime_name in runtime_names:
             extract_member(args.runtime_archive, runtime_name, staging / runtime_name)
 
-        backend, _ = validate_backend(backend_path, args.core_dll, cuda_major)
+        backend, core = validate_backend(backend_path, args.core_dll, cuda_major)
+        images = {backend_name: backend, "ggml-base.dll": core}
         for runtime_name in runtime_names:
-            inspect_pe(staging / runtime_name)
+            images[runtime_name] = inspect_pe(staging / runtime_name)
+        external_imports = validate_dependency_closure(images)
 
         files = []
         for path in sorted(staging.iterdir()):
@@ -350,6 +383,7 @@ def package(args: argparse.Namespace) -> Path:
             "backend_imports": {
                 name: sorted(symbols) for name, symbols in sorted(backend.imports.items())
             },
+            "external_imports": sorted(external_imports),
             "files": files,
         }
         metadata_path = staging / "cuda-pack.json"

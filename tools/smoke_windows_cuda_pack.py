@@ -18,7 +18,12 @@ def require_file(path: Path) -> None:
         raise RuntimeError(f"Required smoke file is missing: {path}")
 
 
-def smoke(directory: Path, backend_name: str) -> dict[str, object]:
+def smoke(
+    directory: Path,
+    backend_name: str,
+    *,
+    allow_missing_nvidia_driver: bool = False,
+) -> dict[str, object]:
     if os.name != "nt":
         raise RuntimeError("Windows CUDA pack smoke must run on Windows")
 
@@ -29,9 +34,25 @@ def smoke(directory: Path, backend_name: str) -> dict[str, object]:
         require_file(path)
 
     with os.add_dll_directory(str(directory)):
-        backend_library = ctypes.CDLL(
-            str(backend_path), winmode=LOAD_WITH_ALTERED_SEARCH_PATH
-        )
+        try:
+            backend_library = ctypes.CDLL(
+                str(backend_path), winmode=LOAD_WITH_ALTERED_SEARCH_PATH
+            )
+        except OSError:
+            if not allow_missing_nvidia_driver:
+                raise
+            try:
+                ctypes.CDLL("nvcuda.dll")
+            except OSError:
+                return {
+                    "backend": backend_name,
+                    "directory": str(directory),
+                    "direct_load": False,
+                    "ggml_backend_load": False,
+                    "ggml_backend_unload": False,
+                    "skip_reason": "nvcuda.dll is unavailable on this runner",
+                }
+            raise
         getattr(backend_library, "ggml_backend_init")
 
         ggml_library = ctypes.CDLL(
@@ -64,13 +85,18 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--directory", required=True, type=Path)
     parser.add_argument("--backend", required=True)
+    parser.add_argument("--allow-missing-nvidia-driver", action="store_true")
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
     try:
-        result = smoke(args.directory, args.backend)
+        result = smoke(
+            args.directory,
+            args.backend,
+            allow_missing_nvidia_driver=args.allow_missing_nvidia_driver,
+        )
     except (AttributeError, OSError, RuntimeError) as error:
         print(f"ERROR: {error}")
         return 1
