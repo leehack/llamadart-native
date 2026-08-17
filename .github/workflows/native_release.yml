@@ -63,6 +63,10 @@ jobs:
           if [ -z "$RELEASE_TAG" ]; then
             RELEASE_TAG="$TAG"
           fi
+          if [ "$RELEASE_TAG" = "cuda-prebuilt-experiment" ] && [ "${{ github.event.inputs.publish_release }}" != "false" ]; then
+            echo "cuda-prebuilt-experiment is strictly non-publishing." >&2
+            exit 1
+          fi
           if ! [[ "$RELEASE_TAG" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
             echo "Invalid native_release_tag: $RELEASE_TAG" >&2
             exit 1
@@ -108,6 +112,7 @@ jobs:
 
   build-android:
     needs: resolve-tag
+    if: ${{ github.event.inputs.native_release_tag != 'cuda-prebuilt-experiment' }}
     runs-on: ubuntu-latest
     env:
       CCACHE_DIR: ${{ github.workspace }}/.ccache
@@ -290,6 +295,7 @@ jobs:
 
   build-apple:
     needs: resolve-tag
+    if: ${{ github.event.inputs.native_release_tag != 'cuda-prebuilt-experiment' }}
     runs-on: macos-latest
     env:
       CCACHE_DIR: ${{ github.workspace }}/.ccache
@@ -360,6 +366,7 @@ jobs:
 
   build-linux:
     needs: resolve-tag
+    if: ${{ github.event.inputs.native_release_tag != 'cuda-prebuilt-experiment' }}
     runs-on: ubuntu-latest
     env:
       CCACHE_DIR: ${{ github.workspace }}/.ccache
@@ -614,6 +621,7 @@ jobs:
 
   build-linux-hip:
     needs: resolve-tag
+    if: ${{ github.event.inputs.native_release_tag != 'cuda-prebuilt-experiment' }}
     runs-on: ubuntu-latest
     container: rocm/dev-ubuntu-22.04:6.1.2
     env:
@@ -724,6 +732,7 @@ jobs:
 
   build-windows:
     needs: resolve-tag
+    if: ${{ github.event.inputs.native_release_tag != 'cuda-prebuilt-experiment' }}
     runs-on: ${{ matrix.runs_on }}
     env:
       CMAKE_C_COMPILER_LAUNCHER: sccache
@@ -992,6 +1001,196 @@ jobs:
             C:\vcpkg\packages
             C:\vcpkg\installed
           key: vcpkg-${{ runner.os }}-${{ matrix.vcpkg_triplet }}-${{ env.VCPKG_CACHE_VERSION }}
+
+  windows-cuda-prebuilt-experiment:
+    needs: resolve-tag
+    if: >-
+      ${{ github.event.inputs.native_release_tag == 'cuda-prebuilt-experiment' &&
+          github.event.inputs.publish_release == 'false' }}
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      LLAMA_CPP_TAG: ${{ needs.resolve-tag.outputs.llama_cpp_ref }}
+      LLAMA_CPP_COMMIT: ${{ needs.resolve-tag.outputs.llama_cpp_commit }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify packaging unit contracts
+        run: python -m unittest discover -s tools/tests -v
+
+      - name: Resolve and download exact release assets
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $downloadDir = Join-Path $env:RUNNER_TEMP 'cuda-prebuilt-downloads'
+          New-Item -ItemType Directory -Force -Path $downloadDir | Out-Null
+
+          $upstreamRelease = gh api "repos/ggml-org/llama.cpp/releases/tags/$env:LLAMA_CPP_TAG" |
+            ConvertFrom-Json
+          if ($upstreamRelease.target_commitish -ne $env:LLAMA_CPP_COMMIT) {
+            throw "Upstream release target $($upstreamRelease.target_commitish) does not match resolved commit $env:LLAMA_CPP_COMMIT"
+          }
+
+          $nativeTagTree = git ls-tree "refs/tags/$env:LLAMA_CPP_TAG" third_party/llama.cpp
+          if (-not $nativeTagTree) {
+            throw "Native release tag $env:LLAMA_CPP_TAG does not record third_party/llama.cpp"
+          }
+          $nativeTagLlamaCommit = ($nativeTagTree -split '\s+')[2]
+          if ($nativeTagLlamaCommit -ne $env:LLAMA_CPP_COMMIT) {
+            throw "Native release tag records llama.cpp $nativeTagLlamaCommit, expected $env:LLAMA_CPP_COMMIT"
+          }
+
+          $nativeRelease = gh api "repos/leehack/llamadart-native/releases/tags/$env:LLAMA_CPP_TAG" |
+            ConvertFrom-Json
+          $coreName = "llamadart-native-windows-x64-$env:LLAMA_CPP_TAG.tar.gz"
+          $assetNames = @(
+            $coreName,
+            "llama-$env:LLAMA_CPP_TAG-bin-win-cuda-12.4-x64.zip",
+            'cudart-llama-bin-win-cuda-12.4-x64.zip',
+            "llama-$env:LLAMA_CPP_TAG-bin-win-cuda-13.3-x64.zip",
+            'cudart-llama-bin-win-cuda-13.3-x64.zip'
+          )
+
+          $metadata = @{}
+          foreach ($assetName in $assetNames) {
+            $release = if ($assetName -eq $coreName) { $nativeRelease } else { $upstreamRelease }
+            $asset = $release.assets | Where-Object name -EQ $assetName | Select-Object -First 1
+            if (-not $asset) {
+              throw "Required release asset is missing: $assetName"
+            }
+            if ($asset.digest -notmatch '^sha256:[0-9a-f]{64}$') {
+              throw "Release asset has no usable SHA-256 digest: $assetName"
+            }
+            $metadata[$assetName] = $asset.digest.Substring(7)
+            $repository = if ($assetName -eq $coreName) {
+              'leehack/llamadart-native'
+            } else {
+              'ggml-org/llama.cpp'
+            }
+            gh release download $env:LLAMA_CPP_TAG `
+              --repo $repository `
+              --pattern $assetName `
+              --dir $downloadDir
+            if ($LASTEXITCODE -ne 0) {
+              throw "Failed to download $repository release asset $assetName"
+            }
+            $path = Join-Path $downloadDir $assetName
+            $actual = (Get-FileHash $path -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($actual -ne $metadata[$assetName]) {
+              throw "Downloaded asset digest mismatch for $assetName"
+            }
+          }
+
+          $metadata | ConvertTo-Json | Set-Content `
+            (Join-Path $downloadDir 'release-assets.json')
+          "CUDA_PREBUILT_DOWNLOAD_DIR=$downloadDir" | Out-File `
+            -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Extract exact native core
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $coreDir = Join-Path $env:RUNNER_TEMP 'native-core'
+          New-Item -ItemType Directory -Force -Path $coreDir | Out-Null
+          $archive = Join-Path $env:CUDA_PREBUILT_DOWNLOAD_DIR `
+            "llamadart-native-windows-x64-$env:LLAMA_CPP_TAG.tar.gz"
+          tar -xzf $archive -C $coreDir
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Failed to extract exact native core bundle'
+          }
+          foreach ($name in @('ggml-base.dll', 'ggml.dll')) {
+            if (-not (Test-Path (Join-Path $coreDir $name))) {
+              throw "Native core bundle is missing $name"
+            }
+          }
+          "CUDA_PREBUILT_CORE_DIR=$coreDir" | Out-File `
+            -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Package CUDA 12.4 and CUDA 13.3
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $outputDir = Join-Path $env:RUNNER_TEMP 'cuda-packs'
+          New-Item -ItemType Directory -Force -Path $outputDir | Out-Null
+          $metadata = Get-Content `
+            (Join-Path $env:CUDA_PREBUILT_DOWNLOAD_DIR 'release-assets.json') |
+            ConvertFrom-Json -AsHashtable
+          $core = Join-Path $env:CUDA_PREBUILT_CORE_DIR 'ggml-base.dll'
+          $timer = [Diagnostics.Stopwatch]::StartNew()
+
+          foreach ($version in @('12.4', '13.3')) {
+            $backendName = "llama-$env:LLAMA_CPP_TAG-bin-win-cuda-$version-x64.zip"
+            $runtimeName = "cudart-llama-bin-win-cuda-$version-x64.zip"
+            python tools/package_upstream_cuda.py `
+              --tag $env:LLAMA_CPP_TAG `
+              --llama-commit $env:LLAMA_CPP_COMMIT `
+              --cuda-version $version `
+              --backend-archive (Join-Path $env:CUDA_PREBUILT_DOWNLOAD_DIR $backendName) `
+              --backend-sha256 $metadata[$backendName] `
+              --runtime-archive (Join-Path $env:CUDA_PREBUILT_DOWNLOAD_DIR $runtimeName) `
+              --runtime-sha256 $metadata[$runtimeName] `
+              --core-dll $core `
+              --output-dir $outputDir
+            if ($LASTEXITCODE -ne 0) {
+              throw "CUDA $version packaging failed"
+            }
+          }
+          $timer.Stop()
+          "CUDA_PREBUILT_OUTPUT_DIR=$outputDir" | Out-File `
+            -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "CUDA pack preparation: $([math]::Round($timer.Elapsed.TotalSeconds, 1)) seconds" |
+            Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+
+      - name: Smoke renamed CUDA backends through ggml loader
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          foreach ($major in @('12', '13')) {
+            $smokeDir = Join-Path $env:RUNNER_TEMP "cuda-smoke-$major"
+            New-Item -ItemType Directory -Force -Path $smokeDir | Out-Null
+            $pack = Join-Path $env:CUDA_PREBUILT_OUTPUT_DIR `
+              "llamadart-native-windows-x64-cuda$major-$env:LLAMA_CPP_TAG.tar.gz"
+            tar -xzf $pack -C $smokeDir
+            if ($LASTEXITCODE -ne 0) {
+              throw "Failed to extract CUDA $major pack"
+            }
+            foreach ($name in @('ggml-base.dll', 'ggml.dll', 'vcomp140.dll')) {
+              $source = Join-Path $env:CUDA_PREBUILT_CORE_DIR $name
+              if (Test-Path $source) {
+                Copy-Item $source $smokeDir
+              }
+            }
+            python tools/smoke_windows_cuda_pack.py `
+              --directory $smokeDir `
+              --backend "ggml-cuda-$major.dll"
+            if ($LASTEXITCODE -ne 0) {
+              throw "CUDA $major loader smoke failed"
+            }
+          }
+
+      - name: Record pack checksums
+        shell: pwsh
+        run: |
+          Get-ChildItem $env:CUDA_PREBUILT_OUTPUT_DIR -Filter '*.tar.gz' |
+            Sort-Object Name |
+            ForEach-Object {
+              $digest = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+              "$digest  $($_.Name)"
+            } | Set-Content (Join-Path $env:CUDA_PREBUILT_OUTPUT_DIR 'SHA256SUMS')
+          Get-Content (Join-Path $env:CUDA_PREBUILT_OUTPUT_DIR 'SHA256SUMS') |
+            Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+
+      - name: Upload non-publishing CUDA packs
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-cuda-prebuilt-${{ needs.resolve-tag.outputs.llama_cpp_ref }}
+          path: ${{ runner.temp }}/cuda-packs/*
+          compression-level: 0
+          retention-days: 7
 
   package-and-release:
     needs: [resolve-tag, build-android, build-apple, build-linux, build-linux-hip, build-windows]
