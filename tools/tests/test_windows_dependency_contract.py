@@ -29,6 +29,13 @@ class WindowsDependencyContractTest(unittest.TestCase):
             subject.is_windows_system_dependency("libomp140.aarch64.dll")
         )
 
+    def test_arm64_cpu_only_build_keeps_kleidi_without_gpu_backends(self) -> None:
+        variables = subject.windows_backend_cache_vars("arm64", "cpu")
+        self.assertEqual(variables["GGML_CPU_KLEIDIAI"], "ON")
+        self.assertEqual(variables["GGML_VULKAN"], "OFF")
+        self.assertEqual(variables["GGML_CUDA"], "OFF")
+        self.assertEqual(variables["GGML_BLAS"], "OFF")
+
 
 if __name__ == "__main__":
     unittest.main()
