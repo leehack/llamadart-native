@@ -1486,6 +1486,12 @@ jobs:
             if (-not $artifact) {
               throw 'Missing required ARM64 Vulkan artifact'
             }
+          }
+          $artifacts = @(Get-ChildItem $out -Filter '*.dll')
+          if ($artifacts.Count -eq 0) {
+            throw 'No ARM64 Vulkan DLL artifacts were produced'
+          }
+          foreach ($artifact in $artifacts) {
             $headers = dumpbin /headers $artifact.FullName | Out-String
             if ($LASTEXITCODE -ne 0) {
               throw "dumpbin failed for $($artifact.Name)"

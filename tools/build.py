@@ -111,6 +111,7 @@ WINDOWS_SYSTEM_DLLS = {
     "ws2_32.dll",
     "ole32.dll",
     "oleaut32.dll",
+    "psapi.dll",
     "shell32.dll",
     "sechost.dll",
     "rpcrt4.dll",
