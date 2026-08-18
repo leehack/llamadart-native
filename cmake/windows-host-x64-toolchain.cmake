@@ -1,21 +1,35 @@
 set(CMAKE_SYSTEM_NAME Windows)
+set(CMAKE_SYSTEM_PROCESSOR AMD64)
 
-# Build vulkan-shaders-gen as a host (x64) executable, even when target preset is ARM64.
-if(DEFINED ENV{VCToolsInstallDir})
-    file(TO_CMAKE_PATH "$ENV{VCToolsInstallDir}" _vc_tools_install_dir)
-    set(_host_x64_cl "${_vc_tools_install_dir}/bin/Hostx64/x64/cl.exe")
+# Build vulkan-shaders-gen as a host x64 executable, even when the parent
+# environment is configured for ARM64 cross-compilation.
+set(_llamadart_host_target x86_64-pc-windows-msvc)
+
+if(DEFINED ENV{VSINSTALLDIR})
+    file(TO_CMAKE_PATH "$ENV{VSINSTALLDIR}" _llamadart_vs_install_dir)
+    set(_llamadart_llvm_bin "${_llamadart_vs_install_dir}/VC/Tools/Llvm/x64/bin")
+    find_program(
+        _llamadart_host_clang
+        NAMES clang.exe clang
+        PATHS "${_llamadart_llvm_bin}"
+        NO_DEFAULT_PATH
+    )
+    find_program(
+        _llamadart_host_clangxx
+        NAMES clang++.exe clang++
+        PATHS "${_llamadart_llvm_bin}"
+        NO_DEFAULT_PATH
+    )
 endif()
 
-if(NOT DEFINED _host_x64_cl OR NOT EXISTS "${_host_x64_cl}")
-    find_program(_host_x64_cl NAMES cl PATHS ENV PATH)
+if(NOT _llamadart_host_clang)
+    find_program(_llamadart_host_clang NAMES clang.exe clang REQUIRED)
+endif()
+if(NOT _llamadart_host_clangxx)
+    find_program(_llamadart_host_clangxx NAMES clang++.exe clang++ REQUIRED)
 endif()
 
-if(NOT _host_x64_cl)
-    message(FATAL_ERROR "Unable to locate host x64 cl.exe for GGML_VULKAN_SHADERS_GEN_TOOLCHAIN")
-endif()
-
-set(CMAKE_C_COMPILER "${_host_x64_cl}")
-set(CMAKE_CXX_COMPILER "${_host_x64_cl}")
-set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
-set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY NEVER)
-set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE NEVER)
+set(CMAKE_C_COMPILER "${_llamadart_host_clang}")
+set(CMAKE_CXX_COMPILER "${_llamadart_host_clangxx}")
+set(CMAKE_C_COMPILER_TARGET "${_llamadart_host_target}")
+set(CMAKE_CXX_COMPILER_TARGET "${_llamadart_host_target}")
