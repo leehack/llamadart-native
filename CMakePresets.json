@@ -175,18 +175,18 @@
       "name": "windows-arm64-full",
       "inherits": "windows-base",
       "binaryDir": "${sourceDir}/build/wa64",
-      "generator": "Visual Studio 17 2022",
+      "generator": "Ninja",
       "architecture": {
-        "value": "ARM64",
-        "strategy": "set"
+        "value": "arm64",
+        "strategy": "external"
       },
       "toolset": {
-        "value": "ClangCL",
-        "strategy": "set"
+        "value": "host=x64",
+        "strategy": "external"
       },
       "cacheVariables": {
-        "CMAKE_SYSTEM_NAME": "Windows",
-        "CMAKE_SYSTEM_PROCESSOR": "ARM64",
+        "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/cmake/windows-arm64-clang-toolchain.cmake",
+        "CMAKE_CXX_FLAGS": "-fexceptions -DWIN32_LEAN_AND_MEAN -DNOMINMAX",
         "GGML_BLAS": "ON",
         "GGML_BLAS_VENDOR": "OpenBLAS",
         "GGML_VULKAN": "ON",
@@ -229,7 +229,7 @@
     { "name": "linux-x64-full", "configurePreset": "linux-x64-full" },
     { "name": "linux-arm64-full", "configurePreset": "linux-arm64-full" },
     { "name": "windows-x64-full", "configurePreset": "windows-x64-full" },
-    { "name": "windows-arm64-full", "configurePreset": "windows-arm64-full", "configuration": "Release" },
+    { "name": "windows-arm64-full", "configurePreset": "windows-arm64-full" },
     { "name": "android-arm64-v8a-full", "configurePreset": "android-arm64-v8a-full" },
     { "name": "android-x86_64-full", "configurePreset": "android-x86_64-full" }
   ]

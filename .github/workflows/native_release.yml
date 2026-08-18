@@ -1401,9 +1401,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - mode: x64-host-vs2022-mtt4
+          - mode: x64-host-ninja4
             runs_on: windows-2022
-            compiler_cap: 4
     steps:
       - uses: actions/checkout@v4
         with:
@@ -1435,13 +1434,9 @@ jobs:
           Add-Content $env:GITHUB_ENV 'CMAKE_CXX_COMPILER_LAUNCHER='
           Add-Content $env:GITHUB_ENV 'CMAKE_CUDA_COMPILER_LAUNCHER='
 
-      - name: Cap parallel compiler processes
+      - name: Install Ninja
         shell: pwsh
-        run: |
-          Add-Content $env:GITHUB_ENV 'UseMultiToolTask=true'
-          Add-Content $env:GITHUB_ENV 'EnforceProcessCountAcrossBuilds=true'
-          Add-Content $env:GITHUB_ENV 'CL_MPCount=${{ matrix.compiler_cap }}'
-          Add-Content $env:GITHUB_ENV 'MultiProcMaxCount=${{ matrix.compiler_cap }}'
+        run: choco install ninja -y --no-progress
 
       - name: Install Vulkan SDK
         shell: pwsh
@@ -1466,7 +1461,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $timer = [Diagnostics.Stopwatch]::StartNew()
-          python tools/build.py windows --arch arm64 --backend vulkan --jobs 0
+          python tools/build.py windows --arch arm64 --backend vulkan --jobs 4
           if ($LASTEXITCODE -ne 0) {
             throw 'ARM64 Vulkan build failed'
           }
