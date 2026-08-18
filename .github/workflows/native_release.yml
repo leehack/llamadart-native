@@ -1416,7 +1416,7 @@ jobs:
       - name: Setup MSVC (arm64 cross)
         uses: ilammy/msvc-dev-cmd@v1
         with:
-          arch: arm64
+          arch: amd64_arm64
 
       - name: Verify pinned llama.cpp commit
         shell: pwsh
