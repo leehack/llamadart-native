@@ -131,14 +131,9 @@ if (WIN32 AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(ARM64|arm64|aarch64)$" AND
         TARGET ggml-vulkan AND LLAMADART_WINDOWS_ARM64_VULKAN_FAST_COMPILE AND
         CMAKE_CXX_COMPILER_ID MATCHES "^(Clang|GNU)$")
     # ggml-vulkan.cpp is a very large host-side translation unit. Clang's -O3
-    # compile dominates this cross-build; -Os does not alter embedded SPIR-V.
+    # compile dominates this cross-build; -Os does not alter embedded SPIR-V
+    # and leaves the Release IPO setting intact for final size optimization.
     target_compile_options(ggml-vulkan PRIVATE -Os)
-    set_target_properties(ggml-vulkan PROPERTIES
-        INTERPROCEDURAL_OPTIMIZATION OFF
-        INTERPROCEDURAL_OPTIMIZATION_RELEASE OFF
-        INTERPROCEDURAL_OPTIMIZATION_RELWITHDEBINFO OFF
-        INTERPROCEDURAL_OPTIMIZATION_MINSIZEREL OFF
-    )
 endif()
 
 if (MSVC AND NOT LLAMADART_MSVC_LLAMA_COMMON_IPO)
