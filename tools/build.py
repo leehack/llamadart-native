@@ -132,6 +132,12 @@ WINDOWS_SYSTEM_DLLS = {
 }
 
 
+def windows_preset(arch: str, backend: str) -> str:
+    if arch == "arm64" and backend == "vulkan":
+        return "windows-arm64-vulkan-fast"
+    return f"windows-{arch}-full"
+
+
 def fail(message: str) -> NoReturn:
     raise SystemExit(message)
 
@@ -1114,7 +1120,7 @@ def build_windows(args: argparse.Namespace) -> None:
     if cache_vars["GGML_CUDA"] == "ON" and not (shutil.which("nvcc") or shutil.which("nvcc.exe")):
         fail("Windows CUDA backend build requires CUDA (nvcc not found in PATH)")
 
-    preset = f"windows-{arch}-full"
+    preset = windows_preset(arch, backend)
     clean_build_dir(preset, args.clean)
 
     extra_args = cmake_cache_args(cache_vars)

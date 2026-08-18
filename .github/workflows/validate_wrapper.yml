@@ -5,8 +5,12 @@ on:
     paths:
       - '.github/workflows/validate_wrapper.yml'
       - 'CMakeLists.txt'
+      - 'CMakePresets.json'
+      - 'cmake/windows-arm64-clang-toolchain.cmake'
       - 'src/**'
       - 'tests/**'
+      - 'tools/build.py'
+      - 'tools/tests/**'
       - 'tools/tts_smoke.cpp'
       - 'tools/validate_exports.py'
   push:
@@ -15,8 +19,12 @@ on:
     paths:
       - '.github/workflows/validate_wrapper.yml'
       - 'CMakeLists.txt'
+      - 'CMakePresets.json'
+      - 'cmake/windows-arm64-clang-toolchain.cmake'
       - 'src/**'
       - 'tests/**'
+      - 'tools/build.py'
+      - 'tools/tests/**'
       - 'tools/tts_smoke.cpp'
       - 'tools/validate_exports.py'
 
@@ -30,6 +38,8 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
+      - name: Validate build configuration contracts
+        run: python3 -m unittest discover -s tools/tests -v
       - name: Configure wrapper contract tests
         run: >-
           cmake -S . -B build/wrapper-contract -G Ninja

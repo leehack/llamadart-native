@@ -762,7 +762,7 @@ jobs:
             backend_glob: "*ggml-blas*.dll"
           - arch: arm64
             vcpkg_triplet: arm64-windows
-            runs_on: windows-11-arm
+            runs_on: windows-2022
             backend: vulkan
             include_core: true
             needs_cuda: false
@@ -791,7 +791,12 @@ jobs:
         with:
           arch: x64
       - name: Setup MSVC (arm64 cross)
-        if: ${{ matrix.arch == 'arm64' }}
+        if: ${{ matrix.arch == 'arm64' && matrix.backend == 'vulkan' }}
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: amd64_arm64
+      - name: Setup MSVC (arm64 native)
+        if: ${{ matrix.arch == 'arm64' && matrix.backend != 'vulkan' }}
         uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: arm64
@@ -802,8 +807,8 @@ jobs:
           expected_commit: ${{ needs.resolve-tag.outputs.llama_cpp_commit }}
           github_token: ${{ github.token }}
       - name: Install Ninja
-        if: ${{ matrix.arch == 'x64' }}
-        run: choco install ninja -y
+        if: ${{ matrix.arch == 'x64' || matrix.backend == 'vulkan' }}
+        run: choco install ninja -y --no-progress
       - name: Install CUDA Toolkit
         if: ${{ matrix.needs_cuda }}
         run: |
@@ -872,7 +877,7 @@ jobs:
         if: ${{ matrix.arch == 'x64' }}
         run: |
           echo "SCCACHE_GHA_ENABLED=true" >> $env:GITHUB_ENV
-      - name: Disable sccache for arm64 Visual Studio builds
+      - name: Disable sccache for arm64 builds
         if: ${{ matrix.arch == 'arm64' }}
         run: |
           Add-Content $env:GITHUB_ENV "CMAKE_C_COMPILER_LAUNCHER="
@@ -947,6 +952,23 @@ jobs:
             }
             if (-not (Select-String -Path $cache -Pattern '^GGML_CPU_KLEIDIAI:BOOL=ON$' -Quiet)) {
               throw "Kleidi is not enabled in windows arm64 build"
+            }
+            $artifacts = @(Get-ChildItem $out -Filter '*.dll')
+            foreach ($artifact in $artifacts) {
+              $headers = dumpbin /headers $artifact.FullName | Out-String
+              if ($LASTEXITCODE -ne 0 -or $headers -notmatch '(?im)^\s*AA64 machine \(ARM64\)\s*$') {
+                throw "Expected ARM64 PE machine for $($artifact.Name)"
+              }
+            }
+            if ("${{ matrix.backend }}" -eq "vulkan") {
+              if (-not (Select-String -Path $cache -Pattern '^LLAMADART_WINDOWS_ARM64_VULKAN_FAST_COMPILE:BOOL=ON$' -Quiet)) {
+                throw "Windows arm64 Vulkan fast compile mode is not enabled"
+              }
+              $vulkan = Get-ChildItem $out -Filter '*ggml-vulkan*.dll' | Select-Object -First 1
+              $dependencies = dumpbin /dependents $vulkan.FullName | Out-String
+              if ($LASTEXITCODE -ne 0 -or $dependencies -notmatch '(?im)^\s*ggml-base\.dll\s*$') {
+                throw "Windows arm64 Vulkan backend does not depend on ggml-base.dll as expected"
+              }
             }
           }
       - name: Stage upload payload
