@@ -114,7 +114,7 @@ jobs:
     needs: resolve-tag
     if: >-
       ${{ github.event.inputs.native_release_tag != 'cuda-prebuilt-experiment' &&
-          github.event.inputs.native_release_tag != 'vulkan-fast-compile-experiment' }}
+          github.event.inputs.native_release_tag != 'vulkan-device-probe-experiment' }}
     runs-on: ubuntu-latest
     env:
       CCACHE_DIR: ${{ github.workspace }}/.ccache
@@ -299,7 +299,7 @@ jobs:
     needs: resolve-tag
     if: >-
       ${{ github.event.inputs.native_release_tag != 'cuda-prebuilt-experiment' &&
-          github.event.inputs.native_release_tag != 'vulkan-fast-compile-experiment' }}
+          github.event.inputs.native_release_tag != 'vulkan-device-probe-experiment' }}
     runs-on: macos-latest
     env:
       CCACHE_DIR: ${{ github.workspace }}/.ccache
@@ -372,7 +372,7 @@ jobs:
     needs: resolve-tag
     if: >-
       ${{ github.event.inputs.native_release_tag != 'cuda-prebuilt-experiment' &&
-          github.event.inputs.native_release_tag != 'vulkan-fast-compile-experiment' }}
+          github.event.inputs.native_release_tag != 'vulkan-device-probe-experiment' }}
     runs-on: ubuntu-latest
     env:
       CCACHE_DIR: ${{ github.workspace }}/.ccache
@@ -629,7 +629,7 @@ jobs:
     needs: resolve-tag
     if: >-
       ${{ github.event.inputs.native_release_tag != 'cuda-prebuilt-experiment' &&
-          github.event.inputs.native_release_tag != 'vulkan-fast-compile-experiment' }}
+          github.event.inputs.native_release_tag != 'vulkan-device-probe-experiment' }}
     runs-on: ubuntu-latest
     container: rocm/dev-ubuntu-22.04:6.1.2
     env:
@@ -742,7 +742,7 @@ jobs:
     needs: resolve-tag
     if: >-
       ${{ github.event.inputs.native_release_tag != 'cuda-prebuilt-experiment' &&
-          github.event.inputs.native_release_tag != 'vulkan-fast-compile-experiment' }}
+          github.event.inputs.native_release_tag != 'vulkan-device-probe-experiment' }}
     runs-on: ${{ matrix.runs_on }}
     env:
       CMAKE_C_COMPILER_LAUNCHER: sccache
@@ -1398,55 +1398,49 @@ jobs:
           compression-level: 0
           retention-days: 7
 
-  windows-arm64-vulkan-fast-compile-experiment:
+  windows-arm64-vulkan-device-probe-experiment:
     needs: resolve-tag
     if: >-
-      ${{ github.event.inputs.native_release_tag == 'vulkan-fast-compile-experiment' &&
+      ${{ github.event.inputs.native_release_tag == 'vulkan-device-probe-experiment' &&
           github.event.inputs.publish_release == 'false' }}
-    name: ARM64 Vulkan source (${{ matrix.mode }})
-    runs-on: ${{ matrix.runs_on }}
+    name: Windows ARM64 Vulkan device probe
+    runs-on: windows-11-arm
     permissions:
       contents: read
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - mode: fast-compile
-            runs_on: windows-2022
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0
-          submodules: recursive
+          submodules: false
 
-      - name: Enable Git Long Paths
-        run: git config --global core.longpaths true
-
-      - name: Setup MSVC (arm64 cross)
-        uses: ilammy/msvc-dev-cmd@v1
-        with:
-          arch: amd64_arm64
-
-      - name: Verify pinned llama.cpp commit
-        shell: pwsh
-        env:
-          EXPECTED_LLAMA_CPP_COMMIT: ${{ needs.resolve-tag.outputs.llama_cpp_commit }}
-        run: |
-          $actual = git -C third_party/llama.cpp rev-parse HEAD
-          if ($LASTEXITCODE -ne 0 -or $actual -ne $env:EXPECTED_LLAMA_CPP_COMMIT) {
-            throw "Pinned llama.cpp commit $actual does not match $env:EXPECTED_LLAMA_CPP_COMMIT"
-          }
-
-      - name: Disable compiler launcher
+      - name: Inventory ARM64 host and display devices
+        id: display
         shell: pwsh
         run: |
-          Add-Content $env:GITHUB_ENV 'CMAKE_C_COMPILER_LAUNCHER='
-          Add-Content $env:GITHUB_ENV 'CMAKE_CXX_COMPILER_LAUNCHER='
-          Add-Content $env:GITHUB_ENV 'CMAKE_CUDA_COMPILER_LAUNCHER='
-
-      - name: Install Ninja
-        shell: pwsh
-        run: choco install ninja -y --no-progress
+          $ErrorActionPreference = 'Stop'
+          $osArch = [Runtime.InteropServices.RuntimeInformation]::OSArchitecture
+          $processArch = [Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture
+          "OS architecture: $osArch"
+          "Process architecture: $processArch"
+          Get-CimInstance Win32_ComputerSystem |
+            Select-Object Manufacturer, Model, SystemType, TotalPhysicalMemory |
+            Format-List
+          Get-CimInstance Win32_Processor |
+            Select-Object Name, Manufacturer, Architecture, NumberOfCores, NumberOfLogicalProcessors |
+            Format-List
+          $controllers = @(Get-CimInstance Win32_VideoController)
+          $controllers |
+            Select-Object Name, AdapterCompatibility, AdapterRAM, DriverVersion, PNPDeviceID |
+            Format-List
+          Get-PnpDevice -Class Display -ErrorAction SilentlyContinue |
+            Select-Object Status, Class, FriendlyName, InstanceId |
+            Format-List
+          $candidate = @($controllers | Where-Object {
+            $_.Name -notmatch 'Microsoft Basic|Remote Display|Hyper-V'
+          })
+          "candidate_gpu=$($candidate.Count -gt 0)" |
+            Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "Detected display controllers: $($controllers.Count); non-basic candidates: $($candidate.Count)" |
+            Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
 
       - name: Install Vulkan SDK
         shell: pwsh
@@ -1458,77 +1452,41 @@ jobs:
           Add-Content $env:GITHUB_ENV "VULKAN_SDK=C:\VulkanSDK\$ver"
           Add-Content $env:GITHUB_PATH "C:\VulkanSDK\$ver\Bin"
 
-      - name: Build ARM64 Vulkan with reduced host optimization
-        id: build
+      - name: Probe Vulkan loader and physical devices
+        id: vulkan
         shell: pwsh
         run: |
-          $ErrorActionPreference = 'Stop'
-          $timer = [Diagnostics.Stopwatch]::StartNew()
-          python tools/build.py windows --arch arm64 --backend vulkan --jobs 4
-          if ($LASTEXITCODE -ne 0) {
-            throw 'ARM64 Vulkan source build failed'
+          $ErrorActionPreference = 'Continue'
+          foreach ($registryPath in @(
+            'HKLM:\SOFTWARE\Khronos\Vulkan\Drivers',
+            'HKLM:\SOFTWARE\WOW6432Node\Khronos\Vulkan\Drivers'
+          )) {
+            if (Test-Path $registryPath) {
+              "Vulkan ICD registry: $registryPath"
+              $key = Get-Item $registryPath
+              foreach ($name in $key.GetValueNames()) {
+                "  $name = $($key.GetValue($name))"
+              }
+            } else {
+              "Vulkan ICD registry missing: $registryPath"
+            }
           }
-          $timer.Stop()
-          $seconds = [math]::Round($timer.Elapsed.TotalSeconds, 1)
-          "seconds=$seconds" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
-          "ARM64 Vulkan source build with reduced host optimization: $seconds seconds" |
+          $vulkanInfo = 'C:\VulkanSDK\1.4.313.2\Bin\vulkaninfo.exe'
+          if (-not (Test-Path $vulkanInfo)) {
+            throw "Missing Vulkan probe executable: $vulkanInfo"
+          }
+          $output = & $vulkanInfo --summary 2>&1 | Out-String
+          $exitCode = $LASTEXITCODE
+          $output
+          $hasDevice = $exitCode -eq 0 -and $output -match '(?im)^GPU[0-9]+:'
+          "usable=$hasDevice" |
+            Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "Vulkan probe exit code: $exitCode; physical device reported: $hasDevice" |
             Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
-
-      - name: Validate source-built ARM64 Vulkan package
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $out = 'bin/windows/arm64'
-          $wrapper = Get-ChildItem $out -Filter '*llamadart*.dll' |
-            Select-Object -First 1
-          $vulkan = Get-ChildItem $out -Filter '*ggml-vulkan*.dll' |
-            Select-Object -First 1
-          $core = Get-ChildItem $out -Filter 'ggml-base.dll' |
-            Select-Object -First 1
-          foreach ($artifact in @($wrapper, $vulkan, $core)) {
-            if (-not $artifact) {
-              throw 'Missing required ARM64 Vulkan artifact'
-            }
+          if (-not $hasDevice) {
+            "The hosted Windows ARM64 runner cannot execute the requested GPU runtime benchmark." |
+              Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
           }
-          $artifacts = @(Get-ChildItem $out -Filter '*.dll')
-          if ($artifacts.Count -eq 0) {
-            throw 'No ARM64 Vulkan DLL artifacts were produced'
-          }
-          foreach ($artifact in $artifacts) {
-            $headers = dumpbin /headers $artifact.FullName | Out-String
-            if ($LASTEXITCODE -ne 0) {
-              throw "dumpbin failed for $($artifact.Name)"
-            }
-            if ($headers -notmatch '(?im)^\s*AA64 machine \(ARM64\)\s*$') {
-              throw "Expected ARM64 PE machine for $($artifact.Name)"
-            }
-          }
-          python tools/validate_exports.py --format dumpbin --tool dumpbin $wrapper.FullName
-          if ($LASTEXITCODE -ne 0) {
-            throw 'Wrapper export validation failed'
-          }
-          $dependencies = dumpbin /dependents $vulkan.FullName | Out-String
-          if ($LASTEXITCODE -ne 0 -or $dependencies -notmatch '(?im)^\s*ggml-base\.dll\s*$') {
-            throw 'Source-built Vulkan backend does not depend on ggml-base.dll as expected'
-          }
-          $cache = 'build/wa64/CMakeCache.txt'
-          if (-not (Select-String -Path $cache -Pattern '^GGML_VULKAN:BOOL=ON$' -Quiet)) {
-            throw 'ARM64 Vulkan source build did not enable Vulkan'
-          }
-          if (-not (Select-String -Path $cache -Pattern '^LLAMADART_WINDOWS_ARM64_VULKAN_FAST_COMPILE:BOOL=ON$' -Quiet)) {
-            throw 'ARM64 Vulkan source build did not enable reduced host optimization'
-          }
-          if (-not (Select-String -Path $cache -Pattern '^GGML_CPU_KLEIDIAI:BOOL=ON$' -Quiet)) {
-            throw 'Kleidi is not enabled in Windows ARM64 build'
-          }
-
-      - name: Upload non-publishing ARM64 Vulkan fast-compile experiment
-        uses: actions/upload-artifact@v4
-        with:
-          name: windows-arm64-vulkan-source-${{ matrix.mode }}-${{ needs.resolve-tag.outputs.llama_cpp_ref }}
-          path: bin/windows/arm64/*
-          compression-level: 0
-          retention-days: 7
 
   package-and-release:
     needs: [resolve-tag, build-android, build-apple, build-linux, build-linux-hip, build-windows, package-windows-cuda]
