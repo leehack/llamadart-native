@@ -1388,22 +1388,28 @@ jobs:
           compression-level: 0
           retention-days: 7
 
-  windows-arm64-vulkan-parallel-experiment:
+  windows-arm64-vulkan-host-experiment:
     needs: resolve-tag
     if: >-
       ${{ github.event.inputs.native_release_tag == 'cuda-prebuilt-experiment' &&
           github.event.inputs.publish_release == 'false' }}
-    runs-on: windows-11-arm
+    name: ARM64 Vulkan (${{ matrix.mode }})
+    runs-on: ${{ matrix.runs_on }}
     permissions:
       contents: read
     strategy:
       fail-fast: false
       matrix:
         include:
-          - mode: mtt3
-            jobs: 0
-          - mode: jobs3-mtt3-repeat
-            jobs: 3
+          - mode: arm-host-mtt3
+            runs_on: windows-11-arm
+            compiler_cap: 3
+          - mode: arm-host-mtt4
+            runs_on: windows-11-arm
+            compiler_cap: 4
+          - mode: x64-host-mtt4
+            runs_on: windows-2025
+            compiler_cap: 4
     steps:
       - uses: actions/checkout@v4
         with:
@@ -1440,8 +1446,8 @@ jobs:
         run: |
           Add-Content $env:GITHUB_ENV 'UseMultiToolTask=true'
           Add-Content $env:GITHUB_ENV 'EnforceProcessCountAcrossBuilds=true'
-          Add-Content $env:GITHUB_ENV 'CL_MPCount=3'
-          Add-Content $env:GITHUB_ENV 'MultiProcMaxCount=3'
+          Add-Content $env:GITHUB_ENV 'CL_MPCount=${{ matrix.compiler_cap }}'
+          Add-Content $env:GITHUB_ENV 'MultiProcMaxCount=${{ matrix.compiler_cap }}'
 
       - name: Install Vulkan SDK
         shell: pwsh
@@ -1466,7 +1472,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $timer = [Diagnostics.Stopwatch]::StartNew()
-          python tools/build.py windows --arch arm64 --backend vulkan --jobs ${{ matrix.jobs }}
+          python tools/build.py windows --arch arm64 --backend vulkan --jobs 0
           if ($LASTEXITCODE -ne 0) {
             throw 'ARM64 Vulkan build failed'
           }
