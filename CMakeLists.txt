@@ -20,14 +20,8 @@ set(LLAMADART_CPU_REQUIRED_FEATURES "" CACHE STRING
     "Semicolon-separated GGML_USE_* defines for Android arm64 CPU backend scoring")
 set(LLAMADART_MSVC_LLAMA_COMMON_IPO OFF CACHE BOOL
     "Enable MSVC IPO/LTCG for llama-common")
-set(LLAMADART_MSVC_VULKAN_IPO OFF CACHE BOOL
-    "Enable MSVC IPO/LTCG for the Vulkan backend")
-
-set(LLAMADART_MSVC_ABI OFF)
-if (MSVC OR CMAKE_CXX_SIMULATE_ID STREQUAL "MSVC" OR
-        CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
-    set(LLAMADART_MSVC_ABI ON)
-endif()
+set(LLAMADART_WINDOWS_ARM64_VULKAN_IPO OFF CACHE BOOL
+    "Enable IPO/LTO for the Windows ARM64 Vulkan backend")
 
 function(llamadart_attach_android_cpu_backend_score target_name)
     if (NOT ANDROID OR NOT TARGET ${target_name} OR NOT GGML_CPU_ARM_ARCH)
@@ -133,10 +127,11 @@ if (TARGET ggml-vulkan AND LLAMADART_SPIRV_HEADERS_INCLUDE)
     target_include_directories(ggml-vulkan SYSTEM PRIVATE "${LLAMADART_SPIRV_HEADERS_INCLUDE}")
 endif()
 
-if (LLAMADART_MSVC_ABI AND TARGET ggml-vulkan AND NOT LLAMADART_MSVC_VULKAN_IPO)
-    # The generated Vulkan shader translation units make MSVC LTCG linking
-    # disproportionately expensive. Keep normal Release optimization, but
-    # avoid whole-program optimization for this independently loaded backend.
+if (WIN32 AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(ARM64|arm64|aarch64)$" AND
+        TARGET ggml-vulkan AND NOT LLAMADART_WINDOWS_ARM64_VULKAN_IPO)
+    # The generated Vulkan shader translation units make Windows ARM64 LTO
+    # linking disproportionately expensive. Keep normal Release optimization,
+    # but avoid whole-program optimization for this loaded backend.
     set_target_properties(ggml-vulkan PROPERTIES
         INTERPROCEDURAL_OPTIMIZATION OFF
         INTERPROCEDURAL_OPTIMIZATION_RELEASE OFF
@@ -145,7 +140,7 @@ if (LLAMADART_MSVC_ABI AND TARGET ggml-vulkan AND NOT LLAMADART_MSVC_VULKAN_IPO)
     )
 endif()
 
-if (LLAMADART_MSVC_ABI AND NOT LLAMADART_MSVC_LLAMA_COMMON_IPO)
+if (MSVC AND NOT LLAMADART_MSVC_LLAMA_COMMON_IPO)
     # MSVC link.exe can access-violate while linking llama-common.dll with
     # LTCG. Keep IPO elsewhere, but compile this utility stack without LTCG.
     foreach(target_name llama-common llama-common-base cpp-httplib)

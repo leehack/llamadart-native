@@ -1505,7 +1505,7 @@ jobs:
           if (-not (Select-String -Path $cache -Pattern '^GGML_VULKAN:BOOL=ON$' -Quiet)) {
             throw 'ARM64 Vulkan source build did not enable Vulkan'
           }
-          if (-not (Select-String -Path $cache -Pattern '^LLAMADART_MSVC_VULKAN_IPO:BOOL=OFF$' -Quiet)) {
+          if (-not (Select-String -Path $cache -Pattern '^LLAMADART_WINDOWS_ARM64_VULKAN_IPO:BOOL=OFF$' -Quiet)) {
             throw 'ARM64 Vulkan source build did not disable backend IPO'
           }
           if (-not (Select-String -Path $cache -Pattern '^GGML_CPU_KLEIDIAI:BOOL=ON$' -Quiet)) {
