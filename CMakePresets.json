@@ -185,6 +185,8 @@
         "strategy": "set"
       },
       "cacheVariables": {
+        "CMAKE_SYSTEM_NAME": "Windows",
+        "CMAKE_SYSTEM_PROCESSOR": "ARM64",
         "GGML_BLAS": "ON",
         "GGML_BLAS_VENDOR": "OpenBLAS",
         "GGML_VULKAN": "ON",
