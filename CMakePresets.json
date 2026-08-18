@@ -187,6 +187,7 @@
       "cacheVariables": {
         "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/cmake/windows-arm64-clang-toolchain.cmake",
         "CMAKE_CXX_FLAGS": "-fexceptions -DWIN32_LEAN_AND_MEAN -DNOMINMAX",
+        "LLAMADART_WINDOWS_ARM64_VULKAN_FAST_COMPILE": "ON",
         "GGML_BLAS": "ON",
         "GGML_BLAS_VENDOR": "OpenBLAS",
         "GGML_VULKAN": "ON",

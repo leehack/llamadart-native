@@ -20,8 +20,8 @@ set(LLAMADART_CPU_REQUIRED_FEATURES "" CACHE STRING
     "Semicolon-separated GGML_USE_* defines for Android arm64 CPU backend scoring")
 set(LLAMADART_MSVC_LLAMA_COMMON_IPO OFF CACHE BOOL
     "Enable MSVC IPO/LTCG for llama-common")
-set(LLAMADART_WINDOWS_ARM64_IPO OFF CACHE BOOL
-    "Enable IPO/LTO for Windows ARM64 builds")
+set(LLAMADART_WINDOWS_ARM64_VULKAN_FAST_COMPILE OFF CACHE BOOL
+    "Reduce host optimization for faster Windows ARM64 Vulkan builds")
 
 function(llamadart_attach_android_cpu_backend_score target_name)
     if (NOT ANDROID OR NOT TARGET ${target_name} OR NOT GGML_CPU_ARM_ARCH)
@@ -99,16 +99,7 @@ endif()
 
 # Set defaults for Release builds
 if (CMAKE_BUILD_TYPE STREQUAL "Release")
-    if (WIN32 AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(ARM64|arm64|aarch64)$" AND
-            NOT LLAMADART_WINDOWS_ARM64_IPO)
-        # Windows ARM64 cross-builds use many shared libraries and generated
-        # Vulkan sources. Whole-program optimization makes their final links
-        # disproportionately expensive while normal Release optimization is
-        # still provided by the compiler.
-        set(CMAKE_INTERPROCEDURAL_OPTIMIZATION OFF)
-    else()
-        set(CMAKE_INTERPROCEDURAL_OPTIMIZATION ON)
-    endif()
+    set(CMAKE_INTERPROCEDURAL_OPTIMIZATION ON)
 endif()
 
 if (APPLE)
@@ -134,6 +125,20 @@ add_subdirectory(third_party/llama.cpp/tools/mtmd EXCLUDE_FROM_ALL)
 add_subdirectory(third_party/llama.cpp)
 if (TARGET ggml-vulkan AND LLAMADART_SPIRV_HEADERS_INCLUDE)
     target_include_directories(ggml-vulkan SYSTEM PRIVATE "${LLAMADART_SPIRV_HEADERS_INCLUDE}")
+endif()
+
+if (WIN32 AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(ARM64|arm64|aarch64)$" AND
+        TARGET ggml-vulkan AND LLAMADART_WINDOWS_ARM64_VULKAN_FAST_COMPILE AND
+        CMAKE_CXX_COMPILER_ID MATCHES "^(Clang|GNU)$")
+    # ggml-vulkan.cpp is a very large host-side translation unit. Clang's -O3
+    # compile dominates this cross-build; -O1 does not alter embedded SPIR-V.
+    target_compile_options(ggml-vulkan PRIVATE -O1)
+    set_target_properties(ggml-vulkan PROPERTIES
+        INTERPROCEDURAL_OPTIMIZATION OFF
+        INTERPROCEDURAL_OPTIMIZATION_RELEASE OFF
+        INTERPROCEDURAL_OPTIMIZATION_RELWITHDEBINFO OFF
+        INTERPROCEDURAL_OPTIMIZATION_MINSIZEREL OFF
+    )
 endif()
 
 if (MSVC AND NOT LLAMADART_MSVC_LLAMA_COMMON_IPO)
