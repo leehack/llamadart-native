@@ -23,6 +23,12 @@ set(LLAMADART_MSVC_LLAMA_COMMON_IPO OFF CACHE BOOL
 set(LLAMADART_MSVC_VULKAN_IPO OFF CACHE BOOL
     "Enable MSVC IPO/LTCG for the Vulkan backend")
 
+set(LLAMADART_MSVC_ABI OFF)
+if (MSVC OR CMAKE_CXX_SIMULATE_ID STREQUAL "MSVC" OR
+        CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
+    set(LLAMADART_MSVC_ABI ON)
+endif()
+
 function(llamadart_attach_android_cpu_backend_score target_name)
     if (NOT ANDROID OR NOT TARGET ${target_name} OR NOT GGML_CPU_ARM_ARCH)
         return()
@@ -127,7 +133,7 @@ if (TARGET ggml-vulkan AND LLAMADART_SPIRV_HEADERS_INCLUDE)
     target_include_directories(ggml-vulkan SYSTEM PRIVATE "${LLAMADART_SPIRV_HEADERS_INCLUDE}")
 endif()
 
-if (MSVC AND TARGET ggml-vulkan AND NOT LLAMADART_MSVC_VULKAN_IPO)
+if (LLAMADART_MSVC_ABI AND TARGET ggml-vulkan AND NOT LLAMADART_MSVC_VULKAN_IPO)
     # The generated Vulkan shader translation units make MSVC LTCG linking
     # disproportionately expensive. Keep normal Release optimization, but
     # avoid whole-program optimization for this independently loaded backend.
@@ -139,7 +145,7 @@ if (MSVC AND TARGET ggml-vulkan AND NOT LLAMADART_MSVC_VULKAN_IPO)
     )
 endif()
 
-if (MSVC AND NOT LLAMADART_MSVC_LLAMA_COMMON_IPO)
+if (LLAMADART_MSVC_ABI AND NOT LLAMADART_MSVC_LLAMA_COMMON_IPO)
     # MSVC link.exe can access-violate while linking llama-common.dll with
     # LTCG. Keep IPO elsewhere, but compile this utility stack without LTCG.
     foreach(target_name llama-common llama-common-base cpp-httplib)
