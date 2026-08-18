@@ -63,8 +63,8 @@ jobs:
           if [ -z "$RELEASE_TAG" ]; then
             RELEASE_TAG="$TAG"
           fi
-          if [ "$RELEASE_TAG" = "cuda-prebuilt-experiment" ] && [ "${{ github.event.inputs.publish_release }}" != "false" ]; then
-            echo "cuda-prebuilt-experiment is strictly non-publishing." >&2
+          if [[ "$RELEASE_TAG" == *-experiment ]] && [ "${{ github.event.inputs.publish_release }}" != "false" ]; then
+            echo "$RELEASE_TAG is strictly non-publishing." >&2
             exit 1
           fi
           if ! [[ "$RELEASE_TAG" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
@@ -112,7 +112,9 @@ jobs:
 
   build-android:
     needs: resolve-tag
-    if: ${{ github.event.inputs.native_release_tag != 'cuda-prebuilt-experiment' }}
+    if: >-
+      ${{ github.event.inputs.native_release_tag != 'cuda-prebuilt-experiment' &&
+          github.event.inputs.native_release_tag != 'vulkan-no-ipo-experiment' }}
     runs-on: ubuntu-latest
     env:
       CCACHE_DIR: ${{ github.workspace }}/.ccache
@@ -295,7 +297,9 @@ jobs:
 
   build-apple:
     needs: resolve-tag
-    if: ${{ github.event.inputs.native_release_tag != 'cuda-prebuilt-experiment' }}
+    if: >-
+      ${{ github.event.inputs.native_release_tag != 'cuda-prebuilt-experiment' &&
+          github.event.inputs.native_release_tag != 'vulkan-no-ipo-experiment' }}
     runs-on: macos-latest
     env:
       CCACHE_DIR: ${{ github.workspace }}/.ccache
@@ -366,7 +370,9 @@ jobs:
 
   build-linux:
     needs: resolve-tag
-    if: ${{ github.event.inputs.native_release_tag != 'cuda-prebuilt-experiment' }}
+    if: >-
+      ${{ github.event.inputs.native_release_tag != 'cuda-prebuilt-experiment' &&
+          github.event.inputs.native_release_tag != 'vulkan-no-ipo-experiment' }}
     runs-on: ubuntu-latest
     env:
       CCACHE_DIR: ${{ github.workspace }}/.ccache
@@ -621,7 +627,9 @@ jobs:
 
   build-linux-hip:
     needs: resolve-tag
-    if: ${{ github.event.inputs.native_release_tag != 'cuda-prebuilt-experiment' }}
+    if: >-
+      ${{ github.event.inputs.native_release_tag != 'cuda-prebuilt-experiment' &&
+          github.event.inputs.native_release_tag != 'vulkan-no-ipo-experiment' }}
     runs-on: ubuntu-latest
     container: rocm/dev-ubuntu-22.04:6.1.2
     env:
@@ -732,7 +740,9 @@ jobs:
 
   build-windows:
     needs: resolve-tag
-    if: ${{ github.event.inputs.native_release_tag != 'cuda-prebuilt-experiment' }}
+    if: >-
+      ${{ github.event.inputs.native_release_tag != 'cuda-prebuilt-experiment' &&
+          github.event.inputs.native_release_tag != 'vulkan-no-ipo-experiment' }}
     runs-on: ${{ matrix.runs_on }}
     env:
       CMAKE_C_COMPILER_LAUNCHER: sccache
@@ -1391,7 +1401,7 @@ jobs:
   windows-arm64-vulkan-no-ipo-experiment:
     needs: resolve-tag
     if: >-
-      ${{ github.event.inputs.native_release_tag == 'cuda-prebuilt-experiment' &&
+      ${{ github.event.inputs.native_release_tag == 'vulkan-no-ipo-experiment' &&
           github.event.inputs.publish_release == 'false' }}
     name: ARM64 Vulkan source (${{ matrix.mode }})
     runs-on: ${{ matrix.runs_on }}
