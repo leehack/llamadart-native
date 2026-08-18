@@ -1401,14 +1401,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - mode: arm-host-mtt3
-            runs_on: windows-11-arm
-            compiler_cap: 3
-          - mode: arm-host-mtt4
-            runs_on: windows-11-arm
-            compiler_cap: 4
-          - mode: x64-host-mtt4
-            runs_on: windows-2025
+          - mode: x64-host-vs2022-mtt4
+            runs_on: windows-2022
             compiler_cap: 4
     steps:
       - uses: actions/checkout@v4
