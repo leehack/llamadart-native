@@ -20,6 +20,8 @@ set(LLAMADART_CPU_REQUIRED_FEATURES "" CACHE STRING
     "Semicolon-separated GGML_USE_* defines for Android arm64 CPU backend scoring")
 set(LLAMADART_MSVC_LLAMA_COMMON_IPO OFF CACHE BOOL
     "Enable MSVC IPO/LTCG for llama-common")
+set(LLAMADART_MSVC_VULKAN_IPO OFF CACHE BOOL
+    "Enable MSVC IPO/LTCG for the Vulkan backend")
 
 function(llamadart_attach_android_cpu_backend_score target_name)
     if (NOT ANDROID OR NOT TARGET ${target_name} OR NOT GGML_CPU_ARM_ARCH)
@@ -123,6 +125,18 @@ add_subdirectory(third_party/llama.cpp/tools/mtmd EXCLUDE_FROM_ALL)
 add_subdirectory(third_party/llama.cpp)
 if (TARGET ggml-vulkan AND LLAMADART_SPIRV_HEADERS_INCLUDE)
     target_include_directories(ggml-vulkan SYSTEM PRIVATE "${LLAMADART_SPIRV_HEADERS_INCLUDE}")
+endif()
+
+if (MSVC AND TARGET ggml-vulkan AND NOT LLAMADART_MSVC_VULKAN_IPO)
+    # The generated Vulkan shader translation units make MSVC LTCG linking
+    # disproportionately expensive. Keep normal Release optimization, but
+    # avoid whole-program optimization for this independently loaded backend.
+    set_target_properties(ggml-vulkan PROPERTIES
+        INTERPROCEDURAL_OPTIMIZATION OFF
+        INTERPROCEDURAL_OPTIMIZATION_RELEASE OFF
+        INTERPROCEDURAL_OPTIMIZATION_RELWITHDEBINFO OFF
+        INTERPROCEDURAL_OPTIMIZATION_MINSIZEREL OFF
+    )
 endif()
 
 if (MSVC AND NOT LLAMADART_MSVC_LLAMA_COMMON_IPO)

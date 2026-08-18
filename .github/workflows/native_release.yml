@@ -1388,21 +1388,20 @@ jobs:
           compression-level: 0
           retention-days: 7
 
-  windows-arm64-vulkan-reuse-experiment:
+  windows-arm64-vulkan-no-ipo-experiment:
     needs: resolve-tag
     if: >-
       ${{ github.event.inputs.native_release_tag == 'cuda-prebuilt-experiment' &&
           github.event.inputs.publish_release == 'false' }}
-    name: ARM64 Vulkan reuse (${{ matrix.mode }})
+    name: ARM64 Vulkan source (${{ matrix.mode }})
     runs-on: ${{ matrix.runs_on }}
     permissions:
-      actions: read
       contents: read
     strategy:
       fail-fast: false
       matrix:
         include:
-          - mode: exact-b10453-backend
+          - mode: no-ipo
             runs_on: windows-2022
     steps:
       - uses: actions/checkout@v4
@@ -1439,72 +1438,24 @@ jobs:
         shell: pwsh
         run: choco install ninja -y --no-progress
 
-      - name: Download exact verified Vulkan backend
-        id: reuse
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-          EXPECTED_LLAMA_CPP_COMMIT: 3cb7ffb1a1f612d5e4a46244ae5a3c77ad934a70
-          RESOLVED_LLAMA_CPP_COMMIT: ${{ needs.resolve-tag.outputs.llama_cpp_commit }}
-          VULKAN_BACKEND_SHA256: d0c5764cbced6923b07910223ab98f6d5a6e03f9d87d65d20f820c387e837019
-        run: |
-          $ErrorActionPreference = 'Stop'
-          if ($env:RESOLVED_LLAMA_CPP_COMMIT -ne $env:EXPECTED_LLAMA_CPP_COMMIT) {
-            throw "Backend reuse is pinned to llama.cpp $env:EXPECTED_LLAMA_CPP_COMMIT"
-          }
-          $timer = [Diagnostics.Stopwatch]::StartNew()
-          $source = Join-Path $env:RUNNER_TEMP 'vulkan-backend'
-          gh run download 32091683406 `
-            --repo leehack/llamadart-native `
-            --name windows-arm64-vulkan-x64-host-ninja4-b10453 `
-            --dir $source
-          if ($LASTEXITCODE -ne 0) {
-            throw 'Failed to download exact b10453 Vulkan backend artifact'
-          }
-          $backend = Get-ChildItem $source -Filter 'ggml-vulkan.dll' |
-            Select-Object -First 1
-          if (-not $backend) {
-            throw 'Downloaded artifact is missing ggml-vulkan.dll'
-          }
-          $actual = (Get-FileHash $backend.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
-          if ($actual -ne $env:VULKAN_BACKEND_SHA256) {
-            throw "Vulkan backend SHA-256 mismatch: $actual"
-          }
-          $timer.Stop()
-          $seconds = [math]::Round($timer.Elapsed.TotalSeconds, 1)
-          "backend=$($backend.FullName)" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
-          "seconds=$seconds" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
-          "Exact b10453 Vulkan backend download: $seconds seconds" |
-            Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
-
-      - name: Build fresh ARM64 core without Vulkan
+      - name: Build ARM64 Vulkan from source without backend IPO
         id: build
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           $timer = [Diagnostics.Stopwatch]::StartNew()
-          python tools/build.py windows --arch arm64 --backend cpu --jobs 4
+          python tools/build.py windows --arch arm64 --backend vulkan --jobs 4
           if ($LASTEXITCODE -ne 0) {
-            throw 'ARM64 core build failed'
+            throw 'ARM64 Vulkan source build failed'
           }
           $timer.Stop()
           $seconds = [math]::Round($timer.Elapsed.TotalSeconds, 1)
           "seconds=$seconds" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
-          "Fresh ARM64 core build: $seconds seconds" |
+          "ARM64 Vulkan source build without backend IPO: $seconds seconds" |
             Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
 
-      - name: Stage exact Vulkan backend
+      - name: Validate source-built ARM64 Vulkan package
         shell: pwsh
-        env:
-          VULKAN_BACKEND: ${{ steps.reuse.outputs.backend }}
-        run: |
-          $ErrorActionPreference = 'Stop'
-          Copy-Item $env:VULKAN_BACKEND 'bin/windows/arm64/ggml-vulkan.dll' -Force
-
-      - name: Validate reused ARM64 Vulkan package
-        shell: pwsh
-        env:
-          VULKAN_BACKEND_SHA256: d0c5764cbced6923b07910223ab98f6d5a6e03f9d87d65d20f820c387e837019
         run: |
           $ErrorActionPreference = 'Stop'
           $out = 'bin/windows/arm64'
@@ -1536,26 +1487,25 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
             throw 'Wrapper export validation failed'
           }
-          $backendHash = (Get-FileHash $vulkan.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
-          if ($backendHash -ne $env:VULKAN_BACKEND_SHA256) {
-            throw "Staged Vulkan backend SHA-256 mismatch: $backendHash"
-          }
           $dependencies = dumpbin /dependents $vulkan.FullName | Out-String
           if ($LASTEXITCODE -ne 0 -or $dependencies -notmatch '(?im)^\s*ggml-base\.dll\s*$') {
-            throw 'Reused Vulkan backend does not depend on ggml-base.dll as expected'
+            throw 'Source-built Vulkan backend does not depend on ggml-base.dll as expected'
           }
           $cache = 'build/wa64/CMakeCache.txt'
-          if (-not (Select-String -Path $cache -Pattern '^GGML_VULKAN:BOOL=OFF$' -Quiet)) {
-            throw 'Fresh ARM64 core unexpectedly rebuilt Vulkan'
+          if (-not (Select-String -Path $cache -Pattern '^GGML_VULKAN:BOOL=ON$' -Quiet)) {
+            throw 'ARM64 Vulkan source build did not enable Vulkan'
+          }
+          if (-not (Select-String -Path $cache -Pattern '^LLAMADART_MSVC_VULKAN_IPO:BOOL=OFF$' -Quiet)) {
+            throw 'ARM64 Vulkan source build did not disable backend IPO'
           }
           if (-not (Select-String -Path $cache -Pattern '^GGML_CPU_KLEIDIAI:BOOL=ON$' -Quiet)) {
             throw 'Kleidi is not enabled in Windows ARM64 build'
           }
 
-      - name: Upload non-publishing ARM64 Vulkan reuse experiment
+      - name: Upload non-publishing ARM64 Vulkan no-IPO experiment
         uses: actions/upload-artifact@v4
         with:
-          name: windows-arm64-vulkan-reused-${{ matrix.mode }}-${{ needs.resolve-tag.outputs.llama_cpp_ref }}
+          name: windows-arm64-vulkan-source-${{ matrix.mode }}-${{ needs.resolve-tag.outputs.llama_cpp_ref }}
           path: bin/windows/arm64/*
           compression-level: 0
           retention-days: 7
