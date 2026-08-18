@@ -1458,7 +1458,7 @@ jobs:
           Add-Content $env:GITHUB_ENV "VULKAN_SDK=C:\VulkanSDK\$ver"
           Add-Content $env:GITHUB_PATH "C:\VulkanSDK\$ver\Bin"
 
-      - name: Build ARM64 Vulkan from source without backend IPO
+      - name: Build ARM64 Vulkan from source without IPO
         id: build
         shell: pwsh
         run: |
@@ -1471,7 +1471,7 @@ jobs:
           $timer.Stop()
           $seconds = [math]::Round($timer.Elapsed.TotalSeconds, 1)
           "seconds=$seconds" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
-          "ARM64 Vulkan source build without backend IPO: $seconds seconds" |
+          "ARM64 Vulkan source build without IPO: $seconds seconds" |
             Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
 
       - name: Validate source-built ARM64 Vulkan package
@@ -1515,8 +1515,8 @@ jobs:
           if (-not (Select-String -Path $cache -Pattern '^GGML_VULKAN:BOOL=ON$' -Quiet)) {
             throw 'ARM64 Vulkan source build did not enable Vulkan'
           }
-          if (-not (Select-String -Path $cache -Pattern '^LLAMADART_WINDOWS_ARM64_VULKAN_IPO:BOOL=OFF$' -Quiet)) {
-            throw 'ARM64 Vulkan source build did not disable backend IPO'
+          if (-not (Select-String -Path $cache -Pattern '^LLAMADART_WINDOWS_ARM64_IPO:BOOL=OFF$' -Quiet)) {
+            throw 'ARM64 Vulkan source build did not disable IPO'
           }
           if (-not (Select-String -Path $cache -Pattern '^GGML_CPU_KLEIDIAI:BOOL=ON$' -Quiet)) {
             throw 'Kleidi is not enabled in Windows ARM64 build'

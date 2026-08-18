@@ -20,8 +20,8 @@ set(LLAMADART_CPU_REQUIRED_FEATURES "" CACHE STRING
     "Semicolon-separated GGML_USE_* defines for Android arm64 CPU backend scoring")
 set(LLAMADART_MSVC_LLAMA_COMMON_IPO OFF CACHE BOOL
     "Enable MSVC IPO/LTCG for llama-common")
-set(LLAMADART_WINDOWS_ARM64_VULKAN_IPO OFF CACHE BOOL
-    "Enable IPO/LTO for the Windows ARM64 Vulkan backend")
+set(LLAMADART_WINDOWS_ARM64_IPO OFF CACHE BOOL
+    "Enable IPO/LTO for Windows ARM64 builds")
 
 function(llamadart_attach_android_cpu_backend_score target_name)
     if (NOT ANDROID OR NOT TARGET ${target_name} OR NOT GGML_CPU_ARM_ARCH)
@@ -99,7 +99,16 @@ endif()
 
 # Set defaults for Release builds
 if (CMAKE_BUILD_TYPE STREQUAL "Release")
-    set(CMAKE_INTERPROCEDURAL_OPTIMIZATION ON)
+    if (WIN32 AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(ARM64|arm64|aarch64)$" AND
+            NOT LLAMADART_WINDOWS_ARM64_IPO)
+        # Windows ARM64 cross-builds use many shared libraries and generated
+        # Vulkan sources. Whole-program optimization makes their final links
+        # disproportionately expensive while normal Release optimization is
+        # still provided by the compiler.
+        set(CMAKE_INTERPROCEDURAL_OPTIMIZATION OFF)
+    else()
+        set(CMAKE_INTERPROCEDURAL_OPTIMIZATION ON)
+    endif()
 endif()
 
 if (APPLE)
@@ -125,19 +134,6 @@ add_subdirectory(third_party/llama.cpp/tools/mtmd EXCLUDE_FROM_ALL)
 add_subdirectory(third_party/llama.cpp)
 if (TARGET ggml-vulkan AND LLAMADART_SPIRV_HEADERS_INCLUDE)
     target_include_directories(ggml-vulkan SYSTEM PRIVATE "${LLAMADART_SPIRV_HEADERS_INCLUDE}")
-endif()
-
-if (WIN32 AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(ARM64|arm64|aarch64)$" AND
-        TARGET ggml-vulkan AND NOT LLAMADART_WINDOWS_ARM64_VULKAN_IPO)
-    # The generated Vulkan shader translation units make Windows ARM64 LTO
-    # linking disproportionately expensive. Keep normal Release optimization,
-    # but avoid whole-program optimization for this loaded backend.
-    set_target_properties(ggml-vulkan PROPERTIES
-        INTERPROCEDURAL_OPTIMIZATION OFF
-        INTERPROCEDURAL_OPTIMIZATION_RELEASE OFF
-        INTERPROCEDURAL_OPTIMIZATION_RELWITHDEBINFO OFF
-        INTERPROCEDURAL_OPTIMIZATION_MINSIZEREL OFF
-    )
 endif()
 
 if (MSVC AND NOT LLAMADART_MSVC_LLAMA_COMMON_IPO)
