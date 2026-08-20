@@ -153,7 +153,7 @@ jobs:
           distribution: temurin
           java-version: '17'
       - name: Setup Android SDK/NDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4
         with:
           packages: platform-tools ndk;${{ env.ANDROID_NDK_VERSION }}
       - name: Select pinned Android NDK
