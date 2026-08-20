@@ -85,4 +85,4 @@ jobs:
             --format dumpbin `
             --tool dumpbin `
             --symbol mtmd_input_chunk_get_placeholder `
-            build/wx64/bin/mtmd.dll
+            build/wx64/third_party/llama.cpp/tools/mtmd/mtmd.dll
