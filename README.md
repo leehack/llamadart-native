@@ -205,15 +205,19 @@ appear before the final `--gpu` flag.
 ## Windows Build Notes
 
 MSVC release builds keep interprocedural optimization enabled by default, but
-`llama-common` is excluded from IPO/LTCG. Upstream `llama-common` is a large
-utility DLL, and current MSVC `link.exe` can access-violate while linking it
-with `/LTCG`. The override keeps Windows release artifacts reproducible without
-changing the runtime packaging model.
+`llama-common` and `mtmd` are excluded from IPO/LTCG. Upstream `llama-common` is
+a large utility DLL, and current MSVC `link.exe` can access-violate while
+linking it with `/LTCG`. Upstream `mtmd` enables CMake's automatic Windows
+symbol export; CMake cannot generate the export definition from LTCG object
+files. These target-scoped overrides keep Windows release artifacts
+reproducible without changing the runtime packaging model.
 
 To retest MSVC IPO after a compiler or upstream change, configure with:
 
 ```bash
-cmake --preset windows-x64-full -DLLAMADART_MSVC_LLAMA_COMMON_IPO=ON
+cmake --preset windows-x64-full \
+  -DLLAMADART_MSVC_LLAMA_COMMON_IPO=ON \
+  -DLLAMADART_MSVC_MTMD_IPO=ON
 ```
 
 ## Local Linux Build With Docker Cache

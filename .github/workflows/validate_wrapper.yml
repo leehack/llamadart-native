@@ -9,6 +9,7 @@ on:
       - 'tests/**'
       - 'tools/tts_smoke.cpp'
       - 'tools/validate_exports.py'
+      - 'third_party/llama.cpp'
   push:
     branches:
       - main
@@ -19,6 +20,7 @@ on:
       - 'tests/**'
       - 'tools/tts_smoke.cpp'
       - 'tools/validate_exports.py'
+      - 'third_party/llama.cpp'
 
 permissions:
   contents: read
@@ -52,3 +54,35 @@ jobs:
           --format nm
           --tool nm
           build/wrapper-contract/libllamadart.so
+
+  msvc-mtmd-link-contract:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Setup MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - name: Configure MSVC Release build
+        run: >-
+          cmake --preset windows-x64-full
+          -DGGML_BLAS=OFF
+          -DGGML_CCACHE=OFF
+          -DGGML_CPU_KLEIDIAI=OFF
+          -DGGML_CUDA=OFF
+          -DGGML_OPENCL=OFF
+          -DGGML_OPENMP=OFF
+          -DGGML_VULKAN=OFF
+      - name: Link mtmd shared library without LTCG objects
+        run: cmake --build --preset windows-x64-full --target mtmd
+      - name: Validate current mtmd export contract
+        shell: pwsh
+        run: |
+          python tools/validate_exports.py `
+            --format dumpbin `
+            --tool dumpbin `
+            --symbol mtmd_input_chunk_get_placeholder `
+            build/wx64/third_party/llama.cpp/tools/mtmd/mtmd.dll
