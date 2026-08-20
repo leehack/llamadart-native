@@ -42,10 +42,13 @@
   - auto-built OpenCL ICD loader from `third_party/OpenCL-ICD-Loader` + `third_party/OpenCL-Headers`
 - Linux arm64 builds on x64 runners require `aarch64-linux-gnu-gcc/g++`, `libopenblas-dev:arm64`, and `libvulkan-dev:arm64`.
 - ZenDNN currently targets Linux x64 in this pipeline.
-- Windows MSVC builds disable IPO/LTCG for `llama-common` by default because
-  current MSVC `link.exe` can access-violate when linking that large utility
-  DLL with `/LTCG`. Use `LLAMADART_MSVC_LLAMA_COMMON_IPO=ON` only when
-  retesting a newer compiler or upstream change.
+- Windows MSVC builds disable IPO/LTCG for `llama-common` and `mtmd` by default.
+  Current MSVC `link.exe` can access-violate when linking the large
+  `llama-common` utility DLL with `/LTCG`. CMake's automatic Windows export
+  scanner also cannot generate `mtmd.dll` exports from LTCG object files. Use
+  `LLAMADART_MSVC_LLAMA_COMMON_IPO=ON` or
+  `LLAMADART_MSVC_MTMD_IPO=ON` only when retesting a newer compiler or upstream
+  change.
 
 ## Dependency Management
 

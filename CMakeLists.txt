@@ -20,6 +20,21 @@ set(LLAMADART_CPU_REQUIRED_FEATURES "" CACHE STRING
     "Semicolon-separated GGML_USE_* defines for Android arm64 CPU backend scoring")
 set(LLAMADART_MSVC_LLAMA_COMMON_IPO OFF CACHE BOOL
     "Enable MSVC IPO/LTCG for llama-common")
+set(LLAMADART_MSVC_MTMD_IPO OFF CACHE BOOL
+    "Enable MSVC IPO/LTCG for mtmd")
+
+function(llamadart_disable_ipo)
+    foreach(target_name ${ARGN})
+        if (TARGET ${target_name})
+            set_target_properties(${target_name} PROPERTIES
+                INTERPROCEDURAL_OPTIMIZATION OFF
+                INTERPROCEDURAL_OPTIMIZATION_RELEASE OFF
+                INTERPROCEDURAL_OPTIMIZATION_RELWITHDEBINFO OFF
+                INTERPROCEDURAL_OPTIMIZATION_MINSIZEREL OFF
+            )
+        endif()
+    endforeach()
+endfunction()
 
 function(llamadart_attach_android_cpu_backend_score target_name)
     if (NOT ANDROID OR NOT TARGET ${target_name} OR NOT GGML_CPU_ARM_ARCH)
@@ -128,16 +143,14 @@ endif()
 if (MSVC AND NOT LLAMADART_MSVC_LLAMA_COMMON_IPO)
     # MSVC link.exe can access-violate while linking llama-common.dll with
     # LTCG. Keep IPO elsewhere, but compile this utility stack without LTCG.
-    foreach(target_name llama-common llama-common-base cpp-httplib)
-        if (TARGET ${target_name})
-            set_target_properties(${target_name} PROPERTIES
-                INTERPROCEDURAL_OPTIMIZATION OFF
-                INTERPROCEDURAL_OPTIMIZATION_RELEASE OFF
-                INTERPROCEDURAL_OPTIMIZATION_RELWITHDEBINFO OFF
-                INTERPROCEDURAL_OPTIMIZATION_MINSIZEREL OFF
-            )
-        endif()
-    endforeach()
+    llamadart_disable_ipo(llama-common llama-common-base cpp-httplib)
+endif()
+
+if (MSVC AND NOT LLAMADART_MSVC_MTMD_IPO)
+    # CMake's WINDOWS_EXPORT_ALL_SYMBOLS scanner cannot read MSVC LTCG object
+    # files when generating mtmd.dll's exports. Keep IPO enabled globally, but
+    # emit ordinary COFF objects for this shared library.
+    llamadart_disable_ipo(mtmd)
 endif()
 
 llamadart_attach_android_cpu_backend_score(ggml-cpu)
