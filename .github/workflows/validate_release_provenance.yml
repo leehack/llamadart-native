@@ -25,6 +25,6 @@ jobs:
   verify:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Verify release provenance contracts
         run: python3 scripts/verify_release_provenance.py

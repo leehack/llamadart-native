@@ -41,7 +41,7 @@ jobs:
       llama_cpp_commit: ${{ steps.llama-checkout.outputs.commit }}
       release_tag: ${{ steps.tag.outputs.release_tag }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           submodules: recursive
@@ -137,7 +137,7 @@ jobs:
             include_core: false
             backend_glob: libggml-opencl.so
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           submodules: recursive
@@ -148,7 +148,7 @@ jobs:
           expected_commit: ${{ needs.resolve-tag.outputs.llama_cpp_commit }}
           github_token: ${{ github.token }}
       - name: Set up JDK
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
@@ -167,7 +167,7 @@ jobs:
       - name: Install build deps
         run: sudo apt-get update && sudo apt-get install -y ninja-build ccache
       - name: Restore ccache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ${{ env.CCACHE_DIR }}
           key: ccache-android-${{ matrix.android_abi }}-${{ matrix.backend }}-${{ github.run_id }}
@@ -283,7 +283,7 @@ jobs:
           ls -la "$PAYLOAD"
           test -n "$(find "$PAYLOAD" -maxdepth 1 -type f -print -quit)"
       - name: Upload
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: native_android_${{ matrix.android_abi }}_${{ matrix.backend }}
           path: artifact_payload/*
@@ -309,7 +309,7 @@ jobs:
           - target: ios-sim-x86_64
             out_dir: ios/x86_64-sim
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           submodules: recursive
@@ -320,9 +320,11 @@ jobs:
           expected_commit: ${{ needs.resolve-tag.outputs.llama_cpp_commit }}
           github_token: ${{ github.token }}
       - name: Install build deps
-        run: brew install ccache
+        run: |
+          brew untap aws/tap 2>/dev/null || true
+          brew install ccache
       - name: Restore ccache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ${{ env.CCACHE_DIR }}
           key: ccache-apple-${{ matrix.target }}-${{ github.run_id }}
@@ -353,7 +355,7 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Upload
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: native_apple_${{ matrix.target }}
           path: bin/${{ matrix.out_dir }}/*
@@ -404,7 +406,7 @@ jobs:
             needs_cuda: false
             backend_glob: libggml-blas.so
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           submodules: recursive
@@ -509,7 +511,7 @@ jobs:
             }
           fi
       - name: Restore ccache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ${{ env.CCACHE_DIR }}
           key: ccache-linux-${{ matrix.arch }}-${{ matrix.backend }}-${{ github.run_id }}
@@ -607,7 +609,7 @@ jobs:
           cp "${files[@]}" "$PAYLOAD"/
           ls -la "$PAYLOAD"
       - name: Upload
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: native_linux_${{ matrix.arch }}_${{ matrix.backend }}
           path: artifact_payload/*
@@ -646,7 +648,7 @@ jobs:
           }
           apt_get_update
           apt_get_install git
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           submodules: recursive
@@ -673,7 +675,7 @@ jobs:
           python3 -m pip install --upgrade cmake
           cmake --version
       - name: Restore ccache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ${{ env.CCACHE_DIR }}
           key: ccache-linux-x64-hip-${{ github.run_id }}
@@ -717,7 +719,7 @@ jobs:
           cp "$OUT_DIR/libggml-hip.so" "$PAYLOAD"/
           ls -la "$PAYLOAD"
       - name: Upload
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: native_linux_x64_hip
           path: artifact_payload/*
@@ -779,7 +781,7 @@ jobs:
             needs_vulkan: false
             backend_glob: "*ggml-blas*.dll"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           submodules: recursive
@@ -824,7 +826,7 @@ jobs:
       - name: Restore vcpkg cache
         if: ${{ matrix.needs_openblas }}
         id: vcpkg-cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: |
             C:\vcpkg\downloads
@@ -867,7 +869,7 @@ jobs:
           Add-Content $env:GITHUB_ENV "VCPKG_ROOT=$vcpkgRoot"
       - name: Setup sccache
         if: ${{ matrix.arch == 'x64' }}
-        uses: mozilla-actions/sccache-action@v0.0.9
+        uses: mozilla-actions/sccache-action@v0.0.11
       - name: Configure sccache
         if: ${{ matrix.arch == 'x64' }}
         run: |
@@ -979,13 +981,13 @@ jobs:
           }
           Get-ChildItem $payload
       - name: Upload
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: native_windows_${{ matrix.arch }}_${{ matrix.backend }}
           path: artifact_payload/*
       - name: Save vcpkg cache
         if: ${{ always() && matrix.needs_openblas && steps.vcpkg-cache.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: |
             C:\vcpkg\downloads
@@ -997,7 +999,7 @@ jobs:
     needs: [resolve-tag, build-android, build-apple, build-linux, build-linux-hip, build-windows]
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           submodules: recursive
@@ -1038,7 +1040,7 @@ jobs:
           echo "native_commit=$native_commit" >> "$GITHUB_OUTPUT"
           echo "Release provenance commit: $native_commit"
       - name: Download artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: artifacts
       - name: Prepare release assets
@@ -1182,7 +1184,7 @@ jobs:
 
       - name: Create release
         if: ${{ github.event.inputs.publish_release == 'true' }}
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ needs.resolve-tag.outputs.release_tag }}
           name: ${{ needs.resolve-tag.outputs.release_tag }}
@@ -1199,7 +1201,7 @@ jobs:
     if: ${{ github.event.inputs.publish_release == 'true' && needs.package-and-release.result == 'success' }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           submodules: recursive
