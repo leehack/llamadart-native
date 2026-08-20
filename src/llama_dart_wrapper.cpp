@@ -1136,6 +1136,10 @@ LLAMADART_API struct llama_dart_speculative *llama_dart_speculative_init(
     return nullptr;
   }
 
+  common_params_speculative params =
+      llama_dart_build_speculative_params(params_input, target_context,
+                                          nullptr);
+
   llama_context *ctx_dft = nullptr;
   if (llama_dart_type_mask_has_draft_context(type_mask)) {
     const bool has_mtp =
@@ -1158,7 +1162,9 @@ LLAMADART_API struct llama_dart_speculative *llama_dart_speculative_init(
     }
     context_params.n_seq_max = 1;
     context_params.n_rs_seq = 0;
-    context_params.n_outputs_max = 1;
+    llama_dart_apply_speculative_draft_output_limits(
+        context_params, types, params.draft.n_max,
+        params.draft.backend_sampling);
     context_params.embeddings = false;
     context_params.ctx_other = target_context;
 
@@ -1169,8 +1175,7 @@ LLAMADART_API struct llama_dart_speculative *llama_dart_speculative_init(
     }
   }
 
-  common_params_speculative params =
-      llama_dart_build_speculative_params(params_input, target_context, ctx_dft);
+  params.draft.ctx_dft = ctx_dft;
   const auto target_output_layer_ids =
       llama_dart_speculative_target_output_layer_ids(
           target_model, ctx_dft == nullptr ? nullptr : llama_get_model(ctx_dft));
