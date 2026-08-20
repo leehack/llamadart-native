@@ -789,12 +789,12 @@ jobs:
         run: git config --global core.longpaths true
       - name: Setup MSVC (x64)
         if: ${{ matrix.arch == 'x64' }}
-        uses: ilammy/msvc-dev-cmd@v1
+        uses: TheMrMilchmann/setup-msvc-dev@v4.1.0
         with:
           arch: x64
       - name: Setup MSVC (arm64 cross)
         if: ${{ matrix.arch == 'arm64' }}
-        uses: ilammy/msvc-dev-cmd@v1
+        uses: TheMrMilchmann/setup-msvc-dev@v4.1.0
         with:
           arch: arm64
       - name: Checkout llama.cpp ref
