@@ -44,6 +44,10 @@ Optional Linux container build:
   - Manual native build + release publish.
 - `.github/workflows/auto_native_release.yml`
   - Scheduled/manual dispatcher when upstream `llama.cpp` tag advances.
+- Windows x64 CUDA release backends come from exact-tag upstream CUDA 12/13
+  assets, are verified against the same-run `ggml-base.dll`, and publish as
+  separate sidecars. Do not restore a source-built Windows CUDA matrix lane
+  without evidence that the sidecar contract cannot satisfy the release.
 
 ## Change Boundaries
 
