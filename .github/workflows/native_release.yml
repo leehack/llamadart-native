@@ -481,7 +481,7 @@ jobs:
           apt_get_update
           apt_get_install ccache ninja-build pkg-config make
           if [ "${{ matrix.arch }}" = "arm64" ]; then
-            apt_get_install gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+            apt_get_install gcc-aarch64-linux-gnu g++-aarch64-linux-gnu qemu-user
           fi
           if [ "${{ matrix.needs_vulkan }}" = "true" ]; then
             apt_get_install libvulkan-dev glslc
@@ -608,15 +608,33 @@ jobs:
           OUT_DIR="bin/linux/${{ matrix.arch }}"
           PAYLOAD="artifact_payload"
           mkdir -p "$PAYLOAD"
-          shopt -s nullglob
           if [ "${{ matrix.include_core }}" = "true" ]; then
-            files=("$OUT_DIR"/*.so)
+            python3 tools/package_linux_artifact.py \
+              --input-dir "$OUT_DIR" \
+              --output "$PAYLOAD/runtime.tar.gz"
+            python3 tools/validate_linux_artifact.py "$PAYLOAD/runtime.tar.gz"
           else
-            files=("$OUT_DIR"/${{ matrix.backend_glob }})
+            python3 tools/package_linux_artifact.py \
+              --input-dir "$OUT_DIR" \
+              --output "$PAYLOAD/runtime.tar.gz" \
+              --pattern "${{ matrix.backend_glob }}"
           fi
-          [ "${#files[@]}" -gt 0 ] || { echo "No files staged for upload"; exit 1; }
-          cp "${files[@]}" "$PAYLOAD"/
           ls -la "$PAYLOAD"
+      - name: Validate clean Linux consumer dlopen
+        if: ${{ matrix.include_core }}
+        run: |
+          EXTRACT_DIR="${RUNNER_TEMP}/llamadart-clean-${{ matrix.arch }}"
+          mkdir -p "$EXTRACT_DIR"
+          tar -xzf artifact_payload/runtime.tar.gz -C "$EXTRACT_DIR"
+          if [ "${{ matrix.arch }}" = "arm64" ]; then
+            aarch64-linux-gnu-gcc tools/linux_dlopen_smoke.c -o "${RUNNER_TEMP}/linux-dlopen-smoke-arm64" -ldl
+            env -u LD_LIBRARY_PATH qemu-aarch64 -L /usr/aarch64-linux-gnu \
+              "${RUNNER_TEMP}/linux-dlopen-smoke-arm64" "$EXTRACT_DIR/libllamadart.so"
+          else
+            cc tools/linux_dlopen_smoke.c -o "${RUNNER_TEMP}/linux-dlopen-smoke-x64" -ldl
+            env -u LD_LIBRARY_PATH \
+              "${RUNNER_TEMP}/linux-dlopen-smoke-x64" "$EXTRACT_DIR/libllamadart.so"
+          fi
       - name: Upload
         uses: actions/upload-artifact@v7
         with:
@@ -726,7 +744,10 @@ jobs:
           OUT_DIR="bin/linux/x64"
           PAYLOAD="artifact_payload"
           mkdir -p "$PAYLOAD"
-          cp "$OUT_DIR/libggml-hip.so" "$PAYLOAD"/
+          python3 tools/package_linux_artifact.py \
+            --input-dir "$OUT_DIR" \
+            --output "$PAYLOAD/runtime.tar.gz" \
+            --pattern "libggml-hip.so"
           ls -la "$PAYLOAD"
       - name: Upload
         uses: actions/upload-artifact@v7
@@ -1095,10 +1116,20 @@ jobs:
 
             out_dir="bundles/${bundle}"
             mkdir -p "$out_dir"
-            while IFS= read -r src; do
-              [ -n "$src" ] || continue
-              cp -f "$src" "${out_dir}/$(basename "$src")"
-            done < <(find "$dir" -maxdepth 1 -type f \( -name '*.dll' -o -name '*.dylib' -o -name '*.so' \) | sort)
+            if [[ "$bundle" = linux-* ]]; then
+              shopt -s nullglob
+              archives=("$dir"/*.tar.gz)
+              [ "${#archives[@]}" -eq 1 ] || {
+                echo "Expected one Linux runtime archive in $dir, found ${#archives[@]}" >&2
+                exit 1
+              }
+              tar -xzf "${archives[0]}" -C "$out_dir"
+            else
+              while IFS= read -r src; do
+                [ -n "$src" ] || continue
+                cp -f "$src" "${out_dir}/$(basename "$src")"
+              done < <(find "$dir" -maxdepth 1 -type f \( -name '*.dll' -o -name '*.dylib' -o -name '*.so' \) | sort)
+            fi
           done
 
           for bundle_dir in bundles/*; do
@@ -1136,6 +1167,10 @@ jobs:
           done
           HEADER_ARCHIVE="llamadart-native-headers-${{ needs.resolve-tag.outputs.release_tag }}.tar.gz"
           tar -czf "release_assets/${HEADER_ARCHIVE}" -C headers_bundle libllamadart llama_cpp
+
+          for archive in release_assets/llamadart-native-linux-*.tar.gz; do
+            python3 tools/validate_linux_artifact.py "$archive"
+          done
 
           ls -la release_assets
           test -n "$(find release_assets -maxdepth 1 -type f -print -quit)"

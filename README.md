@@ -146,6 +146,10 @@ Assets are suffixed with platform/arch, for example:
 - `tools/build.py`: cross-platform build entrypoint.
 - `tools/validate_exports.py`: verifies required wrapper C exports, including
   speculative-decoding and TTS symbols, in release artifacts.
+- `tools/package_linux_artifact.py`: preserves Linux ELF version files and
+  SONAME symlinks while transporting split CI artifacts.
+- `tools/validate_linux_artifact.py`: checks Linux archive members, symlinks,
+  SONAMEs, and local `DT_NEEDED` dependencies.
 - `tools/package_apple_xcframework.py`: packages Apple `libllamadart` slices as
   an SPM-compatible XCFramework zip.
 - `scripts/generate_assets_manifest.sh`: builds `assets.json` + checksums.
@@ -171,6 +175,9 @@ python3 tools/build.py apple --target macos-arm64
 
 # Linux x64 (Vulkan + CUDA + BLAS + ZenDNN + CPU)
 python3 tools/build.py linux --arch x64
+
+# Linux x64 CPU-only artifact validation build
+python3 tools/build.py linux --arch x64 --backend cpu
 
 # Android both ABIs (arm64: Vulkan + OpenCL + CPU variants; x86_64: Vulkan + OpenCL + CPU)
 python3 tools/build.py android --abi all

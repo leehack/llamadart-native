@@ -4,10 +4,15 @@ on:
   pull_request:
     paths:
       - '.github/workflows/validate_wrapper.yml'
+      - '.github/workflows/native_release.yml'
       - 'CMakeLists.txt'
       - 'src/**'
       - 'tests/**'
       - 'tools/tts_smoke.cpp'
+      - 'tools/build.py'
+      - 'tools/linux_dlopen_smoke.c'
+      - 'tools/package_linux_artifact.py'
+      - 'tools/validate_linux_artifact.py'
       - 'tools/validate_exports.py'
       - 'third_party/llama.cpp'
   push:
@@ -15,10 +20,15 @@ on:
       - main
     paths:
       - '.github/workflows/validate_wrapper.yml'
+      - '.github/workflows/native_release.yml'
       - 'CMakeLists.txt'
       - 'src/**'
       - 'tests/**'
       - 'tools/tts_smoke.cpp'
+      - 'tools/build.py'
+      - 'tools/linux_dlopen_smoke.c'
+      - 'tools/package_linux_artifact.py'
+      - 'tools/validate_linux_artifact.py'
       - 'tools/validate_exports.py'
       - 'third_party/llama.cpp'
 
@@ -26,6 +36,47 @@ permissions:
   contents: read
 
 jobs:
+  linux-artifact-contract:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x64, arm64]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          submodules: recursive
+      - name: Install Linux build and emulation dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build
+          if [ "${{ matrix.arch }}" = "arm64" ]; then
+            sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu qemu-user
+          fi
+      - name: Build CPU-only Linux runtime
+        run: python3 tools/build.py linux --arch "${{ matrix.arch }}" --backend cpu --jobs 2
+      - name: Package and inspect Linux runtime
+        run: |
+          python3 tools/package_linux_artifact.py \
+            --input-dir "bin/linux/${{ matrix.arch }}" \
+            --output "linux-${{ matrix.arch }}.tar.gz"
+          python3 tools/validate_linux_artifact.py "linux-${{ matrix.arch }}.tar.gz"
+      - name: Validate clean consumer dlopen
+        run: |
+          EXTRACT_DIR="${RUNNER_TEMP}/llamadart-clean-${{ matrix.arch }}"
+          mkdir -p "$EXTRACT_DIR"
+          tar -xzf "linux-${{ matrix.arch }}.tar.gz" -C "$EXTRACT_DIR"
+          if [ "${{ matrix.arch }}" = "arm64" ]; then
+            aarch64-linux-gnu-gcc tools/linux_dlopen_smoke.c -o "${RUNNER_TEMP}/linux-dlopen-smoke-arm64" -ldl
+            env -u LD_LIBRARY_PATH qemu-aarch64 -L /usr/aarch64-linux-gnu \
+              "${RUNNER_TEMP}/linux-dlopen-smoke-arm64" "$EXTRACT_DIR/libllamadart.so"
+          else
+            cc tools/linux_dlopen_smoke.c -o "${RUNNER_TEMP}/linux-dlopen-smoke-x64" -ldl
+            env -u LD_LIBRARY_PATH \
+              "${RUNNER_TEMP}/linux-dlopen-smoke-x64" "$EXTRACT_DIR/libllamadart.so"
+          fi
+
   wrapper-contract:
     runs-on: ubuntu-latest
     steps:
@@ -85,4 +136,4 @@ jobs:
             --format dumpbin `
             --tool dumpbin `
             --symbol mtmd_input_chunk_get_placeholder `
-            build/wx64/third_party/llama.cpp/tools/mtmd/mtmd.dll
+            build/wx64/bin/mtmd.dll

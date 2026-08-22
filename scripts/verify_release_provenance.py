@@ -14,6 +14,7 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github/workflows/native_release.yml"
+WRAPPER_WORKFLOW = ROOT / ".github/workflows/validate_wrapper.yml"
 AUTO_WORKFLOW = ROOT / ".github/workflows/auto_native_release.yml"
 CHECKOUT_ACTION = ROOT / ".github/actions/checkout-llama-ref/action.yml"
 MANIFEST_SCRIPT = ROOT / "scripts/generate_assets_manifest.sh"
@@ -78,6 +79,7 @@ def workflow_job(workflow: str, name: str) -> str:
 
 def verify_workflow_contract(errors: list[str]) -> None:
     workflow = WORKFLOW.read_text()
+    wrapper_workflow = WRAPPER_WORKFLOW.read_text()
     auto_workflow = AUTO_WORKFLOW.read_text()
     validation_workflow = VALIDATION_WORKFLOW.read_text()
     publication_script = PUBLICATION_SCRIPT.read_text()
@@ -211,6 +213,37 @@ def verify_workflow_contract(errors: list[str]) -> None:
         in action
         and 'echo "commit=$ACTUAL_COMMIT" >> "$GITHUB_OUTPUT"' in action,
         "checkout action must expose and enforce exact commit provenance",
+        errors,
+    )
+    linux_validation = package_job.find(
+        "for archive in release_assets/llamadart-native-linux-*.tar.gz"
+    )
+    linux_archive_glob = package_job.find('archives=("$dir"/*.tar.gz)')
+    linux_archive_nullglob = package_job.rfind(
+        "shopt -s nullglob", 0, linux_archive_glob
+    )
+    linux_artifact_job = workflow_job(wrapper_workflow, "linux-artifact-contract")
+    require(
+        "python3 tools/package_linux_artifact.py" in workflow
+        and workflow.count("python3 tools/validate_linux_artifact.py") == 2
+        and 'tar -xzf "${archives[0]}" -C "$out_dir"' in workflow
+        and -1 < linux_validation < manifest,
+        "Linux release packaging must preserve and validate SONAME symlinks before manifest generation",
+        errors,
+    )
+    require(
+        -1 < linux_archive_nullglob < linux_archive_glob,
+        "Linux release archive discovery must use nullglob so an empty directory reports zero archives",
+        errors,
+    )
+    require(
+        bool(linux_artifact_job)
+        and "arch: [x64, arm64]" in linux_artifact_job
+        and "--backend cpu" in linux_artifact_job
+        and "qemu-aarch64" in linux_artifact_job
+        and "tools/linux_dlopen_smoke.c" in linux_artifact_job
+        and "persist-credentials: false" in linux_artifact_job,
+        "PR validation must inspect and clean-dlopen Linux x64 and arm64 archives",
         errors,
     )
     require(
