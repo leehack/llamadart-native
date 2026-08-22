@@ -222,6 +222,7 @@ def verify_workflow_contract(errors: list[str]) -> None:
     linux_archive_nullglob = package_job.rfind(
         "shopt -s nullglob", 0, linux_archive_glob
     )
+    linux_artifact_job = workflow_job(wrapper_workflow, "linux-artifact-contract")
     require(
         "python3 tools/package_linux_artifact.py" in workflow
         and workflow.count("python3 tools/validate_linux_artifact.py") == 2
@@ -236,11 +237,12 @@ def verify_workflow_contract(errors: list[str]) -> None:
         errors,
     )
     require(
-        "linux-artifact-contract:" in wrapper_workflow
-        and "arch: [x64, arm64]" in wrapper_workflow
-        and "--backend cpu" in wrapper_workflow
-        and "qemu-aarch64" in wrapper_workflow
-        and "tools/linux_dlopen_smoke.c" in wrapper_workflow,
+        bool(linux_artifact_job)
+        and "arch: [x64, arm64]" in linux_artifact_job
+        and "--backend cpu" in linux_artifact_job
+        and "qemu-aarch64" in linux_artifact_job
+        and "tools/linux_dlopen_smoke.c" in linux_artifact_job
+        and "persist-credentials: false" in linux_artifact_job,
         "PR validation must inspect and clean-dlopen Linux x64 and arm64 archives",
         errors,
     )

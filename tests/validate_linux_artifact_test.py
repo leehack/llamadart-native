@@ -6,8 +6,11 @@ from __future__ import annotations
 from pathlib import Path
 import subprocess
 import sys
+import tarfile
 import tempfile
 import unittest
+
+from tools.validate_linux_artifact import validate_archive
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -15,6 +18,34 @@ VALIDATOR = ROOT / "tools/validate_linux_artifact.py"
 
 
 class ValidateLinuxArtifactTest(unittest.TestCase):
+    def test_multi_hop_symlink_cycles_are_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            archive_path = Path(directory) / "runtime.tar.gz"
+            with tarfile.open(archive_path, "w:gz") as archive:
+                for name, target in (
+                    ("libllamadart.so", "libllama.so"),
+                    ("libllama.so", "libllamadart.so"),
+                    ("libmtmd.so", "libmtmd.so.0"),
+                    ("libmtmd.so.0", "libmtmd.so"),
+                ):
+                    member = tarfile.TarInfo(name)
+                    member.type = tarfile.SYMTYPE
+                    member.linkname = target
+                    archive.addfile(member)
+
+            errors = validate_archive(archive_path, "/usr/bin/true", "readelf")
+
+        self.assertIn(
+            "libllamadart.so: symlink chain contains a cycle: "
+            "libllamadart.so -> libllama.so -> libllamadart.so",
+            errors,
+        )
+        self.assertIn(
+            "libmtmd.so: symlink chain contains a cycle: "
+            "libmtmd.so -> libmtmd.so.0 -> libmtmd.so",
+            errors,
+        )
+
     def test_missing_explicit_tool_reports_a_clean_cli_error(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             missing_tool = Path(directory) / "missing-readelf"

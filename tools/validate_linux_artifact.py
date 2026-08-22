@@ -108,9 +108,26 @@ def validate_symlinks(members: dict[str, tarfile.TarInfo], errors: list[str]) ->
     for name, member in members.items():
         if not member.issym():
             continue
-        target = safe_member_name(member.linkname)
-        if target not in members:
-            errors.append(f"{name}: symlink target is absent from archive: {target}")
+        current = name
+        chain: list[str] = []
+        while True:
+            if current in chain:
+                cycle_start = chain.index(current)
+                cycle = chain[cycle_start:] + [current]
+                errors.append(
+                    f"{name}: symlink chain contains a cycle: {' -> '.join(cycle)}"
+                )
+                break
+            chain.append(current)
+            current_member = members.get(current)
+            if current_member is None:
+                errors.append(
+                    f"{name}: symlink target is absent from archive: {current}"
+                )
+                break
+            if not current_member.issym():
+                break
+            current = safe_member_name(current_member.linkname)
 
 
 def resolve_symlink_member(

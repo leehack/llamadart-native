@@ -45,6 +45,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
+          persist-credentials: false
           submodules: recursive
       - name: Install Linux build and emulation dependencies
         run: |
