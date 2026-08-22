@@ -38,6 +38,27 @@ class LinuxBundleSmokeTests(unittest.TestCase):
             self.assertNotIn("assert version", command[2])
             compile(command[2], "<smoke-probe>", "exec")
 
+    def test_probe_uses_unconditional_api_version_check(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            bundle = Path(directory) / "bundle"
+            bundle.mkdir()
+            (bundle / "libllamadart.so").touch()
+
+            with patch(
+                "smoke_linux_bundle.subprocess.run",
+                return_value=subprocess.CompletedProcess(
+                    [], 1, "", "unexpected wrapper API version: 2\n"
+                ),
+            ) as run:
+                with self.assertRaisesRegex(
+                    RuntimeError, "unexpected wrapper API version: 2"
+                ):
+                    smoke(bundle)
+
+            probe = run.call_args.args[0][2]
+            self.assertIn("if version != 1:", probe)
+            self.assertNotIn("assert version == 1", probe)
+
 
 if __name__ == "__main__":
     unittest.main()
