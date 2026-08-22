@@ -9,8 +9,9 @@ import sys
 import tarfile
 import tempfile
 import unittest
+from unittest import mock
 
-from tools.validate_linux_artifact import validate_archive
+from tools.validate_linux_artifact import resolve_tool, validate_archive
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -18,6 +19,30 @@ VALIDATOR = ROOT / "tools/validate_linux_artifact.py"
 
 
 class ValidateLinuxArtifactTest(unittest.TestCase):
+    def test_version_suffixed_llvm_objdump_uses_objdump_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            tool = Path(directory) / "llvm-objdump-17"
+            tool.touch(mode=0o755)
+
+            resolved, mode = resolve_tool(str(tool))
+
+        self.assertEqual(resolved, str(tool))
+        self.assertEqual(mode, "objdump")
+
+    def test_auto_discovery_accepts_llvm_objdump(self) -> None:
+        with mock.patch(
+            "tools.validate_linux_artifact.shutil.which",
+            side_effect=lambda candidate: (
+                "/opt/llvm/bin/llvm-objdump"
+                if candidate == "llvm-objdump"
+                else None
+            ),
+        ):
+            resolved, mode = resolve_tool(None)
+
+        self.assertEqual(resolved, "/opt/llvm/bin/llvm-objdump")
+        self.assertEqual(mode, "objdump")
+
     def test_multi_hop_symlink_cycles_are_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             archive_path = Path(directory) / "runtime.tar.gz"

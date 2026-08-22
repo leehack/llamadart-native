@@ -41,12 +41,13 @@ def resolve_tool(explicit: str | None) -> tuple[str, str]:
             raise ValueError(
                 f"ELF inspection tool does not exist or is not executable: {explicit}"
             )
-        mode = "objdump" if Path(resolved).name.endswith("objdump") else "readelf"
+        mode = "objdump" if "objdump" in Path(resolved).name.lower() else "readelf"
         return resolved, mode
     for candidate, mode in (
         ("readelf", "readelf"),
         ("llvm-readelf", "readelf"),
         ("objdump", "objdump"),
+        ("llvm-objdump", "objdump"),
     ):
         resolved = shutil.which(candidate)
         if resolved:
