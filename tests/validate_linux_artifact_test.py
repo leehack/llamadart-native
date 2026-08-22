@@ -60,6 +60,27 @@ class ValidateLinuxArtifactTest(unittest.TestCase):
             self.assertEqual(extracted.readlink(), Path(member.linkname))
         archive.extract.assert_not_called()
 
+    def test_symlink_creation_oserror_becomes_a_validation_error(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            archive_path = Path(directory) / "runtime.tar.gz"
+            member = tarfile.TarInfo("libllamadart.so")
+            member.type = tarfile.SYMTYPE
+            member.linkname = "libllamadart.so.1"
+            with tarfile.open(archive_path, "w:gz") as archive:
+                archive.addfile(member)
+
+            with mock.patch.object(
+                Path,
+                "symlink_to",
+                side_effect=OSError("read-only filesystem"),
+            ):
+                errors = validate_archive(archive_path, "/usr/bin/true", "readelf")
+
+        self.assertEqual(
+            errors,
+            ["Archive extraction failed: read-only filesystem"],
+        )
+
     def test_legacy_fallback_discards_archive_metadata_and_permissions(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

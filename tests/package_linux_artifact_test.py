@@ -80,6 +80,27 @@ class PackageLinuxArtifactTest(unittest.TestCase):
             )
             self.assertFalse(output.exists())
 
+    def test_selected_directory_target_fails_with_type_diagnostic(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            input_dir = root / "input"
+            input_dir.mkdir()
+            (input_dir / "runtime-directory").mkdir()
+            (input_dir / "libinvalid.so").symlink_to(
+                "runtime-directory", target_is_directory=True
+            )
+            output = root / "runtime.tar.gz"
+
+            result = self.run_packager(input_dir, output, "libinvalid.so")
+
+            self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+            self.assertIn(
+                "Linux runtime symlink target is not a regular file: "
+                "libinvalid.so -> runtime-directory",
+                result.stdout,
+            )
+            self.assertFalse(output.exists())
+
     def test_selected_parent_directory_symlink_fails_as_non_sibling(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

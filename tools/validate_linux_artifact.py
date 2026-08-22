@@ -200,6 +200,8 @@ def validate_archive(archive_path: Path, tool: str, mode: str) -> list[str]:
             members = extract_archive(archive_path, root)
         except (ValueError, tarfile.TarError) as error:
             return [str(error)]
+        except OSError as error:
+            return [f"Archive extraction failed: {error}"]
 
         validate_symlinks(members, errors)
         names = set(members)
