@@ -74,6 +74,9 @@ set(LLAMA_INSTALL_VERSION 0.0.0 CACHE STRING "Llama install version" FORCE)
 
 # Common llama.cpp options
 set(LLAMA_BUILD_COMMON ON CACHE BOOL "Build llama.cpp common library" FORCE)
+# Let llama.cpp add mtmd from its own directory scope so its version variables
+# resolve before CMake assigns the shared-library VERSION and SOVERSION.
+set(LLAMA_BUILD_MTMD ON CACHE BOOL "Build llama.cpp mtmd library" FORCE)
 set(LLAMA_BUILD_TESTS OFF CACHE BOOL "Build llama.cpp tests" FORCE)
 set(LLAMA_BUILD_EXAMPLES OFF CACHE BOOL "Build llama.cpp examples" FORCE)
 set(LLAMA_BUILD_SERVER OFF CACHE BOOL "Build llama.cpp server" FORCE)
@@ -134,7 +137,6 @@ if (APPLE)
     endif()
 endif()
 
-add_subdirectory(third_party/llama.cpp/tools/mtmd EXCLUDE_FROM_ALL)
 add_subdirectory(third_party/llama.cpp)
 if (TARGET ggml-vulkan AND LLAMADART_SPIRV_HEADERS_INCLUDE)
     target_include_directories(ggml-vulkan SYSTEM PRIVATE "${LLAMADART_SPIRV_HEADERS_INCLUDE}")

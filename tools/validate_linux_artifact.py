@@ -1,0 +1,274 @@
+#!/usr/bin/env python3
+"""Validate Linux runtime archive SONAME and dependency contracts."""
+
+from __future__ import annotations
+
+import argparse
+from dataclasses import dataclass
+import inspect
+import os
+from pathlib import Path, PurePosixPath, PureWindowsPath
+import re
+import shutil
+import subprocess
+import tarfile
+import tempfile
+
+
+LOCAL_LIBRARY_PREFIXES = ("libllamadart", "libllama", "libggml", "libmtmd")
+PLACEHOLDER = "SOVERSION"
+MAX_ERROR_DETAIL_LENGTH = 512
+TARFILE_EXTRACT_SUPPORTS_FILTER = (
+    "filter" in inspect.signature(tarfile.TarFile.extract).parameters
+)
+
+
+def bounded_error_detail(error: OSError) -> str:
+    detail = " ".join(str(error).splitlines()).strip() or type(error).__name__
+    if len(detail) > MAX_ERROR_DETAIL_LENGTH:
+        return f"{detail[: MAX_ERROR_DETAIL_LENGTH - 3]}..."
+    return detail
+
+
+@dataclass(frozen=True)
+class DynamicMetadata:
+    soname: str | None
+    needed: tuple[str, ...]
+    raw: str
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("archive", type=Path)
+    parser.add_argument(
+        "--tool",
+        help=(
+            "ELF inspection tool (default: first available readelf, llvm-readelf, "
+            "objdump, or llvm-objdump)"
+        ),
+    )
+    return parser.parse_args()
+
+
+def resolve_tool(explicit: str | None) -> tuple[str, str]:
+    if explicit:
+        resolved = shutil.which(explicit)
+        if not resolved:
+            raise ValueError(
+                f"ELF inspection tool does not exist or is not executable: {explicit}"
+            )
+        mode = "objdump" if "objdump" in Path(resolved).name.lower() else "readelf"
+        return resolved, mode
+    for candidate, mode in (
+        ("readelf", "readelf"),
+        ("llvm-readelf", "readelf"),
+        ("objdump", "objdump"),
+        ("llvm-objdump", "objdump"),
+    ):
+        resolved = shutil.which(candidate)
+        if resolved:
+            return resolved, mode
+    raise ValueError(
+        "No ELF inspection tool found "
+        "(tried readelf, llvm-readelf, objdump, and llvm-objdump)"
+    )
+
+
+def inspect_dynamic(path: Path, tool: str, mode: str) -> DynamicMetadata:
+    command = [tool, "-p" if mode == "objdump" else "-d", str(path)]
+    result = subprocess.run(command, check=True, capture_output=True, text=True)
+    raw = result.stdout
+    soname: str | None = None
+    needed: list[str] = []
+    for line in raw.splitlines():
+        readelf_match = re.search(r"\((NEEDED|SONAME)\).*\[([^]]+)\]", line)
+        objdump_match = re.match(r"\s*(NEEDED|SONAME)\s+(\S+)", line)
+        match = readelf_match or objdump_match
+        if not match:
+            continue
+        kind, value = match.groups()
+        if kind == "SONAME":
+            soname = value
+        else:
+            needed.append(value)
+    return DynamicMetadata(soname=soname, needed=tuple(needed), raw=raw)
+
+
+def safe_member_name(name: str) -> str:
+    normalized = name.removeprefix("./")
+    path = PurePosixPath(normalized)
+    windows_path = PureWindowsPath(normalized)
+    if (
+        path.is_absolute()
+        or windows_path.is_absolute()
+        or windows_path.drive
+        or len(path.parts) != 1
+        or len(windows_path.parts) != 1
+        or path.name in ("", ".", "..")
+    ):
+        raise ValueError(f"Archive member must be a flat runtime filename: {name}")
+    return path.name
+
+
+def extract_member_safely(
+    archive: tarfile.TarFile,
+    member: tarfile.TarInfo,
+    destination: Path,
+) -> None:
+    name = safe_member_name(member.name)
+    output = destination / name
+    if member.issym():
+        # The data filter may reject a valid link when its target has not been
+        # extracted yet. Both names were constrained to flat filenames above.
+        output.symlink_to(safe_member_name(member.linkname))
+        return
+
+    if TARFILE_EXTRACT_SUPPORTS_FILTER:
+        archive.extract(member, destination, filter="data")
+        return
+
+    # Python versions without extraction filters still need fail-safe handling.
+    # Copy only the validated payload and ignore all archive metadata.
+    source = archive.extractfile(member)
+    if source is None:
+        raise ValueError(f"Could not read archive member: {name}")
+    descriptor = os.open(output, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with source, os.fdopen(descriptor, "wb") as target:
+        shutil.copyfileobj(source, target)
+
+
+def extract_archive(archive_path: Path, destination: Path) -> dict[str, tarfile.TarInfo]:
+    members: dict[str, tarfile.TarInfo] = {}
+    with tarfile.open(archive_path, "r:gz") as archive:
+        for member in archive.getmembers():
+            if member.isdir():
+                continue
+            name = safe_member_name(member.name)
+            if name in members:
+                raise ValueError(f"Duplicate archive member: {name}")
+            if not (member.isfile() or member.issym()):
+                raise ValueError(f"Unsupported archive member type: {name}")
+            if member.issym():
+                target = safe_member_name(member.linkname)
+                if target == name:
+                    raise ValueError(f"Self-referential archive symlink: {name}")
+            members[name] = member
+            # Every member and symlink target is constrained to one flat
+            # filename above, so extraction cannot escape the temporary root.
+            extract_member_safely(archive, member, destination)
+    return members
+
+
+def validate_symlinks(members: dict[str, tarfile.TarInfo], errors: list[str]) -> None:
+    for name, member in members.items():
+        if not member.issym():
+            continue
+        current = name
+        chain: list[str] = []
+        while True:
+            if current in chain:
+                cycle_start = chain.index(current)
+                cycle = chain[cycle_start:] + [current]
+                errors.append(
+                    f"{name}: symlink chain contains a cycle: {' -> '.join(cycle)}"
+                )
+                break
+            chain.append(current)
+            current_member = members.get(current)
+            if current_member is None:
+                errors.append(
+                    f"{name}: symlink target is absent from archive: {current}"
+                )
+                break
+            if not current_member.issym():
+                break
+            current = safe_member_name(current_member.linkname)
+
+
+def resolve_symlink_member(
+    name: str, members: dict[str, tarfile.TarInfo]
+) -> str | None:
+    visited: set[str] = set()
+    while name in members and members[name].issym():
+        if name in visited:
+            return None
+        visited.add(name)
+        name = safe_member_name(members[name].linkname)
+    return name if name in members else None
+
+
+def validate_archive(archive_path: Path, tool: str, mode: str) -> list[str]:
+    errors: list[str] = []
+    if not archive_path.is_file():
+        return [f"Archive does not exist: {archive_path}"]
+
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        try:
+            members = extract_archive(archive_path, root)
+        except (ValueError, tarfile.TarError) as error:
+            return [str(error)]
+        except OSError as error:
+            return [f"Archive extraction failed: {bounded_error_detail(error)}"]
+
+        validate_symlinks(members, errors)
+        names = set(members)
+        for required in ("libllamadart.so", "libmtmd.so"):
+            if required not in names:
+                errors.append(f"Missing required archive member: {required}")
+
+        metadata: dict[str, DynamicMetadata] = {}
+        for name in sorted(names):
+            if ".so" not in name or members[name].issym():
+                continue
+            try:
+                dynamic = inspect_dynamic(root / name, tool, mode)
+            except subprocess.CalledProcessError as error:
+                errors.append(f"{name}: ELF inspection failed with exit code {error.returncode}")
+                continue
+            except OSError as error:
+                errors.append(f"{name}: ELF inspection failed: {error}")
+                continue
+            metadata[name] = dynamic
+            if PLACEHOLDER in name or PLACEHOLDER in dynamic.raw:
+                errors.append(f"{name}: contains literal {PLACEHOLDER} in filename or dynamic metadata")
+            if dynamic.soname and dynamic.soname not in names:
+                errors.append(f"{name}: SONAME {dynamic.soname} is absent from archive")
+            for dependency in dynamic.needed:
+                if dependency.startswith(LOCAL_LIBRARY_PREFIXES) and dependency not in names:
+                    errors.append(f"{name}: local DT_NEEDED dependency is absent: {dependency}")
+
+        mtmd = metadata.get("libmtmd.so")
+        if mtmd is None:
+            target = resolve_symlink_member("libmtmd.so", members)
+            mtmd = metadata.get(target or "")
+        if mtmd is None or not mtmd.soname:
+            errors.append("libmtmd ELF does not declare a SONAME")
+        elif not re.fullmatch(r"libmtmd\.so\.\d+", mtmd.soname):
+            errors.append(f"libmtmd ELF has unresolved SONAME: {mtmd.soname}")
+
+        canonical_mtmd = members.get("libmtmd.so")
+        if canonical_mtmd is not None and not canonical_mtmd.issym():
+            errors.append("libmtmd.so must remain a symlink to its versioned ELF")
+
+    return errors
+
+
+def main() -> int:
+    args = parse_args()
+    try:
+        tool, mode = resolve_tool(args.tool)
+    except ValueError as error:
+        print(f"ERROR: {error}")
+        return 1
+    errors = validate_archive(args.archive, tool, mode)
+    if errors:
+        for error in errors:
+            print(f"ERROR: {error}")
+        return 1
+    print(f"Linux artifact contract verified: {args.archive}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
