@@ -199,6 +199,15 @@ class ReleaseResultTests(unittest.TestCase):
             with self.assertRaisesRegex(ContractError, "digest mismatch"):
                 self._result(assets, release)
 
+    def test_result_rejects_non_object_manifest_with_contract_error(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            assets, release = self._fixture(Path(directory))
+            (assets / "assets.json").write_text("[]\n")
+            with self.assertRaisesRegex(
+                ContractError, "assets.json must contain a JSON object"
+            ):
+                self._result(assets, release)
+
     def test_result_hashes_exact_remote_asset_when_api_digest_is_missing(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             assets, release = self._fixture(Path(directory))

@@ -236,7 +236,12 @@ def build_release_result(
     checksums_path = assets_dir / "SHA256SUMS"
     if not manifest_path.is_file() or not checksums_path.is_file():
         raise ContractError("release assets must contain assets.json and SHA256SUMS")
-    manifest = json.loads(manifest_path.read_text())
+    try:
+        manifest = json.loads(manifest_path.read_text())
+    except json.JSONDecodeError as error:
+        raise ContractError(f"assets.json is not valid JSON: {error}") from error
+    if not isinstance(manifest, dict):
+        raise ContractError("assets.json must contain a JSON object")
     if manifest.get("native_release_tag") != native_release_tag or manifest.get("tag") != native_release_tag:
         raise ContractError("manifest native_release_tag/tag does not match dispatch")
     for field, expected in {
