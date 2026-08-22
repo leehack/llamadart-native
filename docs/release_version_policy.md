@@ -7,13 +7,13 @@ provenance.
 
 ## Accepted tags
 
-| Purpose | Upstream `llama.cpp` ref | Native release tag | GitHub classification |
+| Purpose | Upstream `llama.cpp` ref | Native release tag | New release classification |
 | --- | --- | --- | --- |
 | Stable distribution | `vMAJOR.MINOR.PATCH` | the same `vMAJOR.MINOR.PATCH` | release |
 | Stable wrapper-only rebuild | `vMAJOR.MINOR.PATCH` | `vMAJOR.MINOR.PATCH-N` | prerelease |
 | Explicit nightly/development build | `bNNNN` | the same `bNNNN` | prerelease |
 | Nightly wrapper-only rebuild | `bNNNN` | `bNNNN-N` | prerelease |
-| Legacy nightly wrapper (read only) | `bNNNN` | `bNNNN-llamadart.N` | prerelease |
+| Legacy nightly wrapper (read only) | `bNNNN` | `bNNNN-llamadart.N` | historical metadata varies |
 
 `N` starts at 1 and increases numerically. For example, wrapper-only rebuilds
 of upstream `v0.2.0` are `v0.2.0-1`, `v0.2.0-2`, and so on. The exact
@@ -28,8 +28,10 @@ v0.2.0, v0.2.0-1, v0.2.0-2, ...; then v0.2.1
 
 `v0.2.0-1` is a valid SemVer prerelease and generic SemVer comparison places it
 before `v0.2.0`. Consumers must therefore treat `-N` as this repository's
-native rebuild counter, use the GitHub prerelease classification for channel
-selection, and read `llama_cpp_tag`/`llama_cpp_commit` for upstream provenance.
+native rebuild counter, parse the native tag grammar for channel selection, and
+read `llama_cpp_tag`/`llama_cpp_commit` for upstream provenance. GitHub's
+`prerelease` field is additional presentation metadata, not the historical
+channel authority.
 The policy does not use build metadata because SemVer ignores it for
 precedence, and it does not increment the patch because that would obscure the
 exact upstream version prefix.
@@ -45,15 +47,19 @@ newer upstream stable release instead of inventing a different suffix.
 - `latest` resolves `ggml-org/llama.cpp`'s latest GitHub Release and must resolve
   to an exact `vMAJOR.MINOR.PATCH` tag. Automatic discovery fails closed on a
   nightly, prerelease, or unrecognized tag.
-- `bNNNN` remains available only as an explicit workflow input. Nightly and
-  wrapper-only releases are marked as GitHub prereleases, so they cannot replace
-  the default stable release.
+- `bNNNN` remains available only as an explicit workflow input. Newly emitted
+  nightly and wrapper-only releases are marked as GitHub prereleases, so they
+  cannot replace the default stable release.
 - Only an upstream-aligned stable release may update this repository's pinned
   `third_party/llama.cpp` submodule. Nightly and wrapper-only releases do not
   move the stable pin.
 - Existing `bNNNN` and `bNNNN-llamadart.N` releases and archives remain
   immutable and supported for explicit consumption. New nightly rebuilds emit
   only `bNNNN-N`; the `-llamadart.N` form is never emitted again.
+- Historical GitHub metadata is not retroactively rewritten. In particular,
+  immutable releases `b10545` and `b10356-llamadart.1` both have
+  `prerelease=false`. Consumers must still classify both as nightly from their
+  tag grammar. The repository's live regression check preserves this contract.
 
 ## Orchestration and approval
 
@@ -85,9 +91,35 @@ Do not mutate, republish, or reuse a tag. For a wrapper-only fix, keep the same
 full build matrix. Workflow dispatch, publication, downstream pin updates, and
 downstream releases remain separate maintainer actions.
 
+## Publication and recovery
+
+Build, package, and candidate-validation jobs run with `contents: read` and do
+not persist checkout credentials. Only the final publication job receives
+`contents: write`; the later stable-submodule update is a separate narrowly
+scoped write job and runs only after a successful upstream-aligned stable
+publication.
+
+Publication is an immutable, draft-first transaction:
+
+1. The complete build matrix produces one same-run artifact containing release
+   assets, their digest, and the exact provenance commit.
+2. The final job verifies that commit and its `llama.cpp` tree entry, creates the
+   tag without force, creates a draft release, and uploads only missing assets.
+3. The draft becomes published only after the tag, release correlation fields,
+   prerelease setting, and every asset digest and size match exactly.
+
+If publication stops partway through, retry the failed job in the same workflow
+run. An exact matching tag, draft, or already-published release is resumed or
+accepted idempotently. Any different tag target, release body, workflow/artifact
+correlation, classification, asset set, digest, or size fails closed. The
+workflow never force-moves a tag, replaces an asset, edits a mismatched release,
+or repairs a partial published release by mutation. A new workflow dispatch is
+a different transaction and cannot take over partial state from the old run.
+
 ## Downstream coordination
 
-Consumers must classify the native tag independently from the upstream ref:
+Consumers must classify the native tag independently from both the upstream ref
+and GitHub's historical `prerelease` field:
 
 - `llamadart` issue #393 should accept stable `vMAJOR.MINOR.PATCH`, stable
   wrapper rebuilds in `vMAJOR.MINOR.PATCH-N` form, historical `bNNNN`, and

@@ -18,7 +18,7 @@ on:
         type: boolean
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: native-release-${{ github.ref_name }}
@@ -48,6 +48,7 @@ jobs:
         with:
           fetch-depth: 0
           submodules: recursive
+          persist-credentials: false
 
       - name: Resolve llama.cpp tag
         id: tag
@@ -83,14 +84,17 @@ jobs:
           fi
 
           if [ "${{ github.event.inputs.publish_release }}" = "true" ]; then
-            git fetch --tags --force origin
+            git fetch --tags origin
             existing_tags="$RUNNER_TEMP/existing-native-release-tags.txt"
             {
               git tag --list
               gh api --paginate "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
                 --jq '.[].tag_name'
             } | sort -u > "$existing_tags"
-            policy_args+=(--existing-tags-file "$existing_tags")
+            policy_args+=(
+              --existing-tags-file "$existing_tags"
+              --allow-existing-candidate
+            )
           fi
 
           {
@@ -143,6 +147,7 @@ jobs:
         with:
           fetch-depth: 0
           submodules: recursive
+          persist-credentials: false
       - name: Checkout llama.cpp ref
         uses: ./.github/actions/checkout-llama-ref
         with:
@@ -315,6 +320,7 @@ jobs:
         with:
           fetch-depth: 0
           submodules: recursive
+          persist-credentials: false
       - name: Checkout llama.cpp ref
         uses: ./.github/actions/checkout-llama-ref
         with:
@@ -412,6 +418,7 @@ jobs:
         with:
           fetch-depth: 0
           submodules: recursive
+          persist-credentials: false
       - name: Checkout llama.cpp ref
         uses: ./.github/actions/checkout-llama-ref
         with:
@@ -654,6 +661,7 @@ jobs:
         with:
           fetch-depth: 0
           submodules: recursive
+          persist-credentials: false
       - name: Checkout llama.cpp ref
         uses: ./.github/actions/checkout-llama-ref
         with:
@@ -787,6 +795,7 @@ jobs:
         with:
           fetch-depth: 0
           submodules: recursive
+          persist-credentials: false
       - name: Enable Git Long Paths
         run: git config --global core.longpaths true
       - name: Setup MSVC (x64)
@@ -1000,11 +1009,15 @@ jobs:
   package-and-release:
     needs: [resolve-tag, build-android, build-apple, build-linux, build-linux-hip, build-windows]
     runs-on: macos-latest
+    outputs:
+      native_commit: ${{ steps.provenance.outputs.native_commit }}
+      publication_artifact_digest: ${{ steps.upload-publication.outputs.artifact-digest }}
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           submodules: recursive
+          persist-credentials: false
       - name: Checkout llama.cpp ref
         uses: ./.github/actions/checkout-llama-ref
         with:
@@ -1140,62 +1153,100 @@ jobs:
             release_assets/assets.json \
             release_assets/SHA256SUMS
 
-      - name: Verify release tag is still unused
-        if: ${{ github.event.inputs.publish_release == 'true' }}
+      - name: Bundle immutable publication inputs
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RELEASE_TAG: ${{ needs.resolve-tag.outputs.release_tag }}
-          LLAMA_CPP_REF: ${{ needs.resolve-tag.outputs.llama_cpp_ref }}
-        run: |
-          set -euo pipefail
-
-          git fetch --tags --force origin
-          existing_tags="$RUNNER_TEMP/existing-native-release-tags.txt"
-          {
-            git tag --list
-            gh api --paginate "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
-              --jq '.[].tag_name'
-          } | sort -u > "$existing_tags"
-          python3 scripts/release_version_policy.py \
-            --upstream-ref "$LLAMA_CPP_REF" \
-            --native-tag "$RELEASE_TAG" \
-            --existing-tags-file "$existing_tags" >/dev/null
-
-      - name: Push release provenance tag
-        if: ${{ github.event.inputs.publish_release == 'true' }}
-        env:
-          RELEASE_TAG: ${{ needs.resolve-tag.outputs.release_tag }}
           NATIVE_COMMIT: ${{ steps.provenance.outputs.native_commit }}
         run: |
           set -euo pipefail
 
-          git tag "$RELEASE_TAG" "$NATIVE_COMMIT"
-          git push origin "refs/tags/$RELEASE_TAG"
+          mkdir -p publication
+          git update-ref refs/heads/release-provenance "$NATIVE_COMMIT"
+          trap 'git update-ref -d refs/heads/release-provenance' EXIT
+          git bundle create \
+            publication/release-provenance.bundle \
+            refs/heads/release-provenance
+          printf '%s\n' "$NATIVE_COMMIT" > publication/native_commit
 
-      - name: Create release
-        if: ${{ github.event.inputs.publish_release == 'true' }}
-        uses: softprops/action-gh-release@v3
+      - name: Upload verified publication transaction
+        id: upload-publication
+        uses: actions/upload-artifact@v7
         with:
-          tag_name: ${{ needs.resolve-tag.outputs.release_tag }}
-          name: ${{ needs.resolve-tag.outputs.release_tag }}
-          body: |
-            llamadart-native tag: `${{ needs.resolve-tag.outputs.release_tag }}`
-            llama.cpp tag/ref: `${{ needs.resolve-tag.outputs.llama_cpp_ref }}`
-            llama.cpp commit: `${{ needs.resolve-tag.outputs.llama_cpp_commit }}`
-            llamadart-native commit: `${{ steps.provenance.outputs.native_commit }}`
-          files: release_assets/*
-          prerelease: ${{ needs.resolve-tag.outputs.github_prerelease }}
-          target_commitish: ${{ steps.provenance.outputs.native_commit }}
+          name: release-publication-${{ github.run_id }}
+          path: |
+            release_assets
+            publication
+          if-no-files-found: error
+          retention-days: 7
+
+  publish-release:
+    needs: [resolve-tag, package-and-release]
+    if: ${{ github.event.inputs.publish_release == 'true' && needs.package-and-release.result == 'success' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+      - name: Download verified publication transaction
+        uses: actions/download-artifact@v8
+        with:
+          name: release-publication-${{ github.run_id }}
+          path: prepared
+      - name: Import and verify immutable provenance commit
+        env:
+          EXPECTED_NATIVE_COMMIT: ${{ needs.package-and-release.outputs.native_commit }}
+          EXPECTED_LLAMA_CPP_COMMIT: ${{ needs.resolve-tag.outputs.llama_cpp_commit }}
+        run: |
+          set -euo pipefail
+
+          recorded_native_commit="$(cat prepared/publication/native_commit)"
+          if [ "$recorded_native_commit" != "$EXPECTED_NATIVE_COMMIT" ]; then
+            echo "Publication artifact native commit mismatch" >&2
+            exit 1
+          fi
+          git fetch \
+            prepared/publication/release-provenance.bundle \
+            refs/heads/release-provenance:refs/remotes/publication/release-provenance
+          imported_native_commit="$(git rev-parse refs/remotes/publication/release-provenance)"
+          if [ "$imported_native_commit" != "$EXPECTED_NATIVE_COMMIT" ]; then
+            echo "Imported provenance commit mismatch" >&2
+            exit 1
+          fi
+          tree_commit="$(git ls-tree "$EXPECTED_NATIVE_COMMIT" third_party/llama.cpp | awk '{print $3}')"
+          if [ "$tree_commit" != "$EXPECTED_LLAMA_CPP_COMMIT" ]; then
+            echo "Imported provenance tree records llama.cpp $tree_commit, expected $EXPECTED_LLAMA_CPP_COMMIT" >&2
+            exit 1
+          fi
+
+      - name: Publish exact draft-first transaction
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python3 scripts/release_publication.py \
+            --repository "$GITHUB_REPOSITORY" \
+            --tag "${{ needs.resolve-tag.outputs.release_tag }}" \
+            --native-commit "${{ needs.package-and-release.outputs.native_commit }}" \
+            --upstream-ref "${{ needs.resolve-tag.outputs.llama_cpp_ref }}" \
+            --upstream-commit "${{ needs.resolve-tag.outputs.llama_cpp_commit }}" \
+            --assets-dir prepared/release_assets \
+            --prerelease "${{ needs.resolve-tag.outputs.github_prerelease }}" \
+            --workflow-run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            --artifact-digest "${{ needs.package-and-release.outputs.publication_artifact_digest }}"
 
   update-llama-submodule:
-    needs: [resolve-tag, package-and-release]
-    if: ${{ github.event.inputs.publish_release == 'true' && needs.package-and-release.result == 'success' && needs.resolve-tag.outputs.upstream_channel == 'stable' && needs.resolve-tag.outputs.release_kind == 'upstream' }}
+    needs: [resolve-tag, publish-release]
+    if: ${{ github.event.inputs.publish_release == 'true' && needs.publish-release.result == 'success' && needs.resolve-tag.outputs.upstream_channel == 'stable' && needs.resolve-tag.outputs.release_kind == 'upstream' }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           submodules: recursive
+          persist-credentials: true
       - name: Move llama.cpp submodule to released tag
         uses: ./.github/actions/checkout-llama-ref
         with:

@@ -53,10 +53,17 @@ python3 tools/build.py windows --arch x64 --backend vulkan
    distinct and correct in the manifest and release notes.
 
 Never reuse or republish a release tag. Automatic discovery is stable-only;
-nightly and wrapper rebuilds are GitHub prereleases and require explicit
-selection. Companion repositories do not need dependency-pin PRs as a native
-publication prerequisite. Dispatching, publishing, and any downstream code,
-asset, or pin changes are separate maintainer actions.
+newly emitted nightly and wrapper rebuild releases are GitHub prereleases and
+require explicit selection. Historical metadata is immutable: `b10545` and
+`b10356-llamadart.1` have `prerelease=false`, so consumers must parse tag grammar
+instead of using GitHub classification alone. Candidate builds and packaging
+are read-only; write access is limited to final publication and the separate
+post-publication stable-submodule update. If publication partially fails, rerun
+the failed job in the same workflow run so exact matching state can resume;
+mismatches fail closed and tags/assets are never replaced. Companion
+repositories do not need dependency-pin PRs as a native publication
+prerequisite. Dispatching, publishing, and any downstream code, asset, or pin
+changes are separate maintainer actions.
 
 ## Repository Boundaries
 

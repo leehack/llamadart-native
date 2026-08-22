@@ -41,6 +41,7 @@ class Version:
 
     @property
     def github_prerelease(self) -> bool:
+        """Return the GitHub classification for a newly emitted release."""
         return self.channel == "nightly" or self.kind == "wrapper"
 
 
@@ -157,13 +158,20 @@ def _stable_precedence(version: Version) -> tuple[int, int, int, int]:
     return major, minor, patch, native_rebuild
 
 
-def validate_history(candidate: Version, existing_tags: Iterable[str]) -> None:
+def validate_history(
+    candidate: Version,
+    existing_tags: Iterable[str],
+    *,
+    allow_existing_candidate: bool = False,
+) -> None:
     existing: list[Version] = []
     for tag in existing_tags:
         tag = tag.strip()
         if not tag:
             continue
         if tag == candidate.tag:
+            if allow_existing_candidate:
+                continue
             raise PolicyError(
                 f"release tag collision: {candidate.tag!r} already exists; use a new "
                 "wrapper rebuild tag instead of mutating an immutable release"
@@ -234,6 +242,14 @@ def manifest_native_tag(manifest: Mapping[str, Any]) -> str:
     return native_tag
 
 
+def release_channel_from_metadata(metadata: Mapping[str, Any]) -> str:
+    """Classify current or historical releases from immutable tag grammar."""
+    tag = metadata.get("tag_name", metadata.get("native_release_tag"))
+    if not isinstance(tag, str) or not tag:
+        raise PolicyError("release metadata is missing tag_name/native_release_tag")
+    return parse_native_tag(tag).channel
+
+
 def _load_existing(path: Path) -> list[str]:
     return path.read_text().splitlines()
 
@@ -243,6 +259,7 @@ def main() -> int:
     parser.add_argument("--upstream-ref", required=True)
     parser.add_argument("--native-tag", required=True)
     parser.add_argument("--existing-tags-file", type=Path)
+    parser.add_argument("--allow-existing-candidate", action="store_true")
     parser.add_argument("--require-stable-upstream", action="store_true")
     args = parser.parse_args()
 
@@ -251,7 +268,11 @@ def main() -> int:
         if args.require_stable_upstream:
             validate_automatic_upstream(upstream)
         if args.existing_tags_file is not None:
-            validate_history(native, _load_existing(args.existing_tags_file))
+            validate_history(
+                native,
+                _load_existing(args.existing_tags_file),
+                allow_existing_candidate=args.allow_existing_candidate,
+            )
     except PolicyError as error:
         parser.error(str(error))
 

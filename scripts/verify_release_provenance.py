@@ -17,6 +17,11 @@ WORKFLOW = ROOT / ".github/workflows/native_release.yml"
 AUTO_WORKFLOW = ROOT / ".github/workflows/auto_native_release.yml"
 CHECKOUT_ACTION = ROOT / ".github/actions/checkout-llama-ref/action.yml"
 MANIFEST_SCRIPT = ROOT / "scripts/generate_assets_manifest.sh"
+VALIDATION_WORKFLOW = ROOT / ".github/workflows/validate_release_provenance.yml"
+POLICY_DOC = ROOT / "docs/release_version_policy.md"
+README = ROOT / "README.md"
+CONTRIBUTING = ROOT / "CONTRIBUTING.md"
+PUBLICATION_SCRIPT = ROOT / "scripts/release_publication.py"
 
 RUNTIME_BUNDLES = {
     "android-arm64": ("android", "arm64"),
@@ -62,9 +67,20 @@ def require(condition: bool, message: str, errors: list[str]) -> None:
         errors.append(message)
 
 
+def workflow_job(workflow: str, name: str) -> str:
+    match = re.search(
+        rf"^  {re.escape(name)}:\n(?P<body>.*?)(?=^  [A-Za-z0-9_-]+:\n|\Z)",
+        workflow,
+        flags=re.MULTILINE | re.DOTALL,
+    )
+    return match.group(0) if match else ""
+
+
 def verify_workflow_contract(errors: list[str]) -> None:
     workflow = WORKFLOW.read_text()
     auto_workflow = AUTO_WORKFLOW.read_text()
+    validation_workflow = VALIDATION_WORKFLOW.read_text()
+    publication_script = PUBLICATION_SCRIPT.read_text()
     action = CHECKOUT_ACTION.read_text()
 
     workflow_bundles = set(
@@ -116,22 +132,76 @@ def verify_workflow_contract(errors: list[str]) -> None:
         "manifest generation must record resolved upstream and release provenance commits",
         errors,
     )
-    provenance = workflow.find("- name: Create release provenance commit")
-    manifest = workflow.find("- name: Generate manifest + checksums")
-    verify_tag = workflow.find("- name: Verify release tag is still unused")
-    push_tag = workflow.find("- name: Push release provenance tag")
-    release = workflow.find("- name: Create release\n", push_tag)
+    package_job = workflow_job(workflow, "package-and-release")
+    publish_job = workflow_job(workflow, "publish-release")
+    update_job = workflow_job(workflow, "update-llama-submodule")
+    provenance = package_job.find("- name: Create release provenance commit")
+    manifest = package_job.find("- name: Generate manifest + checksums")
+    bundle = package_job.find("- name: Bundle immutable publication inputs")
+    upload = package_job.find("- name: Upload verified publication transaction")
     require(
-        -1 not in (provenance, manifest, verify_tag, push_tag, release)
-        and provenance < manifest < verify_tag < push_tag < release,
-        "release provenance must be committed and manifested before the tag is pushed and released",
+        -1 not in (provenance, manifest, bundle, upload)
+        and provenance < manifest < bundle < upload,
+        "release provenance must be committed, manifested, and bundled before "
+        "publication input upload",
         errors,
     )
     require(
         'tree_commit="$(git ls-tree HEAD third_party/llama.cpp | awk \'{print $3}\')"'
-        in workflow
-        and 'git tag "$RELEASE_TAG" "$NATIVE_COMMIT"' in workflow,
-        "the published tag must point to a commit whose tree records the resolved llama.cpp commit",
+        in package_job
+        and "release-provenance.bundle" in package_job
+        and 'tree_commit="$(git ls-tree "$EXPECTED_NATIVE_COMMIT" third_party/llama.cpp'
+        in publish_job,
+        "the publication transaction must carry and revalidate the provenance commit tree",
+        errors,
+    )
+
+    read_only_jobs = (
+        "resolve-tag",
+        "build-android",
+        "build-apple",
+        "build-linux",
+        "build-linux-hip",
+        "build-windows",
+        "package-and-release",
+    )
+    require(
+        re.search(r"^permissions:\n  contents: read$", workflow, re.MULTILINE)
+        is not None
+        and workflow.count("contents: write") == 2,
+        "workflow default must be contents:read with exactly two narrow write jobs",
+        errors,
+    )
+    for job_name in read_only_jobs:
+        job = workflow_job(workflow, job_name)
+        require(bool(job), f"release workflow must define {job_name}", errors)
+        require(
+            "permissions:" not in job
+            and job.count("uses: actions/checkout@v7")
+            == job.count("persist-credentials: false"),
+            f"{job_name} must inherit read-only permissions and must not persist "
+            "checkout credentials",
+            errors,
+        )
+    require(
+        "contents: write" in publish_job
+        and "persist-credentials: true" in publish_job
+        and "scripts/release_publication.py" in publish_job,
+        "only the final publication job may retain credentials needed to create the release",
+        errors,
+    )
+    require(
+        "contents: write" in update_job
+        and "persist-credentials: true" in update_job
+        and "needs: [resolve-tag, publish-release]" in update_job,
+        "stable submodule update must remain a separate, post-publication narrow write job",
+        errors,
+    )
+    require(
+        "git push" not in package_job
+        and "gh release" not in package_job
+        and "contents: write" not in package_job,
+        "candidate packaging must not contain publication or repository writes",
         errors,
     )
 
@@ -144,11 +214,60 @@ def verify_workflow_contract(errors: list[str]) -> None:
         errors,
     )
     require(
+        "remote set-url" not in action
+        and "credential.helper" not in action
+        and "git config" not in action,
+        "external-source checkout must not persist its read credential in git configuration",
+        errors,
+    )
+    require(
         "scripts/release_version_policy.py" in workflow
         and "--existing-tags-file" in workflow
+        and "--allow-existing-candidate" in workflow
         and "github_prerelease: ${{ steps.tag.outputs.github_prerelease }}" in workflow
-        and "prerelease: ${{ needs.resolve-tag.outputs.github_prerelease }}" in workflow,
-        "native release workflow must enforce version history and classify prereleases",
+        and '--prerelease "${{ needs.resolve-tag.outputs.github_prerelease }}"'
+        in publish_job,
+        "native release workflow must enforce version history while permitting "
+        "exact retry reconciliation",
+        errors,
+    )
+    require(
+        "softprops/action-gh-release" not in workflow
+        and "--clobber" not in workflow
+        and "release-publication-${{ github.run_id }}" in package_job
+        and "release-publication-${{ github.run_id }}" in publish_job
+        and "publication_artifact_digest" in workflow
+        and "${{ github.run_id }}" in publish_job,
+        "publication must use the same immutable workflow transaction without "
+        "mutable asset replacement",
+        errors,
+    )
+    require(
+        '"--draft"' in publication_script
+        and '"--draft=false"' in publication_script
+        and '"--clobber"' not in publication_script
+        and '"--force"' not in publication_script
+        and "immutable asset mismatch" in publication_script
+        and "release body/correlation mismatch" in publication_script,
+        "publication driver must be draft-first, immutable, and fail closed on "
+        "correlation or digest mismatch",
+        errors,
+    )
+    require(
+        "needs: [resolve-tag, build-android, build-apple, build-linux, "
+        "build-linux-hip, build-windows]"
+        in package_job
+        and "needs: [resolve-tag, package-and-release]" in publish_job
+        and "needs.package-and-release.result == 'success'" in publish_job,
+        "publication must remain downstream of the complete build and packaging matrix",
+        errors,
+    )
+    require(
+        "verify_historical_release_metadata.py --live" in validation_workflow
+        and "persist-credentials: false" in validation_workflow
+        and "python3 -m unittest discover" in validation_workflow,
+        "validation CI must test historical live metadata, all policy tests, and "
+        "non-persisted checkout credentials",
         errors,
     )
     resolve_tag = workflow.find("- name: Resolve llama.cpp tag")
@@ -178,6 +297,27 @@ def verify_workflow_contract(errors: list[str]) -> None:
         "needs.resolve-tag.outputs.upstream_channel == 'stable'" in workflow
         and "needs.resolve-tag.outputs.release_kind == 'upstream'" in workflow,
         "nightly and wrapper-only releases must not move the repository's stable submodule pin",
+        errors,
+    )
+
+
+def verify_documentation_contract(errors: list[str]) -> None:
+    documentation = "\n".join(
+        (POLICY_DOC.read_text(), README.read_text(), CONTRIBUTING.read_text())
+    )
+    require(
+        "b10545" in documentation
+        and "b10356-llamadart.1" in documentation
+        and "prerelease=false" in documentation
+        and "tag grammar" in documentation,
+        "maintainer and consumer docs must preserve tag-driven historical channel semantics",
+        errors,
+    )
+    require(
+        "same workflow run" in documentation
+        and "draft-first" in documentation
+        and "fails closed" in documentation,
+        "maintainer docs must explain exact-transaction partial-publication recovery",
         errors,
     )
 
@@ -314,6 +454,7 @@ def verify_manifest_contract(errors: list[str]) -> None:
 def main() -> int:
     errors: list[str] = []
     verify_workflow_contract(errors)
+    verify_documentation_contract(errors)
     verify_manifest_contract(errors)
     if errors:
         for error in errors:

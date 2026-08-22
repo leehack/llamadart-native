@@ -67,11 +67,23 @@ tag; downstream caches are tag-keyed and the GitHub source tag should identify
 the native wrapper commit that produced the assets. Publish mode rejects tag
 collisions, stable rollbacks, and decreasing rebuild sequences.
 
+Consumers determine stable versus nightly from the native tag grammar, not from
+GitHub's `prerelease` field alone. Newly emitted nightlies and wrapper rebuilds
+are prereleases, but immutable historical releases `b10545` and
+`b10356-llamadart.1` have `prerelease=false` and remain nightly inputs.
+
 `assets.json` records `native_release_tag`, the requested `llama_cpp_tag`, its
 resolved `llama_cpp_commit`, and the `native_commit` targeted by the published
 source tag. The historical `tag` field remains as a compatibility alias for the
 native tag. Consumers can therefore verify the built source independently of a
 moving ref or release label.
+
+Candidate builds and packaging are read-only. The final publication job alone
+can create the immutable tag and draft-first release; its assets are published
+only after exact digest and provenance checks. Retry a partial publication by
+rerunning the failed job in the same workflow run. Exact matching partial state
+is resumed, while any tag, release, correlation, or asset mismatch fails closed
+without force-moving tags or replacing assets.
 
 See [Native Release Version Policy](docs/release_version_policy.md) for ordering,
 prerelease classification, legacy compatibility, and the downstream contract.

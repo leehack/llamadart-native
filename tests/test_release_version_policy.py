@@ -110,6 +110,20 @@ class ReleaseVersionPolicyTest(unittest.TestCase):
                 ["b10356-2"],
             )
 
+    def test_retry_preflight_allows_only_exact_candidate_collision(self) -> None:
+        candidate = parse_native_tag("v0.2.0-1")
+        validate_history(
+            candidate,
+            ["v0.2.0", candidate.tag],
+            allow_existing_candidate=True,
+        )
+        with self.assertRaisesRegex(PolicyError, "rollback"):
+            validate_history(
+                candidate,
+                ["v0.2.0", candidate.tag, "v0.2.0-2"],
+                allow_existing_candidate=True,
+            )
+
     def test_wrapper_rebuild_requires_same_line_predecessor(self) -> None:
         with self.assertRaisesRegex(PolicyError, "requires an existing"):
             validate_history(parse_native_tag("v0.2.0-1"), [])
