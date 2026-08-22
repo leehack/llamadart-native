@@ -3,8 +3,10 @@
 
 from __future__ import annotations
 
-import sys
 from pathlib import Path
+import subprocess
+import sys
+import tempfile
 import unittest
 
 
@@ -115,6 +117,28 @@ class ReleaseVersionPolicyTest(unittest.TestCase):
             validate_history(parse_native_tag("v0.2.0-1"), ["v0.1.9"])
         with self.assertRaisesRegex(PolicyError, "requires an existing"):
             validate_history(parse_native_tag("b10545-1"), ["b10544"])
+
+    def test_cli_only_enforces_history_when_supplied(self) -> None:
+        command = [
+            sys.executable,
+            str(ROOT / "scripts" / "release_version_policy.py"),
+            "--upstream-ref",
+            "v0.2.0",
+            "--native-tag",
+            "v0.2.0-1",
+        ]
+        standalone = subprocess.run(command, capture_output=True, text=True)
+        self.assertEqual(standalone.returncode, 0, standalone.stderr)
+
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8") as history:
+            history.flush()
+            publishing = subprocess.run(
+                [*command, "--existing-tags-file", history.name],
+                capture_output=True,
+                text=True,
+            )
+        self.assertNotEqual(publishing.returncode, 0)
+        self.assertIn("requires an existing", publishing.stderr)
 
     def test_explicit_historical_nightly_is_not_stable_rollback(self) -> None:
         candidate = parse_native_tag("b10356-2")

@@ -234,8 +234,8 @@ def manifest_native_tag(manifest: Mapping[str, Any]) -> str:
     return native_tag
 
 
-def _load_existing(path: Path | None) -> list[str]:
-    return [] if path is None else path.read_text().splitlines()
+def _load_existing(path: Path) -> list[str]:
+    return path.read_text().splitlines()
 
 
 def main() -> int:
@@ -250,7 +250,8 @@ def main() -> int:
         upstream, native = validate_pair(args.upstream_ref, args.native_tag)
         if args.require_stable_upstream:
             validate_automatic_upstream(upstream)
-        validate_history(native, _load_existing(args.existing_tags_file))
+        if args.existing_tags_file is not None:
+            validate_history(native, _load_existing(args.existing_tags_file))
     except PolicyError as error:
         parser.error(str(error))
 
