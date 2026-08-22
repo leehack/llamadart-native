@@ -1365,6 +1365,8 @@ jobs:
           gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${{ needs.resolve-tag.outputs.native_release_tag }}" > release-metadata.json
           echo "url=$(python3 -c 'import json; print(json.load(open("release-metadata.json"))["html_url"])')" >> "$GITHUB_OUTPUT"
       - name: Generate exact machine-readable release result
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           release_args=()
           if [ "${{ github.event.inputs.publish_release }}" = "true" ]; then

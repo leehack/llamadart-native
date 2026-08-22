@@ -289,6 +289,7 @@ def verify_workflow_contract(errors: list[str]) -> None:
     require(
         "native-release-result-${{ github.run_id }}" in result_job
         and "scripts/release_contract.py release-result" in result_job
+        and "GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}" in result_job
         and "publication_artifact_digest" in result_job
         and "bundle_coverage" in contract_script
         and '"native_release_tag"' in contract_script
