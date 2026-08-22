@@ -247,10 +247,13 @@ def verify_workflow_contract(errors: list[str]) -> None:
         and '"--draft=false"' in publication_script
         and '"--clobber"' not in publication_script
         and '"--force"' not in publication_script
+        and '"-a"' in publication_script
+        and "llamadart-native publication transaction:" in publication_script
+        and "tag {desired.tag!r} transaction mismatch" in publication_script
         and "immutable asset mismatch" in publication_script
         and "release body/correlation mismatch" in publication_script,
-        "publication driver must be draft-first, immutable, and fail closed on "
-        "correlation or digest mismatch",
+        "publication driver must bind its annotated tag, remain draft-first and "
+        "immutable, and fail closed on transaction, correlation, or digest mismatch",
         errors,
     )
     require(

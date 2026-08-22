@@ -17,7 +17,10 @@ sys.path.insert(0, str(ROOT / "scripts"))
 from release_publication import (  # noqa: E402
     Asset,
     ExistingRelease,
+    ExistingTag,
     PublicationError,
+    _ensure_tag,
+    _remote_tag,
     build_desired_release,
     publish,
     reconcile_publication,
@@ -57,9 +60,20 @@ class ReleasePublicationTest(unittest.TestCase):
             assets=self.desired.assets if assets is None else assets,
         )
 
-    def test_retry_after_tag_creation_creates_draft_and_uploads_all(self) -> None:
+    def _tag(
+        self,
+        *,
+        target: str | None = None,
+        transaction_id: str | None = None,
+    ) -> ExistingTag:
+        return ExistingTag(
+            target or self.desired.native_commit,
+            transaction_id or self.desired.transaction_id,
+        )
+
+    def test_same_transaction_retry_after_tag_creation_resumes(self) -> None:
         plan = reconcile_publication(
-            self.desired, tag_target=self.desired.native_commit, release=None
+            self.desired, tag=self._tag(), release=None
         )
         self.assertFalse(plan.create_tag)
         self.assertTrue(plan.create_draft_release)
@@ -74,7 +88,7 @@ class ReleasePublicationTest(unittest.TestCase):
         )
         plan = reconcile_publication(
             self.desired,
-            tag_target=self.desired.native_commit,
+            tag=self._tag(),
             release=release,
         )
         self.assertEqual(
@@ -86,7 +100,7 @@ class ReleasePublicationTest(unittest.TestCase):
     def test_exact_published_retry_is_idempotent(self) -> None:
         plan = reconcile_publication(
             self.desired,
-            tag_target=self.desired.native_commit,
+            tag=self._tag(),
             release=self._release(draft=False),
         )
         self.assertTrue(plan.complete)
@@ -98,8 +112,19 @@ class ReleasePublicationTest(unittest.TestCase):
     def test_conflicting_tag_fails_closed(self) -> None:
         with self.assertRaisesRegex(PublicationError, "immutable tag"):
             reconcile_publication(
-                self.desired, tag_target="f" * 40, release=None
+                self.desired,
+                tag=self._tag(target="f" * 40),
+                release=None,
             )
+
+    def test_tag_only_state_rejects_different_or_missing_transaction(self) -> None:
+        for transaction_id in ("f" * 64, None):
+            with self.subTest(transaction_id=transaction_id):
+                tag = ExistingTag(self.desired.native_commit, transaction_id)
+                with self.assertRaisesRegex(
+                    PublicationError, "tag.*transaction mismatch"
+                ):
+                    reconcile_publication(self.desired, tag=tag, release=None)
 
     def test_conflicting_asset_or_correlation_fails_closed(self) -> None:
         first_name = sorted(self.desired.assets)[0]
@@ -109,13 +134,13 @@ class ReleasePublicationTest(unittest.TestCase):
         with self.assertRaisesRegex(PublicationError, "asset mismatch"):
             reconcile_publication(
                 self.desired,
-                tag_target=self.desired.native_commit,
+                tag=self._tag(),
                 release=self._release(draft=True, assets=mismatched),
             )
         with self.assertRaisesRegex(PublicationError, "correlation mismatch"):
             reconcile_publication(
                 self.desired,
-                tag_target=self.desired.native_commit,
+                tag=self._tag(),
                 release=self._release(draft=True, body="different transaction"),
             )
 
@@ -123,7 +148,7 @@ class ReleasePublicationTest(unittest.TestCase):
         with self.assertRaisesRegex(PublicationError, "incomplete"):
             reconcile_publication(
                 self.desired,
-                tag_target=self.desired.native_commit,
+                tag=self._tag(),
                 release=self._release(draft=False, assets={}),
             )
 
@@ -131,7 +156,7 @@ class ReleasePublicationTest(unittest.TestCase):
         with self.assertRaisesRegex(PublicationError, "without its approved"):
             reconcile_publication(
                 self.desired,
-                tag_target=None,
+                tag=None,
                 release=self._release(draft=True),
             )
         mismatched = ExistingRelease(
@@ -144,8 +169,113 @@ class ReleasePublicationTest(unittest.TestCase):
         with self.assertRaisesRegex(PublicationError, "name mismatch"):
             reconcile_publication(
                 self.desired,
-                tag_target=self.desired.native_commit,
+                tag=self._tag(),
                 release=mismatched,
+            )
+
+    def test_ambiguous_tag_push_accepts_only_exact_transaction_marker(self) -> None:
+        exact = self._tag()
+        commands: list[list[str]] = []
+
+        def run(command, **_kwargs):
+            commands.append(command)
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        ambiguous = subprocess.CompletedProcess(
+            ["git", "push"],
+            1,
+            "",
+            "connection closed after receiving objects",
+        )
+        with (
+            patch(
+                "release_publication._remote_tag",
+                side_effect=[None, exact, exact],
+            ),
+            patch("release_publication._local_tag", return_value=None),
+            patch("release_publication._run", side_effect=run),
+            patch("release_publication.subprocess.run", return_value=ambiguous),
+        ):
+            _ensure_tag("example/repository", self.desired)
+
+        create_tag = next(command for command in commands if "tag" in command)
+        self.assertIn("-a", create_tag)
+        self.assertIn(self.desired.transaction_id, create_tag[-1])
+
+        for raced in (ExistingTag(self.desired.native_commit, "f" * 64), None):
+            with self.subTest(raced=raced):
+                with (
+                    patch(
+                        "release_publication._remote_tag",
+                        side_effect=[None, raced],
+                    ),
+                    patch("release_publication._local_tag", return_value=None),
+                    patch(
+                        "release_publication._run",
+                        return_value=subprocess.CompletedProcess([], 0, "", ""),
+                    ),
+                    patch(
+                        "release_publication.subprocess.run",
+                        return_value=ambiguous,
+                    ),
+                ):
+                    with self.assertRaises(PublicationError):
+                        _ensure_tag("example/repository", self.desired)
+
+    def test_successful_push_must_be_observable_with_exact_marker(self) -> None:
+        pushed = subprocess.CompletedProcess(["git", "push"], 0, "", "")
+        with (
+            patch(
+                "release_publication._remote_tag",
+                side_effect=[None, None],
+            ),
+            patch("release_publication._local_tag", return_value=None),
+            patch(
+                "release_publication._run",
+                return_value=subprocess.CompletedProcess([], 0, "", ""),
+            ),
+            patch("release_publication.subprocess.run", return_value=pushed),
+        ):
+            with self.assertRaisesRegex(PublicationError, "not observable"):
+                _ensure_tag("example/repository", self.desired)
+
+    def test_remote_annotated_tag_exposes_transaction_marker(self) -> None:
+        tag_object = "a" * 40
+        responses = [
+            {"object": {"type": "tag", "sha": tag_object}},
+            {
+                "message": (
+                    "llamadart-native publication transaction: "
+                    f"{self.desired.transaction_id}\n"
+                ),
+                "object": {
+                    "type": "commit",
+                    "sha": self.desired.native_commit,
+                },
+            },
+        ]
+        with patch(
+            "release_publication._api_json_or_none",
+            side_effect=responses,
+        ):
+            self.assertEqual(
+                _remote_tag("example/repository", self.desired.tag),
+                self._tag(),
+            )
+
+    def test_remote_lightweight_tag_is_unmarked(self) -> None:
+        with patch(
+            "release_publication._api_json_or_none",
+            return_value={
+                "object": {
+                    "type": "commit",
+                    "sha": self.desired.native_commit,
+                }
+            },
+        ):
+            self.assertEqual(
+                _remote_tag("example/repository", self.desired.tag),
+                ExistingTag(self.desired.native_commit, None),
             )
 
     def test_new_workflow_transaction_has_distinct_correlation(self) -> None:
@@ -160,12 +290,60 @@ class ReleasePublicationTest(unittest.TestCase):
             artifact_digest="sha256:" + "4" * 64,
         )
         self.assertNotEqual(rerun.transaction_id, self.desired.transaction_id)
-        with self.assertRaisesRegex(PublicationError, "correlation mismatch"):
+        foreign_tag = ExistingTag(
+            rerun.native_commit,
+            self.desired.transaction_id,
+        )
+        with self.assertRaisesRegex(PublicationError, "transaction mismatch"):
             reconcile_publication(
                 rerun,
-                tag_target=rerun.native_commit,
+                tag=foreign_tag,
                 release=self._release(draft=True),
             )
+
+        with (
+            patch("release_publication._remote_tag", return_value=foreign_tag),
+            patch("release_publication._release_json", return_value=None),
+            patch("release_publication._ensure_tag") as ensure_tag,
+            patch("release_publication.subprocess.run") as create_release,
+        ):
+            with self.assertRaisesRegex(PublicationError, "transaction mismatch"):
+                publish("example/repository", rerun)
+        ensure_tag.assert_not_called()
+        create_release.assert_not_called()
+
+    def test_driver_resumes_same_transaction_tag_only_state(self) -> None:
+        state: dict[str, ExistingRelease | None] = {"release": None}
+
+        def release_json(_repository: str, _tag: str):
+            return {} if state["release"] is not None else None
+
+        def existing_release(_payload):
+            return state["release"]
+
+        def create(command, **_kwargs):
+            state["release"] = self._release(draft=True)
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        def run(command, **_kwargs):
+            if command[:3] == ["gh", "release", "edit"]:
+                state["release"] = self._release(draft=False)
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        with (
+            patch("release_publication._remote_tag", return_value=self._tag()),
+            patch("release_publication._release_json", side_effect=release_json),
+            patch("release_publication._existing_release", side_effect=existing_release),
+            patch("release_publication._ensure_tag") as ensure_tag,
+            patch("release_publication.subprocess.run", side_effect=create),
+            patch("release_publication._run", side_effect=run),
+        ):
+            publish("example/repository", self.desired)
+
+        ensure_tag.assert_not_called()
+        self.assertIsNotNone(state["release"])
+        assert state["release"] is not None
+        self.assertFalse(state["release"].draft)
 
     def test_transaction_binds_release_classification(self) -> None:
         stable_classification = build_desired_release(
@@ -214,7 +392,10 @@ class ReleasePublicationTest(unittest.TestCase):
         commands: list[list[str]] = []
 
         def ensure_tag(_repository: str, desired) -> None:
-            state["tag"] = desired.native_commit
+            state["tag"] = ExistingTag(
+                desired.native_commit,
+                desired.transaction_id,
+            )
             commands.append(["git", "push", "origin", f"refs/tags/{desired.tag}"])
 
         def release_json(_repository: str, _tag: str):
@@ -243,7 +424,7 @@ class ReleasePublicationTest(unittest.TestCase):
             return subprocess.CompletedProcess(command, 0, "", "")
 
         with (
-            patch("release_publication._remote_tag_target", side_effect=lambda *_: state["tag"]),
+            patch("release_publication._remote_tag", side_effect=lambda *_: state["tag"]),
             patch("release_publication._ensure_tag", side_effect=ensure_tag),
             patch("release_publication._release_json", side_effect=release_json),
             patch("release_publication._existing_release", side_effect=existing_release),

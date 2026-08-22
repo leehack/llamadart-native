@@ -60,7 +60,9 @@ instead of using GitHub classification alone. Candidate builds and packaging
 are read-only; write access is limited to final publication and the separate
 post-publication stable-submodule update. If publication partially fails, rerun
 the failed job in the same workflow run so exact matching state can resume;
-mismatches fail closed and tags/assets are never replaced. Companion
+mismatches fail closed and tags/assets are never replaced. The annotated tag's
+transaction marker protects even tag-only partial state from takeover by a
+different workflow run. Companion
 repositories do not need dependency-pin PRs as a native publication
 prerequisite. Dispatching, publishing, and any downstream code, asset, or pin
 changes are separate maintainer actions.

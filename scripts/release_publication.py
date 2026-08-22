@@ -23,6 +23,9 @@ ARTIFACT_DIGEST_RE = re.compile(r"^(?:sha256:)?([0-9a-fA-F]{64})$")
 WORKFLOW_RUN_PATH_RE = re.compile(
     r"^/[^/]+/[^/]+/actions/runs/[1-9][0-9]*(?:/attempts/[1-9][0-9]*)?$"
 )
+TAG_TRANSACTION_RE = re.compile(
+    r"^llamadart-native publication transaction: ([0-9a-f]{64})$"
+)
 
 
 @dataclass(frozen=True)
@@ -51,6 +54,12 @@ class ExistingRelease:
     name: str
     body: str
     assets: Mapping[str, Asset]
+
+
+@dataclass(frozen=True)
+class ExistingTag:
+    target: str
+    transaction_id: str | None
 
 
 @dataclass(frozen=True)
@@ -150,15 +159,21 @@ def build_desired_release(
 def reconcile_publication(
     desired: DesiredRelease,
     *,
-    tag_target: str | None,
+    tag: ExistingTag | None,
     release: ExistingRelease | None,
 ) -> PublicationPlan:
-    if tag_target is not None and tag_target != desired.native_commit:
+    if tag is not None and tag.target != desired.native_commit:
         raise PublicationError(
-            f"immutable tag {desired.tag!r} points to {tag_target}, expected "
+            f"immutable tag {desired.tag!r} points to {tag.target}, expected "
             f"{desired.native_commit}"
         )
-    if release is not None and tag_target is None:
+    if tag is not None and tag.transaction_id != desired.transaction_id:
+        marker = tag.transaction_id or "missing"
+        raise PublicationError(
+            f"immutable tag {desired.tag!r} transaction mismatch: found "
+            f"{marker}, expected {desired.transaction_id}"
+        )
+    if release is not None and tag is None:
         raise PublicationError(
             f"release {desired.tag!r} exists without its approved immutable tag"
         )
@@ -205,10 +220,12 @@ def reconcile_publication(
         release is not None
         and not release.draft
         and not missing_assets
-        and tag_target == desired.native_commit
+        and tag is not None
+        and tag.target == desired.native_commit
+        and tag.transaction_id == desired.transaction_id
     )
     return PublicationPlan(
-        create_tag=tag_target is None,
+        create_tag=tag is None,
         create_draft_release=release is None,
         upload_assets=missing_assets,
         publish_draft=release is None or (release.draft and not complete),
@@ -224,27 +241,9 @@ def _run(command: list[str], *, capture: bool = False) -> subprocess.CompletedPr
     return result
 
 
-def _remote_tag_target(repository: str, tag: str) -> str | None:
-    result = _run(
-        [
-            "git",
-            "ls-remote",
-            f"https://github.com/{repository}.git",
-            f"refs/tags/{tag}",
-            f"refs/tags/{tag}^{{}}",
-        ],
-        capture=True,
-    )
-    refs = {}
-    for line in result.stdout.splitlines():
-        sha, ref = line.split(maxsplit=1)
-        refs[ref] = sha
-    return refs.get(f"refs/tags/{tag}^{{}}", refs.get(f"refs/tags/{tag}"))
-
-
-def _release_json(repository: str, tag: str) -> dict[str, Any] | None:
+def _api_json_or_none(resource: str) -> dict[str, Any] | None:
     result = subprocess.run(
-        ["gh", "api", f"repos/{repository}/releases/tags/{tag}"],
+        ["gh", "api", resource],
         capture_output=True,
         text=True,
     )
@@ -253,7 +252,38 @@ def _release_json(repository: str, tag: str) -> dict[str, Any] | None:
     detail = (result.stderr or result.stdout).strip()
     if "HTTP 404" in detail or "Not Found" in detail:
         return None
-    raise PublicationError(f"unable to read release {tag!r}: {detail}")
+    raise PublicationError(f"unable to read GitHub state {resource!r}: {detail}")
+
+
+def _tag_transaction(message: str) -> str | None:
+    match = TAG_TRANSACTION_RE.fullmatch(message.rstrip("\r\n"))
+    return match.group(1) if match is not None else None
+
+
+def _remote_tag(repository: str, tag: str) -> ExistingTag | None:
+    ref = _api_json_or_none(f"repos/{repository}/git/ref/tags/{tag}")
+    if ref is None:
+        return None
+    target = ref.get("object", {})
+    if target.get("type") == "commit":
+        return ExistingTag(str(target["sha"]), None)
+    if target.get("type") != "tag":
+        raise PublicationError(
+            f"tag {tag!r} has unsupported Git object type {target.get('type')!r}"
+        )
+    annotated = _api_json_or_none(
+        f"repos/{repository}/git/tags/{target['sha']}"
+    )
+    if annotated is None or annotated.get("object", {}).get("type") != "commit":
+        raise PublicationError(f"tag {tag!r} does not resolve directly to a commit")
+    return ExistingTag(
+        str(annotated["object"]["sha"]),
+        _tag_transaction(str(annotated.get("message") or "")),
+    )
+
+
+def _release_json(repository: str, tag: str) -> dict[str, Any] | None:
+    return _api_json_or_none(f"repos/{repository}/releases/tags/{tag}")
 
 
 def _download_asset_digest(asset: Mapping[str, Any]) -> str:
@@ -298,28 +328,55 @@ def _existing_release(payload: Mapping[str, Any] | None) -> ExistingRelease | No
     )
 
 
-def _ensure_tag(repository: str, desired: DesiredRelease) -> None:
-    target = _remote_tag_target(repository, desired.tag)
-    if target is not None:
-        if target != desired.native_commit:
-            raise PublicationError(
-                f"immutable tag {desired.tag!r} points to {target}, expected "
-                f"{desired.native_commit}"
-            )
-        return
+def _validate_tag(desired: DesiredRelease, tag: ExistingTag) -> None:
+    reconcile_publication(desired, tag=tag, release=None)
 
-    local = subprocess.run(
-        ["git", "rev-parse", "-q", "--verify", f"refs/tags/{desired.tag}^{{commit}}"],
+
+def _local_tag(tag: str) -> ExistingTag | None:
+    object_type = subprocess.run(
+        ["git", "cat-file", "-t", f"refs/tags/{tag}"],
         capture_output=True,
         text=True,
     )
-    if local.returncode == 0:
-        if local.stdout.strip() != desired.native_commit:
-            raise PublicationError(
-                f"local tag {desired.tag!r} conflicts with approved native commit"
-            )
+    if object_type.returncode != 0:
+        return None
+    target = _run(
+        ["git", "rev-parse", f"refs/tags/{tag}^{{commit}}"], capture=True
+    ).stdout.strip()
+    if object_type.stdout.strip() != "tag":
+        return ExistingTag(target, None)
+    message = _run(
+        ["git", "for-each-ref", "--format=%(contents)", f"refs/tags/{tag}"],
+        capture=True,
+    ).stdout
+    return ExistingTag(target, _tag_transaction(message))
+
+
+def _ensure_tag(repository: str, desired: DesiredRelease) -> None:
+    remote = _remote_tag(repository, desired.tag)
+    if remote is not None:
+        _validate_tag(desired, remote)
+        return
+
+    local = _local_tag(desired.tag)
+    if local is not None:
+        _validate_tag(desired, local)
     else:
-        _run(["git", "tag", desired.tag, desired.native_commit])
+        _run(
+            [
+                "git",
+                "-c",
+                "user.name=github-actions[bot]",
+                "-c",
+                "user.email=41898282+github-actions[bot]@users.noreply.github.com",
+                "tag",
+                "-a",
+                desired.tag,
+                desired.native_commit,
+                "-m",
+                f"llamadart-native publication transaction: {desired.transaction_id}",
+            ]
+        )
 
     pushed = subprocess.run(
         ["git", "push", "origin", f"refs/tags/{desired.tag}"],
@@ -327,17 +384,25 @@ def _ensure_tag(repository: str, desired: DesiredRelease) -> None:
         text=True,
     )
     if pushed.returncode != 0:
-        raced_target = _remote_tag_target(repository, desired.tag)
-        if raced_target != desired.native_commit:
+        raced = _remote_tag(repository, desired.tag)
+        if raced is None:
             detail = (pushed.stderr or pushed.stdout).strip()
             raise PublicationError(f"unable to create immutable tag: {detail}")
+        _validate_tag(desired, raced)
+
+    confirmed = _remote_tag(repository, desired.tag)
+    if confirmed is None:
+        raise PublicationError(
+            f"immutable tag {desired.tag!r} was not observable after push"
+        )
+    _validate_tag(desired, confirmed)
 
 
 def publish(repository: str, desired: DesiredRelease) -> None:
-    tag_target = _remote_tag_target(repository, desired.tag)
+    tag = _remote_tag(repository, desired.tag)
     payload = _release_json(repository, desired.tag)
     plan = reconcile_publication(
-        desired, tag_target=tag_target, release=_existing_release(payload)
+        desired, tag=tag, release=_existing_release(payload)
     )
     if plan.complete:
         print(f"Release {desired.tag} already matches transaction {desired.transaction_id}.")
@@ -378,7 +443,7 @@ def publish(repository: str, desired: DesiredRelease) -> None:
         current = _existing_release(_release_json(repository, desired.tag))
         current_plan = reconcile_publication(
             desired,
-            tag_target=_remote_tag_target(repository, desired.tag),
+            tag=_remote_tag(repository, desired.tag),
             release=current,
         )
         for name in current_plan.upload_assets:
@@ -400,7 +465,7 @@ def publish(repository: str, desired: DesiredRelease) -> None:
         verified = _existing_release(_release_json(repository, desired.tag))
         verified_plan = reconcile_publication(
             desired,
-            tag_target=_remote_tag_target(repository, desired.tag),
+            tag=_remote_tag(repository, desired.tag),
             release=verified,
         )
         if verified_plan.upload_assets:
@@ -427,7 +492,7 @@ def publish(repository: str, desired: DesiredRelease) -> None:
 
     final = reconcile_publication(
         desired,
-        tag_target=_remote_tag_target(repository, desired.tag),
+        tag=_remote_tag(repository, desired.tag),
         release=_existing_release(_release_json(repository, desired.tag)),
     )
     if not final.complete:

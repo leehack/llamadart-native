@@ -79,11 +79,12 @@ native tag. Consumers can therefore verify the built source independently of a
 moving ref or release label.
 
 Candidate builds and packaging are read-only. The final publication job alone
-can create the immutable tag and draft-first release; its assets are published
-only after exact digest and provenance checks. Retry a partial publication by
-rerunning the failed job in the same workflow run. Exact matching partial state
-is resumed, while any tag, release, correlation, or asset mismatch fails closed
-without force-moving tags or replacing assets.
+can create the transaction-marked annotated tag and draft-first release; its
+assets are published only after exact digest and provenance checks. Retry a
+partial publication by rerunning the failed job in the same workflow run. Exact
+matching partial state—including a tag-only state with the same transaction
+marker—is resumed, while any unmarked tag or tag, release, correlation, or asset
+mismatch fails closed without force-moving tags or replacing assets.
 
 See [Native Release Version Policy](docs/release_version_policy.md) for ordering,
 prerelease classification, legacy compatibility, and the downstream contract.

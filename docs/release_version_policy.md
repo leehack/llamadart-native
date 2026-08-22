@@ -103,8 +103,9 @@ Publication is an immutable, draft-first transaction:
 
 1. The complete build matrix produces one same-run artifact containing release
    assets, their digest, and the exact provenance commit.
-2. The final job verifies that commit and its `llama.cpp` tree entry, creates the
-   tag without force, creates a draft release, and uploads only missing assets.
+2. The final job verifies that commit and its `llama.cpp` tree entry, creates an
+   annotated tag whose immutable message binds the transaction ID, pushes it
+   without force, creates a draft release, and uploads only missing assets.
 3. The draft becomes published only after the tag, release correlation fields,
    prerelease setting, and every asset digest and size match exactly.
 
@@ -115,6 +116,9 @@ correlation, classification, asset set, digest, or size fails closed. The
 workflow never force-moves a tag, replaces an asset, edits a mismatched release,
 or repairs a partial published release by mutation. A new workflow dispatch is
 a different transaction and cannot take over partial state from the old run.
+This also applies when failure occurs immediately after the tag push: an orphan
+tag resumes only when its annotated transaction marker matches the same run.
+Unmarked tags and different transaction markers are ambiguous and fail closed.
 
 ## Downstream coordination
 
