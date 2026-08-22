@@ -87,7 +87,7 @@ EOF_FILES
   echo "{"
   # Keep tag as an immutable compatibility alias for existing consumers while
   # making native artifact-version ownership explicit for new manifests.
-  echo "  \"tag\": \"$tag\"," 
+  echo "  \"tag\": \"$tag\","
   echo "  \"native_release_tag\": \"$tag\","
   echo "  \"llama_cpp_tag\": \"$llama_cpp_tag\","
   if [ -n "$llama_cpp_commit" ]; then
@@ -96,7 +96,7 @@ EOF_FILES
   if [ -n "$native_commit" ]; then
     echo "  \"native_commit\": \"$native_commit\","
   fi
-  echo "  \"generated_at\": \"$timestamp\"," 
+  echo "  \"generated_at\": \"$timestamp\","
   echo "  \"hook_contract_version\": 1,"
   echo "  \"artifacts\": ["
 
@@ -123,12 +123,12 @@ EOF_FILES
     fi
 
     echo "    {"
-    echo "      \"module\": \"$module\"," 
-    echo "      \"platform\": \"$platform\"," 
-    echo "      \"arch\": \"$arch\"," 
-    echo "      \"backend\": \"$backend\"," 
-    echo "      \"file\": \"$b\"," 
-    echo "      \"sha256\": \"$sha\"," 
+    echo "      \"module\": \"$module\","
+    echo "      \"platform\": \"$platform\","
+    echo "      \"arch\": \"$arch\","
+    echo "      \"backend\": \"$backend\","
+    echo "      \"file\": \"$b\","
+    echo "      \"sha256\": \"$sha\","
     echo "      \"size\": $size"
     echo "    }$comma"
   done <<EOF_FILES
