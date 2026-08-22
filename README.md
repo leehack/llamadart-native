@@ -51,7 +51,7 @@ When changing the upstream `llama.cpp` version:
 When rebuilding the wrapper without changing the upstream `llama.cpp` ref,
 dispatch `Native Build & Release` with the same `llama_cpp_tag` and a new
 `native_release_tag`. A rebuild of stable upstream `v0.2.0` uses
-`v0.2.1-llamadart.1`; a nightly rebuild retains the historical
+`v0.2.0-1`; a nightly rebuild retains the historical
 `b9873-llamadart.1` form. Do not republish different source under an existing
 tag; downstream caches are tag-keyed and the GitHub source tag should identify
 the native wrapper commit that produced the assets. Publish mode rejects tag

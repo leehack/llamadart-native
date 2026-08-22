@@ -8,7 +8,7 @@ on:
         required: true
         default: 'latest'
       native_release_tag:
-        description: 'Native tag (blank = upstream ref; stable rebuild: next patch -llamadart.N)'
+        description: 'Native tag (blank = upstream ref; stable rebuild: vX.Y.Z-N)'
         required: false
         default: ''
       publish_release:

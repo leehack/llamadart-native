@@ -172,7 +172,7 @@ def verify_manifest_contract(errors: list[str]) -> None:
         fixtures = (
             ("stable", "v0.2.0", "v0.2.0"),
             ("nightly", "b10545", "b10545"),
-            ("stable-wrapper", "v0.2.1-llamadart.1", "v0.2.0"),
+            ("stable-wrapper", "v0.2.0-1", "v0.2.0"),
             ("legacy-wrapper", "b10356-llamadart.1", "b10356"),
         )
         for fixture_name, native_tag, upstream_ref in fixtures:

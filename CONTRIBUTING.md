@@ -39,8 +39,8 @@ python3 tools/build.py windows --arch x64 --backend vulkan
    [`docs/release_version_policy.md`](docs/release_version_policy.md): use
    `latest`/`vMAJOR.MINOR.PATCH` for stable distribution, or an explicit
    `bNNNN` only for a nightly/development build. For a wrapper-only stable
-   rebuild, use the next-patch prerelease form such as
-   `v0.2.1-llamadart.1` for upstream `v0.2.0`.
+   rebuild, preserve the upstream version prefix and append the next native
+   rebuild number, such as `v0.2.0-1` for upstream `v0.2.0`.
 3. Run `Native Build & Release` workflow:
    `.github/workflows/native_release.yml`
 4. Verify release assets (`assets.json`, `SHA256SUMS`, per-target bundles) and

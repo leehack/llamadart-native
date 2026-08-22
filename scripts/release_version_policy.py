@@ -15,7 +15,7 @@ STABLE_RE = re.compile(
 )
 STABLE_WRAPPER_RE = re.compile(
     r"^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)"
-    r"-llamadart\.([1-9][0-9]*)$"
+    r"-([1-9][0-9]*)$"
 )
 NIGHTLY_RE = re.compile(r"^b(0|[1-9][0-9]*)$")
 NIGHTLY_WRAPPER_RE = re.compile(
@@ -76,7 +76,7 @@ def parse_native_tag(tag: str) -> Version:
 
     raise PolicyError(
         f"invalid llamadart-native release tag {tag!r}: expected vMAJOR.MINOR.PATCH, "
-        "vMAJOR.MINOR.(PATCH+1)-llamadart.N, bNNNN, or bNNNN-llamadart.N"
+        "vMAJOR.MINOR.PATCH-N, bNNNN, or bNNNN-llamadart.N"
     )
 
 
@@ -85,7 +85,7 @@ def wrapper_tag_for(upstream: Version, rebuild: int = 1) -> str:
         raise PolicyError("wrapper rebuild number must be at least 1")
     if upstream.channel == "stable":
         major, minor, patch = upstream.core
-        return f"v{major}.{minor}.{patch + 1}-llamadart.{rebuild}"
+        return f"v{major}.{minor}.{patch}-{rebuild}"
     return f"b{upstream.core[0]}-llamadart.{rebuild}"
 
 
@@ -108,8 +108,7 @@ def validate_pair(upstream_ref: str, native_tag: str) -> tuple[Version, Version]
         return upstream, native
 
     if upstream.channel == "stable":
-        major, minor, patch = upstream.core
-        if native.core != (major, minor, patch + 1):
+        if native.core != upstream.core:
             raise PolicyError(
                 f"wrapper-only rebuild for {upstream.tag} must use "
                 f"{wrapper_tag_for(upstream)} (then increment N); got {native.tag!r}"
@@ -131,14 +130,15 @@ def validate_automatic_upstream(upstream: Version) -> None:
         )
 
 
-def _stable_precedence(version: Version) -> tuple[int, int, int, int, int]:
+def _stable_precedence(version: Version) -> tuple[int, int, int, int]:
     if version.channel != "stable":
         raise PolicyError(f"{version.tag!r} is not a stable-channel native tag")
     major, minor, patch = version.core
-    # A wrapper rebuild is a SemVer prerelease of the next patch. It sorts after
-    # the upstream version it rebuilds and before the eventual normal release.
-    final = 1 if version.kind == "upstream" else 0
-    return major, minor, patch, final, version.rebuild
+    # This is the native release sequence, not SemVer precedence. Stable wrapper
+    # tags preserve the exact upstream version prefix, so v0.2.0-1 is sequenced
+    # after v0.2.0 even though SemVer itself classifies it as a prerelease.
+    native_rebuild = version.rebuild if version.kind == "wrapper" else 0
+    return major, minor, patch, native_rebuild
 
 
 def validate_history(candidate: Version, existing_tags: Iterable[str]) -> None:
