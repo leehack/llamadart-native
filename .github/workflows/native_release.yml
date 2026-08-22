@@ -1046,9 +1046,16 @@ jobs:
         with:
           name: native_linux_x64_vulkan
           path: candidate-linux-x64
+      - name: Extract Linux x64 core bundle
+        if: ${{ needs.resolve-tag.outputs.smoke_policy == 'required' }}
+        run: |
+          set -euo pipefail
+          mkdir -p candidate-linux-x64/extracted
+          tar -xzf candidate-linux-x64/runtime.tar.gz \
+            -C candidate-linux-x64/extracted
       - name: Load packaged wrapper and call model-free API probe
         if: ${{ needs.resolve-tag.outputs.smoke_policy == 'required' }}
-        run: python3 tools/smoke_linux_bundle.py candidate-linux-x64
+        run: python3 tools/smoke_linux_bundle.py candidate-linux-x64/extracted
       - name: Record smoke conclusion
         id: conclusion
         run: |

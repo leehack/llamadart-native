@@ -314,9 +314,12 @@ def verify_workflow_contract(errors: list[str]) -> None:
     require(
         "native_linux_x64_vulkan" in smoke_job
         and "tools/smoke_linux_bundle.py" in smoke_job
+        and "tar -xzf candidate-linux-x64/runtime.tar.gz" in smoke_job
+        and "candidate-linux-x64/extracted" in smoke_job
         and "llama_dart_tts_api_version" in smoke_script
         and "conclusion=passed" in smoke_job,
-        "required publication smoke must load the packaged Linux wrapper and report its conclusion",
+        "required publication smoke must extract and load the packaged Linux wrapper "
+        "and report its conclusion",
         errors,
     )
     require(
