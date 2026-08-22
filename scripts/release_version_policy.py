@@ -76,7 +76,7 @@ def parse_native_tag(tag: str) -> Version:
 
     raise PolicyError(
         f"invalid llamadart-native release tag {tag!r}: expected vMAJOR.MINOR.PATCH, "
-        "vMAJOR.MINOR.NEXT_PATCH-llamadart.N, bNNNN, or bNNNN-llamadart.N"
+        "vMAJOR.MINOR.(PATCH+1)-llamadart.N, bNNNN, or bNNNN-llamadart.N"
     )
 
 

@@ -54,6 +54,9 @@ class ReleaseVersionPolicyTest(unittest.TestCase):
         validate_history(parse_native_tag("v0.2.1"), [rebuild.tag])
 
     def test_invalid_refs_and_mismatched_tags(self) -> None:
+        with self.assertRaisesRegex(PolicyError, r"\(PATCH\+1\)"):
+            parse_native_tag("not-a-release")
+
         invalid_pairs = (
             ("latest", "v0.2.0"),
             ("v0.2", "v0.2"),
