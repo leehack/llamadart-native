@@ -96,7 +96,7 @@ class PackageLinuxArtifactTest(unittest.TestCase):
 
             self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
             self.assertIn(
-                "Linux runtime symlink target is a directory: "
+                "Linux runtime symlink target is not a regular file: "
                 "libdirectory.so -> libdirectory.so.1",
                 result.stdout,
             )

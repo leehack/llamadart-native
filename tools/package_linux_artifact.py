@@ -46,9 +46,11 @@ def select_members(input_dir: Path, patterns: list[str]) -> list[Path]:
                 )
 
             target_path = path.parent / target
-            if target_path.is_dir():
+            if target_path.exists() and not (
+                target_path.is_symlink() or target_path.is_file()
+            ):
                 raise ValueError(
-                    f"Linux runtime symlink target is a directory: "
+                    f"Linux runtime symlink target is not a regular file: "
                     f"{path.name} -> {target}"
                 )
             if not (target_path.is_symlink() or target_path.is_file()):
