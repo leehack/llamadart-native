@@ -12,6 +12,7 @@ import re
 import subprocess
 import tempfile
 from typing import Any
+from urllib.parse import urlparse
 
 from release_version_policy import PolicyError, validate_pair
 
@@ -19,6 +20,9 @@ from release_version_policy import PolicyError, validate_pair
 COMMIT_RE = re.compile(r"^[0-9a-f]{40}$", re.IGNORECASE)
 CORRELATION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$")
 ARTIFACT_DIGEST_RE = re.compile(r"^(?:sha256:)?([0-9a-f]{64})$", re.IGNORECASE)
+GITHUB_ASSET_PATH_RE = re.compile(
+    r"^/repos/[^/\s]+/[^/\s]+/releases/assets/[1-9][0-9]*$"
+)
 DISCOVERY_STATUSES = ("candidate", "noop", "incompatible")
 SMOKE_POLICIES = ("required", "skip")
 SMOKE_CONCLUSIONS = ("passed", "skipped")
@@ -76,6 +80,19 @@ def _download_asset_digest(asset: Mapping[str, Any]) -> str:
     if not isinstance(url, str) or not url:
         raise ContractError(
             f"GitHub asset {asset.get('name')!r} has neither a digest nor an API URL"
+        )
+    parsed_url = urlparse(url)
+    if (
+        parsed_url.scheme != "https"
+        or parsed_url.netloc != "api.github.com"
+        or parsed_url.params
+        or parsed_url.query
+        or parsed_url.fragment
+        or GITHUB_ASSET_PATH_RE.fullmatch(parsed_url.path) is None
+    ):
+        raise ContractError(
+            f"GitHub asset {asset.get('name')!r} must use an exact GitHub "
+            "release-asset API URL"
         )
     with tempfile.NamedTemporaryFile() as output:
         result = subprocess.run(

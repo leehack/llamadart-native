@@ -247,6 +247,17 @@ class ReleaseResultTests(unittest.TestCase):
         emitted = {item["name"]: item["digest"] for item in result["release"]["assets"]}
         self.assertEqual(f"sha256:{expected}", emitted[missing["name"]])
 
+    def test_result_rejects_arbitrary_remote_asset_url_when_digest_is_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            assets, release = self._fixture(Path(directory))
+            missing = release["assets"][0]
+            missing["digest"] = None
+            missing["url"] = "https://example.invalid/asset"
+            with self.assertRaisesRegex(
+                ContractError, "exact GitHub release-asset API URL"
+            ):
+                self._result(assets, release)
+
 
 if __name__ == "__main__":
     unittest.main()
