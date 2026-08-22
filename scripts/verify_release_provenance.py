@@ -112,6 +112,11 @@ def verify_workflow_contract(errors: list[str]) -> None:
         errors,
     )
     require(
+        "expected_commit: ${{ steps.contract.outputs.llama_cpp_commit }}" in workflow,
+        "initial checkout must enforce the normalized exact commit from the dispatch contract",
+        errors,
+    )
+    require(
         workflow.count(expected_commit_input) == 7,
         "all six build/package checkouts and the submodule update must assert the resolved commit",
         errors,
@@ -341,6 +346,12 @@ def verify_workflow_contract(errors: list[str]) -> None:
         and 'status="incompatible"' in auto_workflow
         and 'commits/${upstream_ref}' in auto_workflow,
         "scheduled discovery must emit exact candidate/noop/incompatible machine-readable evidence",
+        errors,
+    )
+    require(
+        "--require-stable-upstream 2>&1)" in auto_workflow
+        and "2>&1 >/dev/null" not in auto_workflow,
+        "incompatible discovery must retain the release-policy diagnostic in its JSON report",
         errors,
     )
     require(

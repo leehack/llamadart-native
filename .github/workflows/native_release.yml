@@ -113,7 +113,7 @@ jobs:
         uses: ./.github/actions/checkout-llama-ref
         with:
           tag: ${{ steps.contract.outputs.llama_cpp_ref }}
-          expected_commit: ${{ github.event.inputs.llama_cpp_commit }}
+          expected_commit: ${{ steps.contract.outputs.llama_cpp_commit }}
           github_token: ${{ github.token }}
 
   build-android:

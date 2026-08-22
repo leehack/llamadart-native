@@ -49,7 +49,7 @@ jobs:
           if ! policy_error="$(python3 scripts/release_version_policy.py \
             --upstream-ref "$upstream_ref" \
             --native-tag "$upstream_ref" \
-            --require-stable-upstream 2>&1 >/dev/null)"; then
+            --require-stable-upstream 2>&1)"; then
             status="incompatible"
             message="Latest upstream release is incompatible with the stable native release policy: ${policy_error}"
           else
