@@ -29,7 +29,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("archive", type=Path)
     parser.add_argument(
         "--tool",
-        help="ELF inspection tool (default: first available readelf, llvm-readelf, or objdump)",
+        help=(
+            "ELF inspection tool (default: first available readelf, llvm-readelf, "
+            "objdump, or llvm-objdump)"
+        ),
     )
     return parser.parse_args()
 
@@ -52,7 +55,10 @@ def resolve_tool(explicit: str | None) -> tuple[str, str]:
         resolved = shutil.which(candidate)
         if resolved:
             return resolved, mode
-    raise ValueError("No ELF inspection tool found (tried readelf, llvm-readelf, and objdump)")
+    raise ValueError(
+        "No ELF inspection tool found "
+        "(tried readelf, llvm-readelf, objdump, and llvm-objdump)"
+    )
 
 
 def inspect_dynamic(path: Path, tool: str, mode: str) -> DynamicMetadata:

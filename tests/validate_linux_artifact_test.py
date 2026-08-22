@@ -43,6 +43,16 @@ class ValidateLinuxArtifactTest(unittest.TestCase):
         self.assertEqual(resolved, "/opt/llvm/bin/llvm-objdump")
         self.assertEqual(mode, "objdump")
 
+    def test_missing_auto_discovery_lists_every_candidate(self) -> None:
+        with mock.patch(
+            "tools.validate_linux_artifact.shutil.which", return_value=None
+        ):
+            with self.assertRaisesRegex(
+                ValueError,
+                "readelf, llvm-readelf, objdump, and llvm-objdump",
+            ):
+                resolve_tool(None)
+
     def test_multi_hop_symlink_cycles_are_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             archive_path = Path(directory) / "runtime.tar.gz"
