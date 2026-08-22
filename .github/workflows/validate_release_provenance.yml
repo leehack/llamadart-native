@@ -6,8 +6,12 @@ on:
       - '.github/actions/checkout-llama-ref/action.yml'
       - '.github/workflows/native_release.yml'
       - '.github/workflows/validate_release_provenance.yml'
+      - '.github/workflows/validate_wrapper.yml'
       - 'scripts/generate_assets_manifest.sh'
       - 'scripts/verify_release_provenance.py'
+      - 'tools/linux_dlopen_smoke.c'
+      - 'tools/package_linux_artifact.py'
+      - 'tools/validate_linux_artifact.py'
   push:
     branches:
       - main
@@ -15,8 +19,12 @@ on:
       - '.github/actions/checkout-llama-ref/action.yml'
       - '.github/workflows/native_release.yml'
       - '.github/workflows/validate_release_provenance.yml'
+      - '.github/workflows/validate_wrapper.yml'
       - 'scripts/generate_assets_manifest.sh'
       - 'scripts/verify_release_provenance.py'
+      - 'tools/linux_dlopen_smoke.c'
+      - 'tools/package_linux_artifact.py'
+      - 'tools/validate_linux_artifact.py'
 
 permissions:
   contents: read

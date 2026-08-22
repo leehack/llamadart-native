@@ -94,7 +94,7 @@ ANDROID_ARM64_CPU_VARIANTS = (
 )
 WINDOWS_VCPKG_TRIPLETS = {"x64": "x64-windows", "arm64": "arm64-windows"}
 ANDROID_BACKENDS = ("full", "vulkan", "opencl")
-LINUX_BACKENDS = ("full", "vulkan", "cuda", "hip", "blas")
+LINUX_BACKENDS = ("full", "cpu", "vulkan", "cuda", "hip", "blas")
 WINDOWS_BACKENDS = ("full", "vulkan", "cuda", "blas")
 
 WINDOWS_SYSTEM_DLL_PREFIXES = (
@@ -705,8 +705,8 @@ def is_runtime_library(path: Path) -> bool:
     if not path.is_file():
         return False
 
-    # Keep canonical runtime filenames only (drop Linux SONAME aliases like libfoo.so.0 / libfoo.so.0.0.0).
-    if not (name.endswith(".dll") or name.endswith(".dylib") or name.endswith(".so")):
+    is_linux_shared_object = name.endswith(".so") or ".so." in name
+    if not (name.endswith(".dll") or name.endswith(".dylib") or is_linux_shared_object):
         return False
 
     prefixes = (
@@ -743,7 +743,7 @@ def reset_dir(path: Path) -> None:
 
 def copy_output(src: Path, dst: Path) -> None:
     dst.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(src, dst)
+    shutil.copy2(src, dst, follow_symlinks=False)
     print(f"Built: {dst.relative_to(REPO_ROOT)}")
 
 
@@ -1152,7 +1152,7 @@ def build_windows(args: argparse.Namespace) -> None:
 def print_presets() -> None:
     presets = [
         "apple: target=macos-arm64|macos-x86_64|ios-device-arm64|ios-sim-arm64|ios-sim-x86_64 (consolidated: metal+cpu in one dylib)",
-        "linux: arch=x64|arm64 backend=full|vulkan|cuda|hip|blas (x64 full=vulkan+cuda+blas+cpu, arm64 full=vulkan+blas+kleidi+cpu, hip=x64 only)",
+        "linux: arch=x64|arm64 backend=full|cpu|vulkan|cuda|hip|blas (x64 full=vulkan+cuda+blas+cpu, arm64 full=vulkan+blas+kleidi+cpu, hip=x64 only)",
         "android: abi=arm64-v8a|x86_64|all backend=full|vulkan|opencl (arm64 builds isolated CPU variants so Kleidi stays enabled where safe; x86_64 full=vulkan+opencl+cpu)",
         "windows: arch=x64|arm64 backend=full|vulkan|cuda|blas (x64 full=vulkan+cuda+blas+cpu, arm64 full=vulkan+blas+kleidi+cpu)",
     ]

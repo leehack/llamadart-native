@@ -14,6 +14,7 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github/workflows/native_release.yml"
+WRAPPER_WORKFLOW = ROOT / ".github/workflows/validate_wrapper.yml"
 CHECKOUT_ACTION = ROOT / ".github/actions/checkout-llama-ref/action.yml"
 MANIFEST_SCRIPT = ROOT / "scripts/generate_assets_manifest.sh"
 
@@ -59,6 +60,7 @@ def require(condition: bool, message: str, errors: list[str]) -> None:
 
 def verify_workflow_contract(errors: list[str]) -> None:
     workflow = WORKFLOW.read_text()
+    wrapper_workflow = WRAPPER_WORKFLOW.read_text()
     action = CHECKOUT_ACTION.read_text()
 
     workflow_bundles = set(
@@ -128,6 +130,26 @@ def verify_workflow_contract(errors: list[str]) -> None:
         in action
         and 'echo "commit=$ACTUAL_COMMIT" >> "$GITHUB_OUTPUT"' in action,
         "checkout action must expose and enforce exact commit provenance",
+        errors,
+    )
+    linux_validation = workflow.find(
+        "for archive in release_assets/llamadart-native-linux-*.tar.gz"
+    )
+    require(
+        "python3 tools/package_linux_artifact.py" in workflow
+        and workflow.count("python3 tools/validate_linux_artifact.py") == 2
+        and 'tar -xzf "${archives[0]}" -C "$out_dir"' in workflow
+        and -1 < linux_validation < manifest,
+        "Linux release packaging must preserve and validate SONAME symlinks before manifest generation",
+        errors,
+    )
+    require(
+        "linux-artifact-contract:" in wrapper_workflow
+        and "arch: [x64, arm64]" in wrapper_workflow
+        and "--backend cpu" in wrapper_workflow
+        and "qemu-aarch64" in wrapper_workflow
+        and "tools/linux_dlopen_smoke.c" in wrapper_workflow,
+        "PR validation must inspect and clean-dlopen Linux x64 and arm64 archives",
         errors,
     )
 
