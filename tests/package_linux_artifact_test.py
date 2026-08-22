@@ -80,28 +80,6 @@ class PackageLinuxArtifactTest(unittest.TestCase):
             )
             self.assertFalse(output.exists())
 
-    def test_patterns_cannot_escape_the_input_directory(self) -> None:
-        for pattern in ("../*.so", r"..\*.so", r"C:\*.so"):
-            with self.subTest(pattern=pattern):
-                with tempfile.TemporaryDirectory() as directory:
-                    root = Path(directory)
-                    input_dir = root / "input"
-                    input_dir.mkdir()
-                    (root / "libescape.so").write_bytes(b"outside input")
-                    output = root / "runtime.tar.gz"
-
-                    result = self.run_packager(input_dir, output, pattern)
-
-                    self.assertEqual(
-                        result.returncode, 1, result.stdout + result.stderr
-                    )
-                    self.assertIn(
-                        "Linux runtime pattern must be a filename glob "
-                        f"without path separators: {pattern}",
-                        result.stdout,
-                    )
-                    self.assertFalse(output.exists())
-
     def test_selected_parent_directory_symlink_fails_as_non_sibling(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -137,6 +115,44 @@ class PackageLinuxArtifactTest(unittest.TestCase):
                 result.stdout,
             )
             self.assertFalse(output.exists())
+
+    def test_patterns_with_path_components_fail_before_archive_creation(self) -> None:
+        unsafe_patterns = (
+            "../*.so",
+            "./*.so",
+            "subdir/*.so",
+            r"..\*.so",
+            r".\*.so",
+            r"subdir\*.so",
+            "/tmp/*.so",
+            r"C:\tmp\*.so",
+            "",
+            ".",
+            "..",
+        )
+        for pattern in unsafe_patterns:
+            with self.subTest(pattern=pattern):
+                with tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory)
+                    input_dir = root / "input"
+                    input_dir.mkdir()
+                    (root / "outside.so").write_bytes(b"outside")
+                    output = root / "runtime.tar.gz"
+
+                    result = self.run_packager(input_dir, output, pattern)
+
+                    self.assertEqual(
+                        result.returncode,
+                        1,
+                        result.stdout + result.stderr,
+                    )
+                    self.assertIn(
+                        "Linux runtime pattern must be a filename glob without "
+                        "path components",
+                        result.stdout,
+                    )
+                    self.assertNotIn("Traceback", result.stderr)
+                    self.assertFalse(output.exists())
 
 
 if __name__ == "__main__":

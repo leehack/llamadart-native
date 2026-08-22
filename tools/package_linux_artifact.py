@@ -21,24 +21,6 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def validate_filename_pattern(pattern: str) -> None:
-    posix_pattern = PurePosixPath(pattern)
-    windows_pattern = PureWindowsPath(pattern)
-    if (
-        not pattern
-        or posix_pattern.is_absolute()
-        or windows_pattern.is_absolute()
-        or windows_pattern.drive
-        or len(posix_pattern.parts) != 1
-        or len(windows_pattern.parts) != 1
-        or pattern in {".", ".."}
-    ):
-        raise ValueError(
-            f"Linux runtime pattern must be a filename glob without path "
-            f"separators: {pattern}"
-        )
-
-
 def select_members(input_dir: Path, patterns: list[str]) -> list[Path]:
     if not input_dir.is_dir():
         raise ValueError(f"Input directory does not exist: {input_dir}")
@@ -76,14 +58,31 @@ def select_members(input_dir: Path, patterns: list[str]) -> list[Path]:
         if path.is_file():
             selected[path.name] = path
 
-    for pattern in patterns or ["*.so", "*.so.*"]:
-        validate_filename_pattern(pattern)
+    selected_patterns = patterns or ["*.so", "*.so.*"]
+    for pattern in selected_patterns:
+        posix_pattern = PurePosixPath(pattern)
+        windows_pattern = PureWindowsPath(pattern)
+        if (
+            not pattern
+            or posix_pattern.is_absolute()
+            or windows_pattern.is_absolute()
+            or windows_pattern.drive
+            or "/" in pattern
+            or "\\" in pattern
+            or len(posix_pattern.parts) != 1
+            or len(windows_pattern.parts) != 1
+            or pattern in {".", ".."}
+        ):
+            raise ValueError(
+                f"Linux runtime pattern must be a filename glob without path "
+                f"components: {pattern!r}"
+            )
         for path in input_dir.glob(pattern):
             add_member(path)
 
     if not selected:
         raise ValueError(
-            f"No Linux runtime libraries matched {patterns or ['*.so', '*.so.*']} "
+            f"No Linux runtime libraries matched {selected_patterns} "
             f"under {input_dir}"
         )
     return [selected[name] for name in sorted(selected)]
