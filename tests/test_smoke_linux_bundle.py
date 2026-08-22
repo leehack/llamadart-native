@@ -34,6 +34,9 @@ class LinuxBundleSmokeTests(unittest.TestCase):
             self.assertEqual(sys.executable, command[0])
             self.assertEqual(str(wrapper.resolve()), command[3])
             self.assertEqual(str(bundle.resolve()), environment["LD_LIBRARY_PATH"])
+            self.assertIn("if version != 1:", command[2])
+            self.assertNotIn("assert version", command[2])
+            compile(command[2], "<smoke-probe>", "exec")
 
 
 if __name__ == "__main__":
