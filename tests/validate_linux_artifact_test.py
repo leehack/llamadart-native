@@ -41,6 +41,25 @@ class ValidateLinuxArtifactTest(unittest.TestCase):
             member, destination, filter="data"
         )
 
+    def test_supported_python_recreates_validated_symlinks_manually(self) -> None:
+        archive = mock.Mock(spec=tarfile.TarFile)
+        member = tarfile.TarInfo("libexample.so")
+        member.type = tarfile.SYMTYPE
+        member.linkname = "libexample.so.1"
+
+        with tempfile.TemporaryDirectory() as directory:
+            destination = Path(directory)
+            with mock.patch(
+                "tools.validate_linux_artifact.TARFILE_EXTRACT_SUPPORTS_FILTER",
+                True,
+            ):
+                extract_member_safely(archive, member, destination)
+
+            extracted = destination / member.name
+            self.assertTrue(extracted.is_symlink())
+            self.assertEqual(extracted.readlink(), Path(member.linkname))
+        archive.extract.assert_not_called()
+
     def test_legacy_fallback_discards_archive_metadata_and_permissions(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

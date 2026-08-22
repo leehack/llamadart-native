@@ -107,24 +107,26 @@ def extract_member_safely(
     member: tarfile.TarInfo,
     destination: Path,
 ) -> None:
+    name = safe_member_name(member.name)
+    output = destination / name
+    if member.issym():
+        # The data filter may reject a valid link when its target has not been
+        # extracted yet. Both names were constrained to flat filenames above.
+        output.symlink_to(safe_member_name(member.linkname))
+        return
+
     if TARFILE_EXTRACT_SUPPORTS_FILTER:
         archive.extract(member, destination, filter="data")
         return
 
     # Python versions without extraction filters still need fail-safe handling.
-    # Copy only the validated payload or symlink and ignore all archive metadata.
-    name = safe_member_name(member.name)
-    output = destination / name
-    if member.isfile():
-        source = archive.extractfile(member)
-        if source is None:
-            raise ValueError(f"Could not read archive member: {name}")
-        descriptor = os.open(output, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        with source, os.fdopen(descriptor, "wb") as target:
-            shutil.copyfileobj(source, target)
-        return
-
-    output.symlink_to(safe_member_name(member.linkname))
+    # Copy only the validated payload and ignore all archive metadata.
+    source = archive.extractfile(member)
+    if source is None:
+        raise ValueError(f"Could not read archive member: {name}")
+    descriptor = os.open(output, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with source, os.fdopen(descriptor, "wb") as target:
+        shutil.copyfileobj(source, target)
 
 
 def extract_archive(archive_path: Path, destination: Path) -> dict[str, tarfile.TarInfo]:
