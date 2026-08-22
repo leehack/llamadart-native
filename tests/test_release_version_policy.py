@@ -35,6 +35,7 @@ class ReleaseVersionPolicyTest(unittest.TestCase):
         self.assertTrue(nightly.github_prerelease)
         self.assertEqual(wrapper_tag_for(upstream), "b10545-1")
         self.assertEqual(rebuild.rebuild, 1)
+        validate_history(rebuild, ["b10545"])
 
     def test_legacy_nightly_wrapper_is_read_only_compatibility(self) -> None:
         legacy = parse_native_tag("b10356-llamadart.1")
@@ -106,6 +107,14 @@ class ReleaseVersionPolicyTest(unittest.TestCase):
                 parse_native_tag("b10356-1"),
                 ["b10356-2"],
             )
+
+    def test_wrapper_rebuild_requires_same_line_predecessor(self) -> None:
+        with self.assertRaisesRegex(PolicyError, "requires an existing"):
+            validate_history(parse_native_tag("v0.2.0-1"), [])
+        with self.assertRaisesRegex(PolicyError, "requires an existing"):
+            validate_history(parse_native_tag("v0.2.0-1"), ["v0.1.9"])
+        with self.assertRaisesRegex(PolicyError, "requires an existing"):
+            validate_history(parse_native_tag("b10545-1"), ["b10544"])
 
     def test_explicit_historical_nightly_is_not_stable_rollback(self) -> None:
         candidate = parse_native_tag("b10356-2")

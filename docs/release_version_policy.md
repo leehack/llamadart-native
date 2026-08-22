@@ -36,6 +36,7 @@ exact upstream version prefix.
 
 The policy check refuses an existing tag, a stable-channel rollback, or a
 decreasing rebuild sequence for the same upstream line. A wrapper rebuild also
+requires an existing upstream-aligned tag or lower rebuild on the same line and
 fails if a newer stable upstream line has already been published. Select that
 newer upstream stable release instead of inventing a different suffix.
 

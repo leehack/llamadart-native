@@ -85,7 +85,8 @@ def parse_native_tag(tag: str) -> Version:
 
     raise PolicyError(
         f"invalid llamadart-native release tag {tag!r}: expected vMAJOR.MINOR.PATCH, "
-        "vMAJOR.MINOR.PATCH-N, bNNNN, or bNNNN-N"
+        "vMAJOR.MINOR.PATCH-N, bNNNN, bNNNN-N, or legacy read-only "
+        "bNNNN-llamadart.N"
     )
 
 
@@ -183,6 +184,15 @@ def validate_history(candidate: Version, existing_tags: Iterable[str]) -> None:
                     f"stable-channel rollback: {candidate.tag!r} precedes existing "
                     f"native release {latest.tag!r}"
                 )
+        if candidate.kind == "wrapper" and not any(
+            version.core == candidate.core and version.rebuild < candidate.rebuild
+            for version in stable
+        ):
+            raise PolicyError(
+                f"wrapper rebuild {candidate.tag!r} requires an existing "
+                f"upstream-aligned tag or earlier rebuild for "
+                f"v{candidate.core[0]}.{candidate.core[1]}.{candidate.core[2]}"
+            )
         return
 
     same_nightly = [
@@ -204,6 +214,13 @@ def validate_history(candidate: Version, existing_tags: Iterable[str]) -> None:
                 f"nightly wrapper rollback: {candidate.tag!r} precedes an existing "
                 f"rebuild for b{candidate.core[0]}"
             )
+    if candidate.kind == "wrapper" and not any(
+        version.rebuild < candidate.rebuild for version in same_nightly
+    ):
+        raise PolicyError(
+            f"wrapper rebuild {candidate.tag!r} requires an existing "
+            f"upstream-aligned tag or earlier rebuild for b{candidate.core[0]}"
+        )
 
 
 def manifest_native_tag(manifest: Mapping[str, Any]) -> str:
