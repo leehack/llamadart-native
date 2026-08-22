@@ -1102,6 +1102,7 @@ jobs:
             out_dir="bundles/${bundle}"
             mkdir -p "$out_dir"
             if [[ "$bundle" = linux-* ]]; then
+              shopt -s nullglob
               archives=("$dir"/*.tar.gz)
               [ "${#archives[@]}" -eq 1 ] || {
                 echo "Expected one Linux runtime archive in $dir, found ${#archives[@]}" >&2

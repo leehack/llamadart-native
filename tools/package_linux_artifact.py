@@ -26,10 +26,37 @@ def select_members(input_dir: Path, patterns: list[str]) -> list[Path]:
         raise ValueError(f"Input directory does not exist: {input_dir}")
 
     selected: dict[str, Path] = {}
+
+    def add_member(path: Path, chain: tuple[Path, ...] = ()) -> None:
+        if path in chain:
+            names = " -> ".join(item.name for item in (*chain, path))
+            raise ValueError(f"Linux runtime symlink cycle detected: {names}")
+
+        if path.is_symlink():
+            target = path.readlink()
+            if target.is_absolute() or len(target.parts) != 1:
+                raise ValueError(
+                    f"Linux runtime symlink {path.name} must target a sibling file, "
+                    f"not {target}"
+                )
+
+            target_path = path.parent / target
+            if not (target_path.is_symlink() or target_path.is_file()):
+                raise ValueError(
+                    f"Linux runtime symlink target does not exist: "
+                    f"{path.name} -> {target}"
+                )
+
+            selected[path.name] = path
+            add_member(target_path, (*chain, path))
+            return
+
+        if path.is_file():
+            selected[path.name] = path
+
     for pattern in patterns or ["*.so", "*.so.*"]:
         for path in input_dir.glob(pattern):
-            if path.is_file():
-                selected[path.name] = path
+            add_member(path)
 
     if not selected:
         raise ValueError(

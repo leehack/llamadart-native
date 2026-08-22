@@ -135,12 +135,21 @@ def verify_workflow_contract(errors: list[str]) -> None:
     linux_validation = workflow.find(
         "for archive in release_assets/llamadart-native-linux-*.tar.gz"
     )
+    linux_archive_glob = workflow.find('archives=("$dir"/*.tar.gz)')
+    linux_archive_nullglob = workflow.rfind(
+        "shopt -s nullglob", 0, linux_archive_glob
+    )
     require(
         "python3 tools/package_linux_artifact.py" in workflow
         and workflow.count("python3 tools/validate_linux_artifact.py") == 2
         and 'tar -xzf "${archives[0]}" -C "$out_dir"' in workflow
         and -1 < linux_validation < manifest,
         "Linux release packaging must preserve and validate SONAME symlinks before manifest generation",
+        errors,
+    )
+    require(
+        -1 < linux_archive_nullglob < linux_archive_glob,
+        "Linux release archive discovery must use nullglob so an empty directory reports zero archives",
         errors,
     )
     require(
