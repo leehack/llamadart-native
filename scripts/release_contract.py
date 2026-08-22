@@ -21,6 +21,7 @@ from release_version_policy import PolicyError, validate_pair
 COMMIT_RE = re.compile(r"^[0-9a-f]{40}$", re.IGNORECASE)
 CORRELATION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$")
 ARTIFACT_DIGEST_RE = re.compile(r"^(?:sha256:)?([0-9a-f]{64})$", re.IGNORECASE)
+GITHUB_REPOSITORY_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 GITHUB_ASSET_URL_RE = re.compile(
     r"^/repos/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/releases/assets/[1-9][0-9]*$"
 )
@@ -76,7 +77,7 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _download_asset_digest(asset: Mapping[str, Any]) -> str:
+def _download_asset_digest(asset: Mapping[str, Any], *, repository: str) -> str:
     url = asset.get("url")
     if not isinstance(url, str) or not url:
         raise ContractError(
@@ -94,6 +95,12 @@ def _download_asset_digest(asset: Mapping[str, Any]) -> str:
         raise ContractError(
             f"GitHub asset {asset.get('name')!r} must use an exact api.github.com "
             "release-asset API URL"
+        )
+    asset_repository = "/".join(parsed.path.split("/")[2:4])
+    if asset_repository.casefold() != repository.casefold():
+        raise ContractError(
+            f"GitHub asset {asset.get('name')!r} must belong to workflow repository "
+            f"{repository!r}"
         )
     with tempfile.TemporaryDirectory() as directory:
         output_path = Path(directory) / "asset"
@@ -285,6 +292,8 @@ def build_release_result(
         correlation_id=correlation_id,
         publish_release=publish_release,
     )
+    if GITHUB_REPOSITORY_RE.fullmatch(workflow_repository) is None:
+        raise ContractError("workflow repository must be an owner/name pair")
     native_commit = _full_commit(native_commit, "native commit")
     workflow_head_sha = _full_commit(workflow_head_sha, "workflow head SHA")
     if (
@@ -426,7 +435,9 @@ def build_release_result(
             if isinstance(digest, str) and ARTIFACT_DIGEST_RE.fullmatch(digest):
                 verified_digest = _artifact_digest(digest).removeprefix("sha256:")
             else:
-                verified_digest = _download_asset_digest(item)
+                verified_digest = _download_asset_digest(
+                    item, repository=workflow_repository
+                )
             if verified_digest != local_digests[name]:
                 raise ContractError(f"GitHub asset digest mismatch for {name}")
             verified_remote_digests[name] = f"sha256:{verified_digest}"

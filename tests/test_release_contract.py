@@ -254,11 +254,15 @@ class ReleaseResultTests(unittest.TestCase):
             assets, release = self._fixture(Path(directory))
             missing = release["assets"][0]
             missing["digest"] = None
-            missing["url"] = "https://api.github.com/repos/example/repo/releases/assets/1"
+            missing["url"] = (
+                "https://api.github.com/repos/leehack/llamadart-native/releases/assets/1"
+            )
             expected = hashlib.sha256((assets / missing["name"]).read_bytes()).hexdigest()
             with patch("release_contract._download_asset_digest", return_value=expected) as download:
                 result = self._result(assets, release)
-        download.assert_called_once_with(missing)
+        download.assert_called_once_with(
+            missing, repository="leehack/llamadart-native"
+        )
         emitted = {item["name"]: item["digest"] for item in result["release"]["assets"]}
         self.assertEqual(f"sha256:{expected}", emitted[missing["name"]])
 
@@ -270,6 +274,19 @@ class ReleaseResultTests(unittest.TestCase):
             missing["url"] = "https://attacker.example/payload"
             with self.assertRaisesRegex(
                 ContractError, "exact api.github.com release-asset API URL"
+            ):
+                self._result(assets, release)
+
+    def test_result_rejects_remote_asset_from_another_github_repository(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            assets, release = self._fixture(Path(directory))
+            missing = release["assets"][0]
+            missing["digest"] = None
+            missing["url"] = (
+                "https://api.github.com/repos/example/repo/releases/assets/1"
+            )
+            with self.assertRaisesRegex(
+                ContractError, "must belong to workflow repository"
             ):
                 self._result(assets, release)
 
