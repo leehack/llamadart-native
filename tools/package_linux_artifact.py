@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import argparse
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 import tarfile
 
 
@@ -19,6 +19,24 @@ def parse_args() -> argparse.Namespace:
         help="Filename glob to include (repeatable; default: *.so and *.so.*)",
     )
     return parser.parse_args()
+
+
+def validate_filename_pattern(pattern: str) -> None:
+    posix_pattern = PurePosixPath(pattern)
+    windows_pattern = PureWindowsPath(pattern)
+    if (
+        not pattern
+        or posix_pattern.is_absolute()
+        or windows_pattern.is_absolute()
+        or windows_pattern.drive
+        or len(posix_pattern.parts) != 1
+        or len(windows_pattern.parts) != 1
+        or pattern in {".", ".."}
+    ):
+        raise ValueError(
+            f"Linux runtime pattern must be a filename glob without path "
+            f"separators: {pattern}"
+        )
 
 
 def select_members(input_dir: Path, patterns: list[str]) -> list[Path]:
@@ -59,6 +77,7 @@ def select_members(input_dir: Path, patterns: list[str]) -> list[Path]:
             selected[path.name] = path
 
     for pattern in patterns or ["*.so", "*.so.*"]:
+        validate_filename_pattern(pattern)
         for path in input_dir.glob(pattern):
             add_member(path)
 

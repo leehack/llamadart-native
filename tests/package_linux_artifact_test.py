@@ -80,6 +80,28 @@ class PackageLinuxArtifactTest(unittest.TestCase):
             )
             self.assertFalse(output.exists())
 
+    def test_patterns_cannot_escape_the_input_directory(self) -> None:
+        for pattern in ("../*.so", r"..\*.so", r"C:\*.so"):
+            with self.subTest(pattern=pattern):
+                with tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory)
+                    input_dir = root / "input"
+                    input_dir.mkdir()
+                    (root / "libescape.so").write_bytes(b"outside input")
+                    output = root / "runtime.tar.gz"
+
+                    result = self.run_packager(input_dir, output, pattern)
+
+                    self.assertEqual(
+                        result.returncode, 1, result.stdout + result.stderr
+                    )
+                    self.assertIn(
+                        "Linux runtime pattern must be a filename glob "
+                        f"without path separators: {pattern}",
+                        result.stdout,
+                    )
+                    self.assertFalse(output.exists())
+
     def test_selected_parent_directory_symlink_fails_as_non_sibling(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
