@@ -208,6 +208,32 @@ class ReleaseResultTests(unittest.TestCase):
             ):
                 self._result(assets, release)
 
+    def test_result_rejects_malformed_manifest_asset_entries(self) -> None:
+        for mutation, message in (
+            (lambda artifacts: artifacts.append(None), "must be a JSON object"),
+            (lambda artifacts: artifacts[0].pop("file"), "must have a file name"),
+            (lambda artifacts: artifacts[0].update(size=None), "integer size"),
+        ):
+            with self.subTest(message=message), tempfile.TemporaryDirectory() as directory:
+                assets, release = self._fixture(Path(directory))
+                manifest = json.loads((assets / "assets.json").read_text())
+                mutation(manifest["artifacts"])
+                (assets / "assets.json").write_text(json.dumps(manifest))
+                with self.assertRaisesRegex(ContractError, message):
+                    self._result(assets, release)
+
+    def test_result_rejects_malformed_github_asset_entries(self) -> None:
+        for mutation, message in (
+            (lambda items: items.append(None), "must be a JSON object"),
+            (lambda items: items[0].pop("name"), "must have a name"),
+            (lambda items: items[0].update(size=None), "integer size"),
+        ):
+            with self.subTest(message=message), tempfile.TemporaryDirectory() as directory:
+                assets, release = self._fixture(Path(directory))
+                mutation(release["assets"])
+                with self.assertRaisesRegex(ContractError, message):
+                    self._result(assets, release)
+
     def test_result_hashes_exact_remote_asset_when_api_digest_is_missing(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             assets, release = self._fixture(Path(directory))

@@ -4,13 +4,14 @@
 from __future__ import annotations
 
 import argparse
+from collections.abc import Mapping
 import hashlib
 import json
 from pathlib import Path
 import re
 import subprocess
 import tempfile
-from typing import Any, Mapping
+from typing import Any
 
 from release_version_policy import PolicyError, validate_pair
 
@@ -183,6 +184,53 @@ def _expected_assets(tag: str) -> set[str]:
     return assets
 
 
+def _manifest_asset_entries(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        raise ContractError("manifest artifacts must be a list")
+    entries: list[dict[str, Any]] = []
+    names: set[str] = set()
+    for index, item in enumerate(value):
+        if not isinstance(item, Mapping):
+            raise ContractError(f"manifest artifact {index} must be a JSON object")
+        name = item.get("file")
+        digest = item.get("sha256")
+        size = item.get("size")
+        if not isinstance(name, str) or not name:
+            raise ContractError(f"manifest artifact {index} must have a file name")
+        if name in names:
+            raise ContractError(f"duplicate manifest artifact: {name}")
+        if not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+            raise ContractError(f"manifest artifact {name} must have a SHA-256 digest")
+        if isinstance(size, bool) or not isinstance(size, int) or size < 0:
+            raise ContractError(f"manifest artifact {name} must have a non-negative integer size")
+        names.add(name)
+        entries.append(dict(item))
+    return entries
+
+
+def _remote_asset_entries(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        raise ContractError("GitHub release metadata must include an asset list")
+    entries: list[dict[str, Any]] = []
+    names: set[str] = set()
+    for index, item in enumerate(value):
+        if not isinstance(item, Mapping):
+            raise ContractError(f"GitHub release asset {index} must be a JSON object")
+        name = item.get("name")
+        size = item.get("size")
+        if not isinstance(name, str) or not name:
+            raise ContractError(f"GitHub release asset {index} must have a name")
+        if name in names:
+            raise ContractError(f"duplicate GitHub release asset: {name}")
+        if isinstance(size, bool) or not isinstance(size, int) or size < 0:
+            raise ContractError(
+                f"GitHub release asset {name} must have a non-negative integer size"
+            )
+        names.add(name)
+        entries.append(dict(item))
+    return entries
+
+
 def build_release_result(
     *,
     assets_dir: Path,
@@ -256,10 +304,8 @@ def build_release_result(
             raise ContractError(f"manifest {field} does not match dispatch/result")
 
     expected_assets = _expected_assets(native_release_tag)
-    manifest_assets = manifest.get("artifacts")
-    if not isinstance(manifest_assets, list):
-        raise ContractError("manifest artifacts must be a list")
-    manifest_names = {item.get("file") for item in manifest_assets if isinstance(item, dict)}
+    manifest_assets = _manifest_asset_entries(manifest.get("artifacts"))
+    manifest_names = {item["file"] for item in manifest_assets}
     if manifest_names != expected_assets:
         raise ContractError(
             f"release bundle coverage mismatch: expected {sorted(expected_assets)}, got {sorted(manifest_names)}"
@@ -281,7 +327,7 @@ def build_release_result(
 
     release: dict[str, Any] | None = None
     if publish_release:
-        if not release_metadata:
+        if not isinstance(release_metadata, Mapping):
             raise ContractError("published result requires exact GitHub release metadata")
         if release_metadata.get("tag_name") != native_release_tag:
             raise ContractError("GitHub release tag does not match dispatch")
@@ -304,10 +350,8 @@ def build_release_result(
                 raise ContractError(f"GitHub release body is missing exact evidence: {evidence}")
         if transaction is None:
             raise ContractError("GitHub release body is missing publication transaction id")
-        remote_assets = release_metadata.get("assets")
-        if not isinstance(remote_assets, list):
-            raise ContractError("GitHub release metadata must include assets")
-        remote_names = {item.get("name") for item in remote_assets if isinstance(item, dict)}
+        remote_assets = _remote_asset_entries(release_metadata.get("assets"))
+        remote_names = {item["name"] for item in remote_assets}
         expected_remote = expected_assets | {"assets.json", "SHA256SUMS"}
         if remote_names != expected_remote:
             raise ContractError("GitHub release asset set does not match verified publication")
@@ -326,7 +370,7 @@ def build_release_result(
             if verified_digest != local_digests[name]:
                 raise ContractError(f"GitHub asset digest mismatch for {name}")
             verified_remote_digests[name] = f"sha256:{verified_digest}"
-            if int(item.get("size", -1)) != (assets_dir / name).stat().st_size:
+            if item["size"] != (assets_dir / name).stat().st_size:
                 raise ContractError(f"GitHub asset size mismatch for {name}")
         release = {
             "id": release_metadata.get("id"),
