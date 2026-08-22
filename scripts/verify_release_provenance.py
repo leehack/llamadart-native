@@ -22,6 +22,8 @@ POLICY_DOC = ROOT / "docs/release_version_policy.md"
 README = ROOT / "README.md"
 CONTRIBUTING = ROOT / "CONTRIBUTING.md"
 PUBLICATION_SCRIPT = ROOT / "scripts/release_publication.py"
+CONTRACT_SCRIPT = ROOT / "scripts/release_contract.py"
+SMOKE_SCRIPT = ROOT / "tools/smoke_linux_bundle.py"
 
 RUNTIME_BUNDLES = {
     "android-arm64": ("android", "arm64"),
@@ -81,6 +83,8 @@ def verify_workflow_contract(errors: list[str]) -> None:
     auto_workflow = AUTO_WORKFLOW.read_text()
     validation_workflow = VALIDATION_WORKFLOW.read_text()
     publication_script = PUBLICATION_SCRIPT.read_text()
+    contract_script = CONTRACT_SCRIPT.read_text()
+    smoke_script = SMOKE_SCRIPT.read_text()
     action = CHECKOUT_ACTION.read_text()
 
     workflow_bundles = set(
@@ -113,15 +117,13 @@ def verify_workflow_contract(errors: list[str]) -> None:
         errors,
     )
     require(
-        "if: ${{ github.event.inputs.llama_cpp_tag != 'submodule' }}" not in workflow,
-        "submodule releases must use the same exact-commit checkout path",
-        errors,
-    )
-    require(
-        "llama_cpp_tag=submodule requires the pinned commit to have an exact "
-        "vMAJOR.MINOR.PATCH or bNNNN tag" in workflow
-        and "rev-parse --short HEAD" not in workflow,
-        "untagged submodules must fail before release policy validation",
+        "llama_cpp_commit:" in workflow
+        and "correlation_id:" in workflow
+        and "smoke_policy:" in workflow
+        and "scripts/release_contract.py validate-dispatch" in workflow
+        and "latest" not in workflow[: workflow.find("permissions:")]
+        and "submodule" not in workflow[: workflow.find("permissions:")],
+        "release dispatch must require exact ref/commit, native tag, smoke policy, and correlation",
         errors,
     )
     require(
@@ -163,7 +165,9 @@ def verify_workflow_contract(errors: list[str]) -> None:
         "build-linux",
         "build-linux-hip",
         "build-windows",
+        "smoke-release-contract",
         "package-and-release",
+        "emit-release-result",
     )
     require(
         re.search(r"^permissions:\n  contents: read$", workflow, re.MULTILINE)
@@ -224,7 +228,7 @@ def verify_workflow_contract(errors: list[str]) -> None:
         "scripts/release_version_policy.py" in workflow
         and "--existing-tags-file" in workflow
         and "--allow-existing-candidate" in workflow
-        and "github_prerelease: ${{ steps.tag.outputs.github_prerelease }}" in workflow
+        and "github_prerelease: ${{ steps.contract.outputs.github_prerelease }}" in workflow
         and '--prerelease "${{ needs.resolve-tag.outputs.github_prerelease }}"'
         in publish_job,
         "native release workflow must enforce version history while permitting "
@@ -260,11 +264,31 @@ def verify_workflow_contract(errors: list[str]) -> None:
     )
     require(
         "needs: [resolve-tag, build-android, build-apple, build-linux, "
-        "build-linux-hip, build-windows]"
+        "build-linux-hip, build-windows, smoke-release-contract]"
         in package_job
-        and "needs: [resolve-tag, package-and-release]" in publish_job
+        and "needs: [resolve-tag, smoke-release-contract, package-and-release]" in publish_job
         and "needs.package-and-release.result == 'success'" in publish_job,
         "publication must remain downstream of the complete build and packaging matrix",
+        errors,
+    )
+    smoke_job = workflow_job(workflow, "smoke-release-contract")
+    result_job = workflow_job(workflow, "emit-release-result")
+    require(
+        "native_linux_x64_vulkan" in smoke_job
+        and "tools/smoke_linux_bundle.py" in smoke_job
+        and "llama_dart_tts_api_version" in smoke_script
+        and "conclusion=passed" in smoke_job,
+        "required publication smoke must load the packaged Linux wrapper and report its conclusion",
+        errors,
+    )
+    require(
+        "native-release-result-${{ github.run_id }}" in result_job
+        and "scripts/release_contract.py release-result" in result_job
+        and "publication_artifact_digest" in result_job
+        and "bundle_coverage" in contract_script
+        and '"native_release_tag"' in contract_script
+        and '"tag"' in contract_script,
+        "release workflow must return exact correlated metadata, digests, bundle coverage, and aliases",
         errors,
     )
     require(
@@ -275,7 +299,7 @@ def verify_workflow_contract(errors: list[str]) -> None:
         "non-persisted checkout credentials",
         errors,
     )
-    resolve_tag = workflow.find("- name: Resolve llama.cpp tag")
+    resolve_tag = workflow.find("- name: Validate exact approved dispatch")
     resolve_commit = workflow.find("- name: Resolve exact llama.cpp commit")
     require(
         -1 not in (resolve_tag, resolve_commit)
@@ -301,8 +325,29 @@ def verify_workflow_contract(errors: list[str]) -> None:
         "gh workflow run" not in auto_workflow
         and "publish_release=true" not in auto_workflow
         and "actions: write" not in auto_workflow
-        and "Publication requires explicit cross-repository approval" in auto_workflow,
+        and "native_release.yml" not in auto_workflow
+        and "git push" not in auto_workflow
+        and "git commit" not in auto_workflow
+        and "submodule update" not in auto_workflow
+        and "This detect-only workflow cannot dispatch, publish, or mutate" in auto_workflow,
         "scheduled automation must detect and prepare only, never dispatch publication",
+        errors,
+    )
+    require(
+        "native-discovery-report-${{ github.run_id }}" in auto_workflow
+        and "scripts/release_contract.py discovery-report" in auto_workflow
+        and 'status="candidate"' in auto_workflow
+        and 'status="noop"' in auto_workflow
+        and 'status="incompatible"' in auto_workflow
+        and 'commits/${upstream_ref}' in auto_workflow,
+        "scheduled discovery must emit exact candidate/noop/incompatible machine-readable evidence",
+        errors,
+    )
+    require(
+        "schedule:" not in workflow[: workflow.find("permissions:")]
+        and "workflow_dispatch:" in workflow[: workflow.find("permissions:")]
+        and "publication requires smoke_policy=required" in contract_script,
+        "only explicit exact dispatch may reach publication",
         errors,
     )
     require(

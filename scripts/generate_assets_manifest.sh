@@ -72,6 +72,12 @@ timestamp="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 llama_cpp_tag="${LLAMADART_LLAMA_CPP_TAG:-$tag}"
 llama_cpp_commit="${LLAMADART_LLAMA_CPP_COMMIT:-}"
 native_commit="${LLAMADART_NATIVE_COMMIT:-}"
+correlation_id="${LLAMADART_CORRELATION_ID:-}"
+smoke_policy="${LLAMADART_SMOKE_POLICY:-}"
+smoke_conclusion="${LLAMADART_SMOKE_CONCLUSION:-}"
+workflow_run_id="${LLAMADART_WORKFLOW_RUN_ID:-}"
+workflow_run_url="${LLAMADART_WORKFLOW_RUN_URL:-}"
+workflow_head_sha="${LLAMADART_WORKFLOW_HEAD_SHA:-}"
 
 : > "$output_checksums"
 while IFS= read -r f; do
@@ -95,6 +101,24 @@ EOF_FILES
   fi
   if [ -n "$native_commit" ]; then
     echo "  \"native_commit\": \"$native_commit\","
+  fi
+  if [ -n "$correlation_id" ]; then
+    echo "  \"correlation_id\": \"$correlation_id\","
+  fi
+  if [ -n "$smoke_policy" ]; then
+    echo "  \"smoke_policy\": \"$smoke_policy\","
+  fi
+  if [ -n "$smoke_conclusion" ]; then
+    echo "  \"smoke_conclusion\": \"$smoke_conclusion\","
+  fi
+  if [ -n "$workflow_run_id" ]; then
+    echo "  \"workflow_run_id\": \"$workflow_run_id\","
+  fi
+  if [ -n "$workflow_run_url" ]; then
+    echo "  \"workflow_run_url\": \"$workflow_run_url\","
+  fi
+  if [ -n "$workflow_head_sha" ]; then
+    echo "  \"workflow_head_sha\": \"$workflow_head_sha\","
   fi
   echo "  \"generated_at\": \"$timestamp\","
   echo "  \"hook_contract_version\": 1,"

@@ -145,6 +145,47 @@ class ReleasePublicationTest(unittest.TestCase):
                 release=self._release(draft=True, body="different transaction"),
             )
 
+    def test_publication_transaction_binds_caller_smoke_and_head(self) -> None:
+        assets = Path(self.temp.name)
+        desired = build_desired_release(
+            tag="v0.2.0-1",
+            native_commit="1" * 40,
+            upstream_ref="v0.2.0",
+            upstream_commit="2" * 40,
+            prerelease=True,
+            assets_dir=assets,
+            workflow_run_url="https://github.com/example/repository/actions/runs/123",
+            artifact_digest="3" * 64,
+            correlation_id="central/run-123",
+            smoke_policy="required",
+            smoke_conclusion="passed",
+            workflow_head_sha="4" * 40,
+        )
+        self.assertIn("orchestrator correlation: `central/run-123`", desired.body)
+        self.assertIn("native smoke: `required/passed`", desired.body)
+        self.assertIn(f"workflow head SHA: `{'4' * 40}`", desired.body)
+        self.assertNotEqual(self.desired.transaction_id, desired.transaction_id)
+
+    def test_publication_rejects_unapproved_smoke_or_correlation(self) -> None:
+        base = {
+            "tag": "v0.2.0-1",
+            "native_commit": "1" * 40,
+            "upstream_ref": "v0.2.0",
+            "upstream_commit": "2" * 40,
+            "prerelease": True,
+            "assets_dir": Path(self.temp.name),
+            "workflow_run_url": "https://github.com/example/repository/actions/runs/123",
+            "artifact_digest": "3" * 64,
+        }
+        for update in (
+            {"correlation_id": "contains whitespace"},
+            {"smoke_policy": "skip"},
+            {"smoke_conclusion": "skipped"},
+            {"workflow_head_sha": "4" * 39},
+        ):
+            with self.subTest(update=update), self.assertRaises(PublicationError):
+                build_desired_release(**(base | update))
+
     def test_published_partial_release_fails_closed(self) -> None:
         with self.assertRaisesRegex(PublicationError, "incomplete"):
             reconcile_publication(
