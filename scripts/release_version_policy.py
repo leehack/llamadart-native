@@ -211,7 +211,7 @@ def validate_history(candidate: Version, existing_tags: Iterable[str]) -> None:
             )
         if candidate.rebuild < latest_rebuild:
             raise PolicyError(
-                f"nightly wrapper rollback: {candidate.tag!r} precedes an existing "
+                f"nightly release rollback: {candidate.tag!r} precedes an existing "
                 f"rebuild for b{candidate.core[0]}"
             )
     if candidate.kind == "wrapper" and not any(
