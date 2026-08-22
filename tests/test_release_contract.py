@@ -6,6 +6,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -197,6 +198,19 @@ class ReleaseResultTests(unittest.TestCase):
             target.write_bytes(b"tampered")
             with self.assertRaisesRegex(ContractError, "digest mismatch"):
                 self._result(assets, release)
+
+    def test_result_hashes_exact_remote_asset_when_api_digest_is_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            assets, release = self._fixture(Path(directory))
+            missing = release["assets"][0]
+            missing["digest"] = None
+            missing["url"] = "https://api.github.com/repos/example/releases/assets/1"
+            expected = hashlib.sha256((assets / missing["name"]).read_bytes()).hexdigest()
+            with patch("release_contract._download_asset_digest", return_value=expected) as download:
+                result = self._result(assets, release)
+        download.assert_called_once_with(missing)
+        emitted = {item["name"]: item["digest"] for item in result["release"]["assets"]}
+        self.assertEqual(f"sha256:{expected}", emitted[missing["name"]])
 
 
 if __name__ == "__main__":

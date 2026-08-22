@@ -8,6 +8,8 @@ import hashlib
 import json
 from pathlib import Path
 import re
+import subprocess
+import tempfile
 from typing import Any, Mapping
 
 from release_version_policy import PolicyError, validate_pair
@@ -66,6 +68,27 @@ def _sha256(path: Path) -> str:
         for block in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(block)
     return digest.hexdigest()
+
+
+def _download_asset_digest(asset: Mapping[str, Any]) -> str:
+    url = asset.get("url")
+    if not isinstance(url, str) or not url:
+        raise ContractError(
+            f"GitHub asset {asset.get('name')!r} has neither a digest nor an API URL"
+        )
+    with tempfile.NamedTemporaryFile() as output:
+        result = subprocess.run(
+            ["gh", "api", url, "-H", "Accept: application/octet-stream"],
+            stdout=output,
+            stderr=subprocess.PIPE,
+        )
+        if result.returncode != 0:
+            raise ContractError(
+                f"unable to download GitHub asset {asset.get('name')!r}: "
+                f"{result.stderr.decode(errors='replace').strip()}"
+            )
+        output.flush()
+        return _sha256(Path(output.name))
 
 
 def validate_dispatch(
@@ -287,11 +310,17 @@ def build_release_result(
             "assets.json": _sha256(manifest_path),
             "SHA256SUMS": _sha256(checksums_path),
         }
+        verified_remote_digests: dict[str, str] = {}
         for item in remote_assets:
             name = item["name"]
             digest = item.get("digest")
-            if not isinstance(digest, str) or _artifact_digest(digest) != f"sha256:{local_digests[name]}":
+            if isinstance(digest, str) and ARTIFACT_DIGEST_RE.fullmatch(digest):
+                verified_digest = _artifact_digest(digest).removeprefix("sha256:")
+            else:
+                verified_digest = _download_asset_digest(item)
+            if verified_digest != local_digests[name]:
                 raise ContractError(f"GitHub asset digest mismatch for {name}")
+            verified_remote_digests[name] = f"sha256:{verified_digest}"
             if int(item.get("size", -1)) != (assets_dir / name).stat().st_size:
                 raise ContractError(f"GitHub asset size mismatch for {name}")
         release = {
@@ -308,7 +337,7 @@ def build_release_result(
                     "name": item.get("name"),
                     "url": item.get("browser_download_url"),
                     "size": item.get("size"),
-                    "digest": item.get("digest"),
+                    "digest": verified_remote_digests[item["name"]],
                 }
                 for item in sorted(remote_assets, key=lambda value: value["name"])
             ],
