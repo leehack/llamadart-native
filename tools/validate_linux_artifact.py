@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
+import inspect
+import os
 from pathlib import Path, PurePosixPath
 import re
 import shutil
@@ -15,6 +17,9 @@ import tempfile
 
 LOCAL_LIBRARY_PREFIXES = ("libllamadart", "libllama", "libggml", "libmtmd")
 PLACEHOLDER = "SOVERSION"
+TARFILE_EXTRACT_SUPPORTS_FILTER = (
+    "filter" in inspect.signature(tarfile.TarFile.extract).parameters
+)
 
 
 @dataclass(frozen=True)
@@ -89,6 +94,31 @@ def safe_member_name(name: str) -> str:
     return path.name
 
 
+def extract_member_safely(
+    archive: tarfile.TarFile,
+    member: tarfile.TarInfo,
+    destination: Path,
+) -> None:
+    if TARFILE_EXTRACT_SUPPORTS_FILTER:
+        archive.extract(member, destination, filter="data")
+        return
+
+    # Python versions without extraction filters still need fail-safe handling.
+    # Copy only the validated payload or symlink and ignore all archive metadata.
+    name = safe_member_name(member.name)
+    output = destination / name
+    if member.isfile():
+        source = archive.extractfile(member)
+        if source is None:
+            raise ValueError(f"Could not read archive member: {name}")
+        descriptor = os.open(output, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with source, os.fdopen(descriptor, "wb") as target:
+            shutil.copyfileobj(source, target)
+        return
+
+    output.symlink_to(safe_member_name(member.linkname))
+
+
 def extract_archive(archive_path: Path, destination: Path) -> dict[str, tarfile.TarInfo]:
     members: dict[str, tarfile.TarInfo] = {}
     with tarfile.open(archive_path, "r:gz") as archive:
@@ -107,7 +137,7 @@ def extract_archive(archive_path: Path, destination: Path) -> dict[str, tarfile.
             members[name] = member
             # Every member and symlink target is constrained to one flat
             # filename above, so extraction cannot escape the temporary root.
-            archive.extract(member, destination)
+            extract_member_safely(archive, member, destination)
     return members
 
 

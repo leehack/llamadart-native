@@ -3,7 +3,9 @@
 
 from __future__ import annotations
 
+from io import BytesIO
 from pathlib import Path
+import stat
 import subprocess
 import sys
 import tarfile
@@ -11,7 +13,12 @@ import tempfile
 import unittest
 from unittest import mock
 
-from tools.validate_linux_artifact import resolve_tool, validate_archive
+from tools.validate_linux_artifact import (
+    extract_archive,
+    extract_member_safely,
+    resolve_tool,
+    validate_archive,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -19,6 +26,87 @@ VALIDATOR = ROOT / "tools/validate_linux_artifact.py"
 
 
 class ValidateLinuxArtifactTest(unittest.TestCase):
+    def test_supported_python_uses_the_data_extraction_filter(self) -> None:
+        archive = mock.Mock(spec=tarfile.TarFile)
+        member = tarfile.TarInfo("libexample.so")
+        destination = Path("extract")
+
+        with mock.patch(
+            "tools.validate_linux_artifact.TARFILE_EXTRACT_SUPPORTS_FILTER",
+            True,
+        ):
+            extract_member_safely(archive, member, destination)
+
+        archive.extract.assert_called_once_with(
+            member, destination, filter="data"
+        )
+
+    def test_legacy_fallback_discards_archive_metadata_and_permissions(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            archive_path = root / "runtime.tar.gz"
+            destination = root / "extract"
+            destination.mkdir()
+            payload = b"ELF fixture"
+            member = tarfile.TarInfo("libexample.so")
+            member.size = len(payload)
+            member.mode = 0o7777
+            member.uid = 0
+            member.gid = 0
+            member.uname = "root"
+            member.gname = "root"
+            member.mtime = 1
+            with tarfile.open(archive_path, "w:gz") as archive:
+                archive.addfile(member, BytesIO(payload))
+
+            with mock.patch(
+                "tools.validate_linux_artifact.TARFILE_EXTRACT_SUPPORTS_FILTER",
+                False,
+            ):
+                extract_archive(archive_path, destination)
+
+            extracted = destination / member.name
+            self.assertEqual(extracted.read_bytes(), payload)
+            self.assertEqual(stat.S_IMODE(extracted.stat().st_mode), 0o600)
+            self.assertNotEqual(extracted.stat().st_mtime, member.mtime)
+
+    def test_member_path_traversal_is_rejected_before_extraction(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            archive_path = root / "runtime.tar.gz"
+            destination = root / "extract"
+            destination.mkdir()
+            member = tarfile.TarInfo("../escape")
+            member.size = 1
+            with tarfile.open(archive_path, "w:gz") as archive:
+                archive.addfile(member, BytesIO(b"x"))
+
+            with self.assertRaisesRegex(
+                ValueError, "Archive member must be a flat runtime filename"
+            ):
+                extract_archive(archive_path, destination)
+
+            self.assertFalse((root / "escape").exists())
+
+    def test_symlink_target_traversal_is_rejected_before_extraction(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            archive_path = root / "runtime.tar.gz"
+            destination = root / "extract"
+            destination.mkdir()
+            member = tarfile.TarInfo("libexample.so")
+            member.type = tarfile.SYMTYPE
+            member.linkname = "../escape"
+            with tarfile.open(archive_path, "w:gz") as archive:
+                archive.addfile(member)
+
+            with self.assertRaisesRegex(
+                ValueError, "Archive member must be a flat runtime filename"
+            ):
+                extract_archive(archive_path, destination)
+
+            self.assertFalse((destination / member.name).exists())
+
     def test_version_suffixed_llvm_objdump_uses_objdump_mode(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             tool = Path(directory) / "llvm-objdump-17"
