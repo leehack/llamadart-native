@@ -36,7 +36,11 @@ def parse_args() -> argparse.Namespace:
 
 def resolve_tool(explicit: str | None) -> tuple[str, str]:
     if explicit:
-        resolved = shutil.which(explicit) or explicit
+        resolved = shutil.which(explicit)
+        if not resolved:
+            raise ValueError(
+                f"ELF inspection tool does not exist or is not executable: {explicit}"
+            )
         mode = "objdump" if Path(resolved).name.endswith("objdump") else "readelf"
         return resolved, mode
     for candidate, mode in (
@@ -147,6 +151,9 @@ def validate_archive(archive_path: Path, tool: str, mode: str) -> list[str]:
                 dynamic = inspect_dynamic(root / name, tool, mode)
             except subprocess.CalledProcessError as error:
                 errors.append(f"{name}: ELF inspection failed with exit code {error.returncode}")
+                continue
+            except OSError as error:
+                errors.append(f"{name}: ELF inspection failed: {error}")
                 continue
             metadata[name] = dynamic
             if PLACEHOLDER in name or PLACEHOLDER in dynamic.raw:

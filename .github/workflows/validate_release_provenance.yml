@@ -10,6 +10,7 @@ on:
       - 'scripts/generate_assets_manifest.sh'
       - 'scripts/verify_release_provenance.py'
       - 'tests/package_linux_artifact_test.py'
+      - 'tests/validate_linux_artifact_test.py'
       - 'tools/linux_dlopen_smoke.c'
       - 'tools/package_linux_artifact.py'
       - 'tools/validate_linux_artifact.py'
@@ -24,6 +25,7 @@ on:
       - 'scripts/generate_assets_manifest.sh'
       - 'scripts/verify_release_provenance.py'
       - 'tests/package_linux_artifact_test.py'
+      - 'tests/validate_linux_artifact_test.py'
       - 'tools/linux_dlopen_smoke.c'
       - 'tools/package_linux_artifact.py'
       - 'tools/validate_linux_artifact.py'
@@ -38,5 +40,5 @@ jobs:
       - uses: actions/checkout@v7
       - name: Verify release provenance contracts
         run: python3 scripts/verify_release_provenance.py
-      - name: Test Linux runtime archive packaging
-        run: python3 tests/package_linux_artifact_test.py
+      - name: Test Linux artifact tools
+        run: python3 -m unittest discover -s tests -p '*_test.py'
