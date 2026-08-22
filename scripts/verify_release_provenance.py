@@ -15,8 +15,14 @@ import tempfile
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github/workflows/native_release.yml"
 WRAPPER_WORKFLOW = ROOT / ".github/workflows/validate_wrapper.yml"
+AUTO_WORKFLOW = ROOT / ".github/workflows/auto_native_release.yml"
 CHECKOUT_ACTION = ROOT / ".github/actions/checkout-llama-ref/action.yml"
 MANIFEST_SCRIPT = ROOT / "scripts/generate_assets_manifest.sh"
+VALIDATION_WORKFLOW = ROOT / ".github/workflows/validate_release_provenance.yml"
+POLICY_DOC = ROOT / "docs/release_version_policy.md"
+README = ROOT / "README.md"
+CONTRIBUTING = ROOT / "CONTRIBUTING.md"
+PUBLICATION_SCRIPT = ROOT / "scripts/release_publication.py"
 
 RUNTIME_BUNDLES = {
     "android-arm64": ("android", "arm64"),
@@ -31,26 +37,30 @@ RUNTIME_BUNDLES = {
     "windows-arm64": ("windows", "arm64"),
     "windows-x64": ("windows", "x64"),
 }
-RELEASE_ASSETS = {
-    f"llamadart-native-{bundle}-b10545.tar.gz": (*meta, "core", "core")
-    for bundle, meta in RUNTIME_BUNDLES.items()
-}
-RELEASE_ASSETS.update(
-    {
-        "llamadart-native-apple-xcframework-b10545.zip": (
-            "apple",
-            "universal",
-            "core",
-            "spm-xcframework",
-        ),
-        "llamadart-native-headers-b10545.tar.gz": (
-            "all",
-            "universal",
-            "core",
-            "headers",
-        ),
+
+
+def release_assets(tag: str) -> dict[str, tuple[str, str, str, str]]:
+    assets = {
+        f"llamadart-native-{bundle}-{tag}.tar.gz": (*meta, "core", "core")
+        for bundle, meta in RUNTIME_BUNDLES.items()
     }
-)
+    assets.update(
+        {
+            f"llamadart-native-apple-xcframework-{tag}.zip": (
+                "apple",
+                "universal",
+                "core",
+                "spm-xcframework",
+            ),
+            f"llamadart-native-headers-{tag}.tar.gz": (
+                "all",
+                "universal",
+                "core",
+                "headers",
+            ),
+        }
+    )
+    return assets
 
 
 def require(condition: bool, message: str, errors: list[str]) -> None:
@@ -58,9 +68,21 @@ def require(condition: bool, message: str, errors: list[str]) -> None:
         errors.append(message)
 
 
+def workflow_job(workflow: str, name: str) -> str:
+    match = re.search(
+        rf"^  {re.escape(name)}:\n(?P<body>.*?)(?=^  [A-Za-z0-9_-]+:\n|\Z)",
+        workflow,
+        flags=re.MULTILINE | re.DOTALL,
+    )
+    return match.group(0) if match else ""
+
+
 def verify_workflow_contract(errors: list[str]) -> None:
     workflow = WORKFLOW.read_text()
     wrapper_workflow = WRAPPER_WORKFLOW.read_text()
+    auto_workflow = AUTO_WORKFLOW.read_text()
+    validation_workflow = VALIDATION_WORKFLOW.read_text()
+    publication_script = PUBLICATION_SCRIPT.read_text()
     action = CHECKOUT_ACTION.read_text()
 
     workflow_bundles = set(
@@ -98,6 +120,13 @@ def verify_workflow_contract(errors: list[str]) -> None:
         errors,
     )
     require(
+        "llama_cpp_tag=submodule requires the pinned commit to have an exact "
+        "vMAJOR.MINOR.PATCH or bNNNN tag" in workflow
+        and "rev-parse --short HEAD" not in workflow,
+        "untagged submodules must fail before release policy validation",
+        errors,
+    )
+    require(
         "LLAMADART_LLAMA_CPP_COMMIT: ${{ needs.resolve-tag.outputs.llama_cpp_commit }}"
         in workflow
         and "LLAMADART_NATIVE_COMMIT: ${{ steps.provenance.outputs.native_commit }}"
@@ -105,22 +134,76 @@ def verify_workflow_contract(errors: list[str]) -> None:
         "manifest generation must record resolved upstream and release provenance commits",
         errors,
     )
-    provenance = workflow.find("- name: Create release provenance commit")
-    manifest = workflow.find("- name: Generate manifest + checksums")
-    verify_tag = workflow.find("- name: Verify release tag is still unused")
-    push_tag = workflow.find("- name: Push release provenance tag")
-    release = workflow.find("- name: Create release\n", push_tag)
+    package_job = workflow_job(workflow, "package-and-release")
+    publish_job = workflow_job(workflow, "publish-release")
+    update_job = workflow_job(workflow, "update-llama-submodule")
+    provenance = package_job.find("- name: Create release provenance commit")
+    manifest = package_job.find("- name: Generate manifest + checksums")
+    bundle = package_job.find("- name: Bundle immutable publication inputs")
+    upload = package_job.find("- name: Upload verified publication transaction")
     require(
-        -1 not in (provenance, manifest, verify_tag, push_tag, release)
-        and provenance < manifest < verify_tag < push_tag < release,
-        "release provenance must be committed and manifested before the tag is pushed and released",
+        -1 not in (provenance, manifest, bundle, upload)
+        and provenance < manifest < bundle < upload,
+        "release provenance must be committed, manifested, and bundled before "
+        "publication input upload",
         errors,
     )
     require(
         'tree_commit="$(git ls-tree HEAD third_party/llama.cpp | awk \'{print $3}\')"'
-        in workflow
-        and 'git tag "$RELEASE_TAG" "$NATIVE_COMMIT"' in workflow,
-        "the published tag must point to a commit whose tree records the resolved llama.cpp commit",
+        in package_job
+        and "release-provenance.bundle" in package_job
+        and 'tree_commit="$(git ls-tree "$EXPECTED_NATIVE_COMMIT" third_party/llama.cpp'
+        in publish_job,
+        "the publication transaction must carry and revalidate the provenance commit tree",
+        errors,
+    )
+
+    read_only_jobs = (
+        "resolve-tag",
+        "build-android",
+        "build-apple",
+        "build-linux",
+        "build-linux-hip",
+        "build-windows",
+        "package-and-release",
+    )
+    require(
+        re.search(r"^permissions:\n  contents: read$", workflow, re.MULTILINE)
+        is not None
+        and workflow.count("contents: write") == 2,
+        "workflow default must be contents:read with exactly two narrow write jobs",
+        errors,
+    )
+    for job_name in read_only_jobs:
+        job = workflow_job(workflow, job_name)
+        require(bool(job), f"release workflow must define {job_name}", errors)
+        require(
+            "permissions:" not in job
+            and job.count("uses: actions/checkout@v7")
+            == job.count("persist-credentials: false"),
+            f"{job_name} must inherit read-only permissions and must not persist "
+            "checkout credentials",
+            errors,
+        )
+    require(
+        "contents: write" in publish_job
+        and "persist-credentials: true" in publish_job
+        and "scripts/release_publication.py" in publish_job,
+        "only the final publication job may retain credentials needed to create the release",
+        errors,
+    )
+    require(
+        "contents: write" in update_job
+        and "persist-credentials: true" in update_job
+        and "needs: [resolve-tag, publish-release]" in update_job,
+        "stable submodule update must remain a separate, post-publication narrow write job",
+        errors,
+    )
+    require(
+        "git push" not in package_job
+        and "gh release" not in package_job
+        and "contents: write" not in package_job,
+        "candidate packaging must not contain publication or repository writes",
         errors,
     )
 
@@ -132,11 +215,11 @@ def verify_workflow_contract(errors: list[str]) -> None:
         "checkout action must expose and enforce exact commit provenance",
         errors,
     )
-    linux_validation = workflow.find(
+    linux_validation = package_job.find(
         "for archive in release_assets/llamadart-native-linux-*.tar.gz"
     )
-    linux_archive_glob = workflow.find('archives=("$dir"/*.tar.gz)')
-    linux_archive_nullglob = workflow.rfind(
+    linux_archive_glob = package_job.find('archives=("$dir"/*.tar.gz)')
+    linux_archive_nullglob = package_job.rfind(
         "shopt -s nullglob", 0, linux_archive_glob
     )
     require(
@@ -161,127 +244,260 @@ def verify_workflow_contract(errors: list[str]) -> None:
         "PR validation must inspect and clean-dlopen Linux x64 and arm64 archives",
         errors,
     )
+    require(
+        "remote set-url" not in action
+        and "credential.helper" not in action
+        and "git config" not in action,
+        "external-source checkout must not persist its read credential in git configuration",
+        errors,
+    )
+    require(
+        "scripts/release_version_policy.py" in workflow
+        and "--existing-tags-file" in workflow
+        and "--allow-existing-candidate" in workflow
+        and "github_prerelease: ${{ steps.tag.outputs.github_prerelease }}" in workflow
+        and '--prerelease "${{ needs.resolve-tag.outputs.github_prerelease }}"'
+        in publish_job,
+        "native release workflow must enforce version history while permitting "
+        "exact retry reconciliation",
+        errors,
+    )
+    require(
+        "softprops/action-gh-release" not in workflow
+        and "--clobber" not in workflow
+        and "release-publication-${{ github.run_id }}" in package_job
+        and "release-publication-${{ github.run_id }}" in publish_job
+        and "publication_artifact_digest" in workflow
+        and "${{ github.run_id }}" in publish_job,
+        "publication must use the same immutable workflow transaction without "
+        "mutable asset replacement",
+        errors,
+    )
+    require(
+        '"--draft"' in publication_script
+        and '"--draft=false"' in publication_script
+        and '"--clobber"' not in publication_script
+        and '"--force"' not in publication_script
+        and '"-a"' in publication_script
+        and "llamadart-native publication transaction:" in publication_script
+        and "tag {desired.tag!r} transaction mismatch" in publication_script
+        and "native commit must be a full 40-hex SHA" in publication_script
+        and "capture_output=True" in publication_script
+        and "immutable asset mismatch" in publication_script
+        and "release body/correlation mismatch" in publication_script,
+        "publication driver must bind its annotated tag, remain draft-first and "
+        "immutable, and fail closed on transaction, correlation, or digest mismatch",
+        errors,
+    )
+    require(
+        "needs: [resolve-tag, build-android, build-apple, build-linux, "
+        "build-linux-hip, build-windows]"
+        in package_job
+        and "needs: [resolve-tag, package-and-release]" in publish_job
+        and "needs.package-and-release.result == 'success'" in publish_job,
+        "publication must remain downstream of the complete build and packaging matrix",
+        errors,
+    )
+    require(
+        "verify_historical_release_metadata.py --live" in validation_workflow
+        and "persist-credentials: false" in validation_workflow
+        and "python3 -m unittest discover" in validation_workflow,
+        "validation CI must test historical live metadata, all policy tests, and "
+        "non-persisted checkout credentials",
+        errors,
+    )
+    resolve_tag = workflow.find("- name: Resolve llama.cpp tag")
+    resolve_commit = workflow.find("- name: Resolve exact llama.cpp commit")
+    require(
+        -1 not in (resolve_tag, resolve_commit)
+        and "set -euo pipefail" in workflow[resolve_tag:resolve_commit],
+        "release history collection must fail closed if any pipeline command fails",
+        errors,
+    )
+    require(
+        "scripts/release_version_policy.py" in auto_workflow
+        and "--require-stable-upstream" in auto_workflow
+        and "repos/ggml-org/llama.cpp/releases/latest" in auto_workflow,
+        "automatic discovery must fail closed on anything except the upstream stable channel",
+        errors,
+    )
+    require(
+        auto_workflow.count("uses: actions/checkout@v7") > 0
+        and auto_workflow.count("uses: actions/checkout@v7")
+        == auto_workflow.count("persist-credentials: false"),
+        "read-only candidate detection must not persist checkout credentials",
+        errors,
+    )
+    require(
+        "gh workflow run" not in auto_workflow
+        and "publish_release=true" not in auto_workflow
+        and "actions: write" not in auto_workflow
+        and "Publication requires explicit cross-repository approval" in auto_workflow,
+        "scheduled automation must detect and prepare only, never dispatch publication",
+        errors,
+    )
+    require(
+        "needs.resolve-tag.outputs.upstream_channel == 'stable'" in workflow
+        and "needs.resolve-tag.outputs.release_kind == 'upstream'" in workflow,
+        "nightly and wrapper-only releases must not move the repository's stable submodule pin",
+        errors,
+    )
+
+
+def verify_documentation_contract(errors: list[str]) -> None:
+    documentation = "\n".join(
+        (POLICY_DOC.read_text(), README.read_text(), CONTRIBUTING.read_text())
+    )
+    require(
+        "b10545" in documentation
+        and "b10356-llamadart.1" in documentation
+        and "prerelease=false" in documentation
+        and "tag grammar" in documentation,
+        "maintainer and consumer docs must preserve tag-driven historical channel semantics",
+        errors,
+    )
+    require(
+        "same workflow run" in documentation
+        and "draft-first" in documentation
+        and "fails closed" in documentation,
+        "maintainer docs must explain exact-transaction partial-publication recovery",
+        errors,
+    )
 
 
 def verify_manifest_contract(errors: list[str]) -> None:
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)
-        assets = root / "assets"
-        assets.mkdir()
-        expected_payloads = {}
-        for index, filename in enumerate(RELEASE_ASSETS, start=1):
-            payload = f"native-test-{index}\n".encode()
-            (assets / filename).write_bytes(payload)
-            expected_payloads[filename] = payload
-        output_json = root / "assets.json"
-        output_checksums = root / "SHA256SUMS"
-        env = os.environ.copy()
-        env.update(
-            {
-                "LLAMADART_LLAMA_CPP_TAG": "b-test",
-                "LLAMADART_LLAMA_CPP_COMMIT": "1" * 40,
-                "LLAMADART_NATIVE_COMMIT": "2" * 40,
-            }
+        fixtures = (
+            ("stable", "v0.2.0", "v0.2.0"),
+            ("nightly", "b10545", "b10545"),
+            ("stable-wrapper", "v0.2.0-1", "v0.2.0"),
+            ("nightly-wrapper", "b10545-1", "b10545"),
+            ("legacy-wrapper", "b10356-llamadart.1", "b10356"),
         )
-        subprocess.run(
-            [
-                str(MANIFEST_SCRIPT),
-                "b10545",
-                str(assets),
-                str(output_json),
-                str(output_checksums),
-            ],
-            check=True,
-            cwd=ROOT,
-            env=env,
-        )
-        manifest = json.loads(output_json.read_text())
-        require(
-            manifest.get("llama_cpp_tag") == "b-test"
-            and manifest.get("llama_cpp_commit") == "1" * 40
-            and manifest.get("native_commit") == "2" * 40,
-            "assets.json must contain the upstream ref, exact upstream commit, and native release commit",
-            errors,
-        )
-        require(
-            set(manifest)
-            == {
-                "tag",
-                "llama_cpp_tag",
-                "llama_cpp_commit",
-                "native_commit",
-                "generated_at",
-                "hook_contract_version",
-                "artifacts",
-            }
-            and manifest.get("tag") == "b10545"
-            and manifest.get("hook_contract_version") == 1
-            and re.fullmatch(
-                r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z",
-                manifest.get("generated_at", ""),
+        for fixture_name, native_tag, upstream_ref in fixtures:
+            fixture_root = root / fixture_name
+            assets = fixture_root / "assets"
+            assets.mkdir(parents=True)
+            expected_assets = release_assets(native_tag)
+            expected_payloads = {}
+            for index, filename in enumerate(expected_assets, start=1):
+                payload = f"{fixture_name}-native-test-{index}\n".encode()
+                (assets / filename).write_bytes(payload)
+                expected_payloads[filename] = payload
+            output_json = fixture_root / "assets.json"
+            output_checksums = fixture_root / "SHA256SUMS"
+            env = os.environ.copy()
+            env.update(
+                {
+                    "LLAMADART_LLAMA_CPP_TAG": upstream_ref,
+                    "LLAMADART_LLAMA_CPP_COMMIT": "1" * 40,
+                    "LLAMADART_NATIVE_COMMIT": "2" * 40,
+                }
             )
-            is not None,
-            "assets.json must preserve the release manifest schema",
-            errors,
-        )
-
-        artifacts = manifest.get("artifacts", [])
-        require(
-            [artifact.get("file") for artifact in artifacts]
-            == sorted(RELEASE_ASSETS),
-            "assets.json must contain every supported release asset in filename order",
-            errors,
-        )
-        for artifact in artifacts:
-            filename = artifact.get("file")
-            expected_meta = RELEASE_ASSETS.get(filename)
+            subprocess.run(
+                [
+                    str(MANIFEST_SCRIPT),
+                    native_tag,
+                    str(assets),
+                    str(output_json),
+                    str(output_checksums),
+                ],
+                check=True,
+                cwd=ROOT,
+                env=env,
+            )
+            manifest = json.loads(output_json.read_text())
             require(
-                set(artifact)
+                manifest.get("native_release_tag") == native_tag
+                and manifest.get("tag") == native_tag
+                and manifest.get("llama_cpp_tag") == upstream_ref
+                and manifest.get("llama_cpp_commit") == "1" * 40
+                and manifest.get("native_commit") == "2" * 40,
+                f"{fixture_name}: manifest must distinguish native tag, upstream ref, "
+                "upstream commit, and native commit",
+                errors,
+            )
+            require(
+                set(manifest)
                 == {
-                    "module",
-                    "platform",
-                    "arch",
-                    "backend",
-                    "file",
-                    "sha256",
-                    "size",
-                },
-                f"{filename}: artifact entry must preserve the manifest schema",
-                errors,
-            )
-            if expected_meta is None:
-                continue
-            platform, arch, backend, module = expected_meta
-            payload = expected_payloads[filename]
-            require(
-                artifact.get("platform") == platform
-                and artifact.get("arch") == arch
-                and artifact.get("backend") == backend
-                and artifact.get("module") == module,
-                f"{filename}: incorrect platform/arch/backend/module classification",
-                errors,
-            )
-            require(
-                artifact.get("sha256") == hashlib.sha256(payload).hexdigest()
-                and artifact.get("size") == len(payload),
-                f"{filename}: incorrect checksum or size",
+                    "tag",
+                    "native_release_tag",
+                    "llama_cpp_tag",
+                    "llama_cpp_commit",
+                    "native_commit",
+                    "generated_at",
+                    "hook_contract_version",
+                    "artifacts",
+                }
+                and manifest.get("hook_contract_version") == 1
+                and re.fullmatch(
+                    r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z",
+                    manifest.get("generated_at", ""),
+                )
+                is not None,
+                f"{fixture_name}: assets.json must preserve the release manifest schema",
                 errors,
             )
 
-        expected_checksums = "".join(
-            f"{hashlib.sha256(expected_payloads[filename]).hexdigest()}  {filename}\n"
-            for filename in sorted(RELEASE_ASSETS)
-        )
-        require(
-            output_checksums.read_text() == expected_checksums,
-            "SHA256SUMS must contain the exact checksum for every supported release asset",
-            errors,
-        )
+            artifacts = manifest.get("artifacts", [])
+            require(
+                [artifact.get("file") for artifact in artifacts]
+                == sorted(expected_assets),
+                f"{fixture_name}: manifest must contain every supported release asset",
+                errors,
+            )
+            for artifact in artifacts:
+                filename = artifact.get("file")
+                expected_meta = expected_assets.get(filename)
+                require(
+                    set(artifact)
+                    == {
+                        "module",
+                        "platform",
+                        "arch",
+                        "backend",
+                        "file",
+                        "sha256",
+                        "size",
+                    },
+                    f"{fixture_name}/{filename}: artifact schema changed",
+                    errors,
+                )
+                if expected_meta is None:
+                    continue
+                platform, arch, backend, module = expected_meta
+                payload = expected_payloads[filename]
+                require(
+                    artifact.get("platform") == platform
+                    and artifact.get("arch") == arch
+                    and artifact.get("backend") == backend
+                    and artifact.get("module") == module,
+                    f"{fixture_name}/{filename}: incorrect artifact classification",
+                    errors,
+                )
+                require(
+                    artifact.get("sha256") == hashlib.sha256(payload).hexdigest()
+                    and artifact.get("size") == len(payload),
+                    f"{fixture_name}/{filename}: incorrect checksum or size",
+                    errors,
+                )
+
+            expected_checksums = "".join(
+                f"{hashlib.sha256(expected_payloads[filename]).hexdigest()}  {filename}\n"
+                for filename in sorted(expected_assets)
+            )
+            require(
+                output_checksums.read_text() == expected_checksums,
+                f"{fixture_name}: SHA256SUMS must cover every release asset",
+                errors,
+            )
 
 
 def main() -> int:
     errors: list[str] = []
     verify_workflow_contract(errors)
+    verify_documentation_contract(errors)
     verify_manifest_contract(errors)
     if errors:
         for error in errors:

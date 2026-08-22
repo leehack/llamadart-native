@@ -22,41 +22,72 @@ The Dart API/runtime stays in the main `llamadart` repository.
   - Generates `assets.json` and `SHA256SUMS`.
   - Pins every build to one resolved `llama.cpp` commit and publishes a source
     tag whose submodule entry identifies that exact commit.
-- `Auto Trigger Native Release` (`.github/workflows/auto_native_release.yml`)
-  - Daily schedule plus manual dispatch.
-  - Resolves latest upstream `ggml-org/llama.cpp` release tag.
-  - Dispatches `Native Build & Release` only when this repo does not already have that tag and no native release run is in flight.
+- `Detect Native Release Candidate` (`.github/workflows/auto_native_release.yml`)
+  - Daily schedule plus an optional manual detection run.
+  - Resolves the latest stable upstream `ggml-org/llama.cpp`
+    `vMAJOR.MINOR.PATCH` release tag and fails closed on any other shape.
+  - Reports an unbuilt stable tag for central `llamadart` orchestration; it never
+    dispatches or publishes a native release.
 
 ## Native Version Management
 
-The published tag is the native version contract consumed by downstream package
-hooks and Swift Package manifests. `llama_cpp_tag` selects the upstream
-`llama.cpp` ref to build. `native_release_tag` selects the
-`llamadart-native` release tag and archive suffix; when blank, it defaults to
-the resolved `llama_cpp_tag`.
+Stable upstream `vMAJOR.MINOR.PATCH` releases are the default distribution
+channel. Historical and new `bNNNN` nightlies remain available only through an
+explicit workflow input. The published tag is the native version contract
+consumed by downstream package hooks and Swift Package manifests.
+`llama_cpp_tag` selects the upstream `llama.cpp` ref to build.
+`native_release_tag` selects the `llamadart-native` release tag and archive
+suffix; when blank, it defaults to the resolved `llama_cpp_tag`.
 
 When changing the upstream `llama.cpp` version:
 
-1. Run `Native Build & Release` for the selected `llama_cpp_tag`, or let
-   `Auto Trigger Native Release` dispatch it for the latest upstream tag.
-2. Verify the release contains per-platform native archives,
+1. Let `Detect Native Release Candidate` report a new stable upstream tag, or
+   run that detection workflow manually. Scheduled automation stops after
+   detection/preparation.
+2. Use central `llamadart` orchestration to prepare and validate the coordinated
+   native, Dart, and Web change set. Publication requires an explicit
+   cross-repository maintainer approval.
+3. After that approval, manually dispatch `Native Build & Release` for the
+   selected `llama_cpp_tag`.
+4. Verify the release contains per-platform native archives,
    `llamadart-native-apple-xcframework-<tag>.zip`, `assets.json`, and
    `SHA256SUMS`.
-3. Update downstream `llamadart` pins, SPM URLs, and SPM checksums together so
-   native-assets and SPM consumers use the same wrapper/runtime build.
+
+Native publication does not require dependency-pin PRs in companion
+repositories. Any downstream code, asset, or pin change remains an independent
+change with its own validation and approval boundary.
 
 When rebuilding the wrapper without changing the upstream `llama.cpp` ref,
 dispatch `Native Build & Release` with the same `llama_cpp_tag` and a new
-`native_release_tag`, for example `b9873-llamadart.1`. Do not republish
-different source under an existing raw upstream tag; downstream caches are
-tag-keyed and the GitHub source tag should identify the native wrapper commit
-that produced the assets. Publish mode fails if the selected
-`native_release_tag` already exists as a tag or GitHub Release.
+`native_release_tag`. A rebuild of stable upstream `v0.2.0` uses
+`v0.2.0-1`; a rebuild of nightly `b9873` uses `b9873-1`. Historical
+`b9873-llamadart.1` tags remain readable compatibility inputs but are never
+emitted for new releases. Do not republish different source under an existing
+tag; downstream caches are tag-keyed and the GitHub source tag should identify
+the native wrapper commit that produced the assets. Publish mode rejects tag
+collisions, stable rollbacks, and decreasing rebuild sequences.
 
-`assets.json` records both the requested `llama_cpp_tag` and its resolved
-`llama_cpp_commit`, plus the `native_commit` targeted by the published source
-tag. Consumers can therefore verify the built source independently of a moving
-ref or release label.
+Consumers determine stable versus nightly from the native tag grammar, not from
+GitHub's `prerelease` field alone. Newly emitted nightlies and wrapper rebuilds
+are prereleases, but immutable historical releases `b10545` and
+`b10356-llamadart.1` have `prerelease=false` and remain nightly inputs.
+
+`assets.json` records `native_release_tag`, the requested `llama_cpp_tag`, its
+resolved `llama_cpp_commit`, and the `native_commit` targeted by the published
+source tag. The historical `tag` field remains as a compatibility alias for the
+native tag. Consumers can therefore verify the built source independently of a
+moving ref or release label.
+
+Candidate builds and packaging are read-only. The final publication job alone
+can create the transaction-marked annotated tag and draft-first release; its
+assets are published only after exact digest and provenance checks. Retry a
+partial publication by rerunning the failed job in the same workflow run. Exact
+matching partial state—including a tag-only state with the same transaction
+marker—is resumed, while any unmarked tag or tag, release, correlation, or asset
+mismatch fails closed without force-moving tags or replacing assets.
+
+See [Native Release Version Policy](docs/release_version_policy.md) for ordering,
+prerelease classification, legacy compatibility, and the downstream contract.
 
 ## Backend Policy (Worthy Sets)
 
@@ -101,7 +132,7 @@ Assets are suffixed with platform/arch, for example:
 
 ## Repository Layout
 
-- `.github/workflows/auto_native_release.yml`: daily upstream tag watcher + native release dispatcher.
+- `.github/workflows/auto_native_release.yml`: stable upstream candidate detector; never publishes or dispatches a release.
 - `.github/workflows/native_release.yml`: build + package + release.
 - `.gitmodules`: pinned native dependency submodules.
 - `CMakeLists.txt` + `CMakePresets.json`: root-native build configuration.
@@ -125,6 +156,8 @@ Assets are suffixed with platform/arch, for example:
 - `scripts/verify_release_provenance.py`: verifies exact-source checkout, source
   tag, and manifest provenance contracts.
 - `docs/platform_backend_strategy.md`: platform/backend matrix.
+- `docs/release_version_policy.md`: stable/nightly channels, wrapper rebuild
+  ordering, provenance, and downstream coordination.
 
 ## Local Build (Preferred)
 

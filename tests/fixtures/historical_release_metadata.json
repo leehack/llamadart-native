@@ -1,0 +1,14 @@
+[
+  {
+    "tag_name": "b10545",
+    "draft": false,
+    "prerelease": false,
+    "target_commitish": "71cf5aa5341439f6b1b2177d658ef040db28745d"
+  },
+  {
+    "tag_name": "b10356-llamadart.1",
+    "draft": false,
+    "prerelease": false,
+    "target_commitish": "e5af4a73ea66c7a8314c219086c98717d847fccf"
+  }
+]
