@@ -91,10 +91,10 @@ def build_desired_release(
     assets_dir: Path,
     workflow_run_url: str,
     artifact_digest: str,
-    correlation_id: str = "legacy-direct-call",
-    smoke_policy: str = "required",
-    smoke_conclusion: str = "passed",
-    workflow_head_sha: str = "0000000000000000000000000000000000000000",
+    correlation_id: str,
+    smoke_policy: str,
+    smoke_conclusion: str,
+    workflow_head_sha: str,
 ) -> DesiredRelease:
     if COMMIT_SHA_RE.fullmatch(native_commit) is None:
         raise PublicationError("native commit must be a full 40-hex SHA")

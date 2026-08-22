@@ -28,6 +28,14 @@ from release_publication import (  # noqa: E402
 )
 
 
+EXACT_PROVENANCE = {
+    "correlation_id": "central/run-123",
+    "smoke_policy": "required",
+    "smoke_conclusion": "passed",
+    "workflow_head_sha": "4" * 40,
+}
+
+
 class ReleasePublicationTest(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
@@ -44,6 +52,7 @@ class ReleasePublicationTest(unittest.TestCase):
             assets_dir=assets,
             workflow_run_url="https://github.com/example/repository/actions/runs/123",
             artifact_digest="sha256:" + "3" * 64,
+            **EXACT_PROVENANCE,
         )
 
     def _release(
@@ -156,12 +165,12 @@ class ReleasePublicationTest(unittest.TestCase):
             assets_dir=assets,
             workflow_run_url="https://github.com/example/repository/actions/runs/123",
             artifact_digest="3" * 64,
-            correlation_id="central/run-123",
+            correlation_id="central/run-456",
             smoke_policy="required",
             smoke_conclusion="passed",
             workflow_head_sha="4" * 40,
         )
-        self.assertIn("orchestrator correlation: `central/run-123`", desired.body)
+        self.assertIn("orchestrator correlation: `central/run-456`", desired.body)
         self.assertIn("native smoke: `required/passed`", desired.body)
         self.assertIn(f"workflow head SHA: `{'4' * 40}`", desired.body)
         self.assertNotEqual(self.desired.transaction_id, desired.transaction_id)
@@ -176,6 +185,7 @@ class ReleasePublicationTest(unittest.TestCase):
             "assets_dir": Path(self.temp.name),
             "workflow_run_url": "https://github.com/example/repository/actions/runs/123",
             "artifact_digest": "3" * 64,
+            **EXACT_PROVENANCE,
         }
         for update in (
             {"correlation_id": "contains whitespace"},
@@ -185,6 +195,24 @@ class ReleasePublicationTest(unittest.TestCase):
         ):
             with self.subTest(update=update), self.assertRaises(PublicationError):
                 build_desired_release(**(base | update))
+
+    def test_publication_builder_requires_explicit_provenance(self) -> None:
+        base = {
+            "tag": "v0.2.0-1",
+            "native_commit": "1" * 40,
+            "upstream_ref": "v0.2.0",
+            "upstream_commit": "2" * 40,
+            "prerelease": True,
+            "assets_dir": Path(self.temp.name),
+            "workflow_run_url": "https://github.com/example/repository/actions/runs/123",
+            "artifact_digest": "3" * 64,
+            **EXACT_PROVENANCE,
+        }
+        for field in EXACT_PROVENANCE:
+            missing = dict(base)
+            missing.pop(field)
+            with self.subTest(field=field), self.assertRaisesRegex(TypeError, field):
+                build_desired_release(**missing)
 
     def test_published_partial_release_fails_closed(self) -> None:
         with self.assertRaisesRegex(PublicationError, "incomplete"):
@@ -330,6 +358,7 @@ class ReleasePublicationTest(unittest.TestCase):
             assets_dir=Path(self.temp.name),
             workflow_run_url="https://github.com/example/repository/actions/runs/456",
             artifact_digest="sha256:" + "4" * 64,
+            **EXACT_PROVENANCE,
         )
         self.assertNotEqual(rerun.transaction_id, self.desired.transaction_id)
         foreign_tag = ExistingTag(
@@ -397,6 +426,7 @@ class ReleasePublicationTest(unittest.TestCase):
             assets_dir=Path(self.temp.name),
             workflow_run_url="https://github.com/example/repository/actions/runs/123",
             artifact_digest="3" * 64,
+            **EXACT_PROVENANCE,
         )
         self.assertNotEqual(
             stable_classification.transaction_id,
@@ -413,6 +443,7 @@ class ReleasePublicationTest(unittest.TestCase):
             "assets_dir": Path(self.temp.name),
             "workflow_run_url": "https://github.com/example/actions/runs/123",
             "artifact_digest": "3" * 64,
+            **EXACT_PROVENANCE,
         }
         for digest in ("", "sha256:not-a-digest", "3" * 63):
             with self.subTest(digest=digest):
@@ -441,6 +472,7 @@ class ReleasePublicationTest(unittest.TestCase):
                 "https://github.com/example/repository/actions/runs/123"
             ),
             "artifact_digest": "3" * 64,
+            **EXACT_PROVENANCE,
         }
         normalized = build_desired_release(**base)
         self.assertEqual(normalized.native_commit, "a" * 40)
