@@ -17,9 +17,17 @@ import tempfile
 
 LOCAL_LIBRARY_PREFIXES = ("libllamadart", "libllama", "libggml", "libmtmd")
 PLACEHOLDER = "SOVERSION"
+MAX_ERROR_DETAIL_LENGTH = 512
 TARFILE_EXTRACT_SUPPORTS_FILTER = (
     "filter" in inspect.signature(tarfile.TarFile.extract).parameters
 )
+
+
+def bounded_error_detail(error: OSError) -> str:
+    detail = " ".join(str(error).splitlines()).strip() or type(error).__name__
+    if len(detail) > MAX_ERROR_DETAIL_LENGTH:
+        return f"{detail[: MAX_ERROR_DETAIL_LENGTH - 3]}..."
+    return detail
 
 
 @dataclass(frozen=True)
@@ -200,6 +208,8 @@ def validate_archive(archive_path: Path, tool: str, mode: str) -> list[str]:
             members = extract_archive(archive_path, root)
         except (ValueError, tarfile.TarError) as error:
             return [str(error)]
+        except OSError as error:
+            return [f"Archive extraction failed: {bounded_error_detail(error)}"]
 
         validate_symlinks(members, errors)
         names = set(members)

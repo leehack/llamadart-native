@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from fnmatch import fnmatchcase
 from pathlib import Path, PurePosixPath, PureWindowsPath
 import tarfile
 
@@ -45,6 +46,11 @@ def select_members(input_dir: Path, patterns: list[str]) -> list[Path]:
                 )
 
             target_path = path.parent / target
+            if target_path.is_dir():
+                raise ValueError(
+                    f"Linux runtime symlink target is a directory: "
+                    f"{path.name} -> {target}"
+                )
             if not (target_path.is_symlink() or target_path.is_file()):
                 raise ValueError(
                     f"Linux runtime symlink target does not exist: "
@@ -77,8 +83,11 @@ def select_members(input_dir: Path, patterns: list[str]) -> list[Path]:
                 f"Linux runtime pattern must be a filename glob without path "
                 f"components: {pattern!r}"
             )
-        for path in input_dir.glob(pattern):
-            add_member(path)
+        # Enumerate directory entries first so dangling symlinks remain visible
+        # on Python versions where pathlib.glob() omits them.
+        for path in input_dir.iterdir():
+            if fnmatchcase(path.name, pattern):
+                add_member(path)
 
     if not selected:
         raise ValueError(

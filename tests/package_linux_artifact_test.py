@@ -80,6 +80,29 @@ class PackageLinuxArtifactTest(unittest.TestCase):
             )
             self.assertFalse(output.exists())
 
+    def test_selected_directory_target_has_an_actionable_diagnostic(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            input_dir = root / "input"
+            input_dir.mkdir()
+            (input_dir / "libdirectory.so.1").mkdir()
+            (input_dir / "libdirectory.so").symlink_to(
+                "libdirectory.so.1",
+                target_is_directory=True,
+            )
+            output = root / "runtime.tar.gz"
+
+            result = self.run_packager(input_dir, output, "libdirectory.so")
+
+            self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+            self.assertIn(
+                "Linux runtime symlink target is a directory: "
+                "libdirectory.so -> libdirectory.so.1",
+                result.stdout,
+            )
+            self.assertNotIn("Traceback", result.stderr)
+            self.assertFalse(output.exists())
+
     def test_selected_parent_directory_symlink_fails_as_non_sibling(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

@@ -60,6 +60,52 @@ class ValidateLinuxArtifactTest(unittest.TestCase):
             self.assertEqual(extracted.readlink(), Path(member.linkname))
         archive.extract.assert_not_called()
 
+    def test_symlink_creation_oserror_is_a_validation_error(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            archive_path = root / "runtime.tar.gz"
+            member = tarfile.TarInfo("libexample.so")
+            member.type = tarfile.SYMTYPE
+            member.linkname = "libexample.so.1"
+            with tarfile.open(archive_path, "w:gz") as archive:
+                archive.addfile(member)
+
+            with mock.patch.object(
+                Path,
+                "symlink_to",
+                side_effect=PermissionError("symlink creation denied"),
+            ):
+                errors = validate_archive(archive_path, "/usr/bin/true", "readelf")
+
+        self.assertEqual(
+            errors,
+            ["Archive extraction failed: symlink creation denied"],
+        )
+
+    def test_payload_extraction_oserror_is_a_validation_error(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            archive_path = root / "runtime.tar.gz"
+            member = tarfile.TarInfo("libexample.so")
+            member.size = 1
+            with tarfile.open(archive_path, "w:gz") as archive:
+                archive.addfile(member, BytesIO(b"x"))
+
+            with mock.patch.object(
+                tarfile.TarFile,
+                "extract",
+                side_effect=OSError("payload creation denied\n" + "x" * 600),
+            ):
+                errors = validate_archive(archive_path, "/usr/bin/true", "readelf")
+
+        self.assertEqual(len(errors), 1)
+        self.assertTrue(
+            errors[0].startswith("Archive extraction failed: payload creation denied ")
+        )
+        self.assertTrue(errors[0].endswith("..."))
+        self.assertNotIn("\n", errors[0])
+        self.assertLessEqual(len(errors[0]), len("Archive extraction failed: ") + 512)
+
     def test_legacy_fallback_discards_archive_metadata_and_permissions(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
