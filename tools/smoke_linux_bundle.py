@@ -7,9 +7,11 @@ import argparse
 import os
 from pathlib import Path
 import subprocess
+import sys
 
 
 def smoke(bundle: Path) -> None:
+    bundle = bundle.resolve()
     wrapper = bundle / "libllamadart.so"
     if not wrapper.is_file():
         raise RuntimeError(f"missing packaged wrapper: {wrapper}")
@@ -25,7 +27,7 @@ def smoke(bundle: Path) -> None:
         "print(f'loaded libllamadart.so; TTS API version={version}')"
     )
     result = subprocess.run(
-        ["python3", "-c", probe, str(wrapper)],
+        [sys.executable, "-c", probe, str(wrapper)],
         capture_output=True,
         text=True,
         env=environment,
