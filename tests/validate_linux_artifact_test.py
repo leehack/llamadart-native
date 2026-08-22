@@ -71,41 +71,45 @@ class ValidateLinuxArtifactTest(unittest.TestCase):
             self.assertNotEqual(extracted.stat().st_mtime, member.mtime)
 
     def test_member_path_traversal_is_rejected_before_extraction(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            archive_path = root / "runtime.tar.gz"
-            destination = root / "extract"
-            destination.mkdir()
-            member = tarfile.TarInfo("../escape")
-            member.size = 1
-            with tarfile.open(archive_path, "w:gz") as archive:
-                archive.addfile(member, BytesIO(b"x"))
+        for member_name in ("../escape", r"..\escape", r"C:\escape"):
+            with self.subTest(member_name=member_name):
+                with tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory)
+                    archive_path = root / "runtime.tar.gz"
+                    destination = root / "extract"
+                    destination.mkdir()
+                    member = tarfile.TarInfo(member_name)
+                    member.size = 1
+                    with tarfile.open(archive_path, "w:gz") as archive:
+                        archive.addfile(member, BytesIO(b"x"))
 
-            with self.assertRaisesRegex(
-                ValueError, "Archive member must be a flat runtime filename"
-            ):
-                extract_archive(archive_path, destination)
+                    with self.assertRaisesRegex(
+                        ValueError, "Archive member must be a flat runtime filename"
+                    ):
+                        extract_archive(archive_path, destination)
 
-            self.assertFalse((root / "escape").exists())
+                    self.assertEqual(list(destination.iterdir()), [])
 
     def test_symlink_target_traversal_is_rejected_before_extraction(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            archive_path = root / "runtime.tar.gz"
-            destination = root / "extract"
-            destination.mkdir()
-            member = tarfile.TarInfo("libexample.so")
-            member.type = tarfile.SYMTYPE
-            member.linkname = "../escape"
-            with tarfile.open(archive_path, "w:gz") as archive:
-                archive.addfile(member)
+        for linkname in ("../escape", r"..\escape", r"C:\escape"):
+            with self.subTest(linkname=linkname):
+                with tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory)
+                    archive_path = root / "runtime.tar.gz"
+                    destination = root / "extract"
+                    destination.mkdir()
+                    member = tarfile.TarInfo("libexample.so")
+                    member.type = tarfile.SYMTYPE
+                    member.linkname = linkname
+                    with tarfile.open(archive_path, "w:gz") as archive:
+                        archive.addfile(member)
 
-            with self.assertRaisesRegex(
-                ValueError, "Archive member must be a flat runtime filename"
-            ):
-                extract_archive(archive_path, destination)
+                    with self.assertRaisesRegex(
+                        ValueError, "Archive member must be a flat runtime filename"
+                    ):
+                        extract_archive(archive_path, destination)
 
-            self.assertFalse((destination / member.name).exists())
+                    self.assertEqual(list(destination.iterdir()), [])
 
     def test_version_suffixed_llvm_objdump_uses_objdump_mode(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -7,7 +7,7 @@ import argparse
 from dataclasses import dataclass
 import inspect
 import os
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 import re
 import shutil
 import subprocess
@@ -89,7 +89,15 @@ def inspect_dynamic(path: Path, tool: str, mode: str) -> DynamicMetadata:
 def safe_member_name(name: str) -> str:
     normalized = name.removeprefix("./")
     path = PurePosixPath(normalized)
-    if path.is_absolute() or len(path.parts) != 1 or path.name in ("", ".", ".."):
+    windows_path = PureWindowsPath(normalized)
+    if (
+        path.is_absolute()
+        or windows_path.is_absolute()
+        or windows_path.drive
+        or len(path.parts) != 1
+        or len(windows_path.parts) != 1
+        or path.name in ("", ".", "..")
+    ):
         raise ValueError(f"Archive member must be a flat runtime filename: {name}")
     return path.name
 
