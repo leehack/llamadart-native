@@ -95,19 +95,26 @@ def _download_asset_digest(asset: Mapping[str, Any]) -> str:
             f"GitHub asset {asset.get('name')!r} must use an exact api.github.com "
             "release-asset API URL"
         )
-    with tempfile.NamedTemporaryFile() as output:
-        result = subprocess.run(
-            ["gh", "api", url, "-H", "Accept: application/octet-stream"],
-            stdout=output,
-            stderr=subprocess.PIPE,
-        )
+    with tempfile.TemporaryDirectory() as directory:
+        output_path = Path(directory) / "asset"
+        try:
+            with output_path.open("wb") as output:
+                result = subprocess.run(
+                    ["gh", "api", url, "-H", "Accept: application/octet-stream"],
+                    stdout=output,
+                    stderr=subprocess.PIPE,
+                    timeout=300,
+                )
+        except subprocess.TimeoutExpired as error:
+            raise ContractError(
+                f"timed out downloading GitHub asset {asset.get('name')!r}"
+            ) from error
         if result.returncode != 0:
             raise ContractError(
                 f"unable to download GitHub asset {asset.get('name')!r}: "
                 f"{result.stderr.decode(errors='replace').strip()}"
             )
-        output.flush()
-        return _sha256(Path(output.name))
+        return _sha256(output_path)
 
 
 def validate_dispatch(
@@ -393,6 +400,7 @@ def build_release_result(
             f"workflow run: {workflow_run_url}",
             f"workflow head SHA: `{workflow_head_sha}`",
             f"publication artifact digest: `{expected_artifact_digest}`",
+            f"native smoke: `{smoke_policy}/{smoke_conclusion}`",
         ):
             if evidence not in body:
                 raise ContractError(f"GitHub release body is missing exact evidence: {evidence}")

@@ -296,6 +296,17 @@ class ReleaseResultTests(unittest.TestCase):
             ):
                 self._result(assets, release)
 
+    def test_result_requires_smoke_evidence_in_published_body(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            assets, release = self._fixture(Path(directory))
+            release["body"] = release["body"].replace(
+                "native smoke: `required/passed`\n", ""
+            )
+            with self.assertRaisesRegex(
+                ContractError, "missing exact evidence: native smoke"
+            ):
+                self._result(assets, release)
+
 
 if __name__ == "__main__":
     unittest.main()
