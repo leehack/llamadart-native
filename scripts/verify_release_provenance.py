@@ -159,6 +159,14 @@ def verify_workflow_contract(errors: list[str]) -> None:
         errors,
     )
     require(
+        "gh workflow run" not in auto_workflow
+        and "publish_release=true" not in auto_workflow
+        and "actions: write" not in auto_workflow
+        and "Publication requires explicit cross-repository approval" in auto_workflow,
+        "scheduled automation must detect and prepare only, never dispatch publication",
+        errors,
+    )
+    require(
         "needs.resolve-tag.outputs.upstream_channel == 'stable'" in workflow
         and "needs.resolve-tag.outputs.release_kind == 'upstream'" in workflow,
         "nightly and wrapper-only releases must not move the repository's stable submodule pin",
@@ -173,6 +181,7 @@ def verify_manifest_contract(errors: list[str]) -> None:
             ("stable", "v0.2.0", "v0.2.0"),
             ("nightly", "b10545", "b10545"),
             ("stable-wrapper", "v0.2.0-1", "v0.2.0"),
+            ("nightly-wrapper", "b10545-1", "b10545"),
             ("legacy-wrapper", "b10356-llamadart.1", "b10356"),
         )
         for fixture_name, native_tag, upstream_ref in fixtures:

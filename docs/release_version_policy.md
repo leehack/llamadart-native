@@ -12,11 +12,13 @@ provenance.
 | Stable distribution | `vMAJOR.MINOR.PATCH` | the same `vMAJOR.MINOR.PATCH` | release |
 | Stable wrapper-only rebuild | `vMAJOR.MINOR.PATCH` | `vMAJOR.MINOR.PATCH-N` | prerelease |
 | Explicit nightly/development build | `bNNNN` | the same `bNNNN` | prerelease |
-| Nightly wrapper-only rebuild | `bNNNN` | `bNNNN-llamadart.N` | prerelease |
+| Nightly wrapper-only rebuild | `bNNNN` | `bNNNN-N` | prerelease |
+| Legacy nightly wrapper (read only) | `bNNNN` | `bNNNN-llamadart.N` | prerelease |
 
 `N` starts at 1 and increases numerically. For example, wrapper-only rebuilds
 of upstream `v0.2.0` are `v0.2.0-1`, `v0.2.0-2`, and so on. The exact
-upstream version therefore remains visible as the native tag prefix.
+upstream version therefore remains visible as the native tag prefix. Nightly
+rebuilds follow the same compact rule: `b10545-1`, `b10545-2`, and so on.
 
 The repository enforces this native release sequence numerically:
 
@@ -49,7 +51,20 @@ newer upstream stable release instead of inventing a different suffix.
   `third_party/llama.cpp` submodule. Nightly and wrapper-only releases do not
   move the stable pin.
 - Existing `bNNNN` and `bNNNN-llamadart.N` releases and archives remain
-  immutable and supported for explicit consumption.
+  immutable and supported for explicit consumption. New nightly rebuilds emit
+  only `bNNNN-N`; the `-llamadart.N` form is never emitted again.
+
+## Orchestration and approval
+
+- Scheduled automation detects and reports unbuilt stable upstream candidates.
+  It may prepare validation context, but it never dispatches a publishing
+  workflow.
+- Central `llamadart` orchestration coordinates native, Dart, and Web
+  preparation. Publishing requires explicit cross-repository maintainer
+  approval, followed by a manual native release dispatch.
+- Native publication does not require dependency-pin PRs in companion
+  repositories. Any companion code, asset, or pin change is independent and
+  retains its own validation and approval boundary.
 
 ## Provenance contract
 
@@ -75,14 +90,17 @@ Consumers must classify the native tag independently from the upstream ref:
 
 - `llamadart` issue #393 should accept stable `vMAJOR.MINOR.PATCH`, stable
   wrapper rebuilds in `vMAJOR.MINOR.PATCH-N` form, historical `bNNNN`, and
-  historical nightly rebuilds. It
+  compact nightly rebuilds in `bNNNN-N` form. Historical
+  `bNNNN-llamadart.N` remains read-only compatibility. It
   should use `llama_cpp_tag`/`llama_cpp_commit` for upstream provenance rather
   than deriving them from the native archive suffix.
 - `llama-web-bridge` issue #61 should use `vMAJOR.MINOR.PATCH` as its automatic
   stable update channel, retain `bNNNN` only for explicit development input,
   and refuse an accidental stable-to-nightly transition. Native
-  `vMAJOR.MINOR.PATCH-N` rebuild tags retain the bridge's exact upstream
-  `vMAJOR.MINOR.PATCH` prefix and do not change its upstream `llama.cpp` ref.
+  `vMAJOR.MINOR.PATCH-N` and `bNNNN-N` rebuild tags retain the exact upstream
+  prefix and do not change the bridge's upstream `llama.cpp` ref. Neither
+  companion repository needs a dependency-pin PR as a prerequisite for native
+  publication.
 
 ## References
 

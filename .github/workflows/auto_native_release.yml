@@ -1,4 +1,4 @@
-name: Auto Trigger Native Release
+name: Detect Native Release Candidate
 
 on:
   schedule:
@@ -7,18 +7,17 @@ on:
 
 permissions:
   contents: read
-  actions: write
 
 concurrency:
   group: auto-native-release
   cancel-in-progress: false
 
 jobs:
-  dispatch:
+  detect:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - name: Dispatch native release for new upstream tag
+      - name: Detect unbuilt stable upstream tag
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -43,17 +42,14 @@ jobs:
             exit 0
           fi
 
-          in_flight="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow native_release.yml --limit 20 --json status --jq '[.[] | select(.status == "queued" or .status == "in_progress")] | length')"
-          if [ "$in_flight" -gt 0 ]; then
-            echo "native_release.yml has $in_flight queued/running run(s); skipping dispatch."
-            exit 0
-          fi
+          {
+            echo "## Native release candidate"
+            echo
+            echo "Detected unbuilt stable upstream tag: $tag"
+            echo
+            echo "Publication requires explicit cross-repository approval through central llamadart orchestration."
+            echo "After approval, dispatch native_release.yml manually with llama_cpp_tag=$tag and native_release_tag=$tag."
+            echo "Companion repositories do not require dependency-pin PRs as a publication prerequisite."
+          } >> "$GITHUB_STEP_SUMMARY"
 
-          gh workflow run native_release.yml \
-            --repo "$GITHUB_REPOSITORY" \
-            --ref "${{ github.ref_name }}" \
-            -f llama_cpp_tag="$tag" \
-            -f native_release_tag="$tag" \
-            -f publish_release=true
-
-          echo "Dispatched native_release.yml for tag $tag."
+          echo "Prepared candidate $tag for central orchestration; no release workflow was dispatched."

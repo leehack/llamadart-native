@@ -19,6 +19,9 @@ STABLE_WRAPPER_RE = re.compile(
 )
 NIGHTLY_RE = re.compile(r"^b(0|[1-9][0-9]*)$")
 NIGHTLY_WRAPPER_RE = re.compile(
+    r"^b(0|[1-9][0-9]*)-([1-9][0-9]*)$"
+)
+LEGACY_NIGHTLY_WRAPPER_RE = re.compile(
     r"^b(0|[1-9][0-9]*)-llamadart\.([1-9][0-9]*)$"
 )
 
@@ -34,6 +37,7 @@ class Version:
     kind: str
     core: tuple[int, ...]
     rebuild: int = 0
+    legacy: bool = False
 
     @property
     def github_prerelease(self) -> bool:
@@ -74,9 +78,14 @@ def parse_native_tag(tag: str) -> Version:
         build, rebuild = map(int, nightly_wrapper.groups())
         return Version(tag, "nightly", "wrapper", (build,), rebuild)
 
+    legacy_nightly_wrapper = LEGACY_NIGHTLY_WRAPPER_RE.fullmatch(tag)
+    if legacy_nightly_wrapper:
+        build, rebuild = map(int, legacy_nightly_wrapper.groups())
+        return Version(tag, "nightly", "wrapper", (build,), rebuild, legacy=True)
+
     raise PolicyError(
         f"invalid llamadart-native release tag {tag!r}: expected vMAJOR.MINOR.PATCH, "
-        "vMAJOR.MINOR.PATCH-N, bNNNN, or bNNNN-llamadart.N"
+        "vMAJOR.MINOR.PATCH-N, bNNNN, or bNNNN-N"
     )
 
 
@@ -86,7 +95,7 @@ def wrapper_tag_for(upstream: Version, rebuild: int = 1) -> str:
     if upstream.channel == "stable":
         major, minor, patch = upstream.core
         return f"v{major}.{minor}.{patch}-{rebuild}"
-    return f"b{upstream.core[0]}-llamadart.{rebuild}"
+    return f"b{upstream.core[0]}-{rebuild}"
 
 
 def validate_pair(upstream_ref: str, native_tag: str) -> tuple[Version, Version]:
@@ -97,6 +106,12 @@ def validate_pair(upstream_ref: str, native_tag: str) -> tuple[Version, Version]
         raise PolicyError(
             f"native tag {native_tag!r} is a {native.channel} tag but upstream "
             f"ref {upstream_ref!r} is {upstream.channel}"
+        )
+
+    if native.legacy:
+        raise PolicyError(
+            f"legacy nightly wrapper tag {native_tag!r} is read-only compatibility; "
+            f"emit {wrapper_tag_for(upstream)!r} (then increment N)"
         )
 
     if native.kind == "upstream":
@@ -177,6 +192,13 @@ def validate_history(candidate: Version, existing_tags: Iterable[str]) -> None:
     ]
     if same_nightly:
         latest_rebuild = max(version.rebuild for version in same_nightly)
+        if candidate.rebuild > 0 and any(
+            version.rebuild == candidate.rebuild for version in same_nightly
+        ):
+            raise PolicyError(
+                f"nightly wrapper collision: rebuild {candidate.rebuild} for "
+                f"b{candidate.core[0]} already exists under another tag"
+            )
         if candidate.rebuild < latest_rebuild:
             raise PolicyError(
                 f"nightly wrapper rollback: {candidate.tag!r} precedes an existing "

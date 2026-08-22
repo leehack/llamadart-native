@@ -29,11 +29,19 @@ class ReleaseVersionPolicyTest(unittest.TestCase):
         self.assertEqual(native.kind, "upstream")
         self.assertFalse(native.github_prerelease)
 
-    def test_explicit_nightly_and_legacy_wrapper_release(self) -> None:
-        _, nightly = validate_pair("b10545", "b10545")
-        _, rebuild = validate_pair("b10356", "b10356-llamadart.1")
+    def test_explicit_nightly_and_compact_wrapper_release(self) -> None:
+        upstream, nightly = validate_pair("b10545", "b10545")
+        _, rebuild = validate_pair("b10545", "b10545-1")
         self.assertTrue(nightly.github_prerelease)
+        self.assertEqual(wrapper_tag_for(upstream), "b10545-1")
         self.assertEqual(rebuild.rebuild, 1)
+
+    def test_legacy_nightly_wrapper_is_read_only_compatibility(self) -> None:
+        legacy = parse_native_tag("b10356-llamadart.1")
+        self.assertTrue(legacy.legacy)
+        self.assertEqual(legacy.rebuild, 1)
+        with self.assertRaisesRegex(PolicyError, "read-only compatibility"):
+            validate_pair("b10356", legacy.tag)
 
     def test_automatic_discovery_rejects_nightly(self) -> None:
         stable, _ = validate_pair("v0.2.0", "v0.2.0")
@@ -67,6 +75,7 @@ class ReleaseVersionPolicyTest(unittest.TestCase):
             ("v0.2.0", "v0.2.1-1"),
             ("v0.2.0", "v0.2.0-0"),
             ("b10545", "v0.2.0"),
+            ("b10545", "b10545-0"),
         )
         for upstream, native in invalid_pairs:
             with self.subTest(upstream=upstream, native=native):
@@ -78,6 +87,11 @@ class ReleaseVersionPolicyTest(unittest.TestCase):
             validate_history(parse_native_tag("v0.2.0"), ["v0.2.0"])
         with self.assertRaisesRegex(PolicyError, "collision"):
             validate_history(parse_native_tag("v0.2.0-1"), ["v0.2.0-1"])
+        with self.assertRaisesRegex(PolicyError, "collision"):
+            validate_history(
+                parse_native_tag("b10356-1"),
+                ["b10356-llamadart.1"],
+            )
         with self.assertRaisesRegex(PolicyError, "rollback"):
             validate_history(parse_native_tag("v0.1.9"), ["v0.2.0"])
         with self.assertRaisesRegex(PolicyError, "rollback"):
@@ -89,12 +103,12 @@ class ReleaseVersionPolicyTest(unittest.TestCase):
             )
         with self.assertRaisesRegex(PolicyError, "rollback"):
             validate_history(
-                parse_native_tag("b10356-llamadart.1"),
-                ["b10356-llamadart.2"],
+                parse_native_tag("b10356-1"),
+                ["b10356-2"],
             )
 
     def test_explicit_historical_nightly_is_not_stable_rollback(self) -> None:
-        candidate = parse_native_tag("b10356-llamadart.2")
+        candidate = parse_native_tag("b10356-2")
         validate_history(candidate, ["b10545", "v0.2.0", "b10356-llamadart.1"])
 
     def test_current_and_legacy_manifest_tags(self) -> None:
