@@ -23,7 +23,7 @@ def smoke(bundle: Path) -> None:
         "lib=ctypes.CDLL(sys.argv[1]); "
         "lib.llama_dart_tts_api_version.restype=ctypes.c_uint32; "
         "version=lib.llama_dart_tts_api_version(); "
-        "assert version == 1, f'unexpected wrapper API version: {version}'; "
+        "if version != 1: raise RuntimeError(f'unexpected wrapper API version: {version}'); "
         "print(f'loaded libllamadart.so; TTS API version={version}')"
     )
     result = subprocess.run(
