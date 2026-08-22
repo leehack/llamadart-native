@@ -60,7 +60,11 @@ jobs:
           if [ -z "$TAG" ] || [ "$TAG" = "latest" ]; then
             TAG=$(gh api repos/ggml-org/llama.cpp/releases/latest --jq '.tag_name')
           elif [ "$TAG" = "submodule" ]; then
-            TAG=$(git -C third_party/llama.cpp describe --tags --exact-match 2>/dev/null || git -C third_party/llama.cpp rev-parse --short HEAD)
+            if ! TAG=$(git -C third_party/llama.cpp describe --tags --exact-match 2>/dev/null); then
+              submodule_commit=$(git -C third_party/llama.cpp rev-parse HEAD)
+              echo "llama_cpp_tag=submodule requires the pinned commit to have an exact vMAJOR.MINOR.PATCH or bNNNN tag; $submodule_commit is untagged." >&2
+              exit 1
+            fi
           fi
 
           RELEASE_TAG="${{ github.event.inputs.native_release_tag }}"

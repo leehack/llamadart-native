@@ -102,6 +102,13 @@ def verify_workflow_contract(errors: list[str]) -> None:
         errors,
     )
     require(
+        "llama_cpp_tag=submodule requires the pinned commit to have an exact "
+        "vMAJOR.MINOR.PATCH or bNNNN tag" in workflow
+        and "rev-parse --short HEAD" not in workflow,
+        "untagged submodules must fail before release policy validation",
+        errors,
+    )
+    require(
         "LLAMADART_LLAMA_CPP_COMMIT: ${{ needs.resolve-tag.outputs.llama_cpp_commit }}"
         in workflow
         and "LLAMADART_NATIVE_COMMIT: ${{ steps.provenance.outputs.native_commit }}"
