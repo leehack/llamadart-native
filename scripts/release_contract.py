@@ -14,14 +14,15 @@ import tempfile
 from typing import Any
 from urllib.parse import urlparse
 
+from release_publication import Asset, build_publication_transaction_id
 from release_version_policy import PolicyError, validate_pair
 
 
 COMMIT_RE = re.compile(r"^[0-9a-f]{40}$", re.IGNORECASE)
 CORRELATION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$")
 ARTIFACT_DIGEST_RE = re.compile(r"^(?:sha256:)?([0-9a-f]{64})$", re.IGNORECASE)
-GITHUB_ASSET_PATH_RE = re.compile(
-    r"^/repos/[^/\s]+/[^/\s]+/releases/assets/[1-9][0-9]*$"
+GITHUB_ASSET_URL_RE = re.compile(
+    r"^/repos/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/releases/assets/[1-9][0-9]*$"
 )
 DISCOVERY_STATUSES = ("candidate", "noop", "incompatible")
 SMOKE_POLICIES = ("required", "skip")
@@ -81,17 +82,17 @@ def _download_asset_digest(asset: Mapping[str, Any]) -> str:
         raise ContractError(
             f"GitHub asset {asset.get('name')!r} has neither a digest nor an API URL"
         )
-    parsed_url = urlparse(url)
+    parsed = urlparse(url)
     if (
-        parsed_url.scheme != "https"
-        or parsed_url.netloc != "api.github.com"
-        or parsed_url.params
-        or parsed_url.query
-        or parsed_url.fragment
-        or GITHUB_ASSET_PATH_RE.fullmatch(parsed_url.path) is None
+        parsed.scheme != "https"
+        or parsed.netloc != "api.github.com"
+        or parsed.params
+        or parsed.query
+        or parsed.fragment
+        or GITHUB_ASSET_URL_RE.fullmatch(parsed.path) is None
     ):
         raise ContractError(
-            f"GitHub asset {asset.get('name')!r} must use an exact GitHub "
+            f"GitHub asset {asset.get('name')!r} must use an exact api.github.com "
             "release-asset API URL"
         )
     with tempfile.NamedTemporaryFile() as output:
@@ -342,6 +343,18 @@ def build_release_result(
         if item.get("size") != asset_path.stat().st_size:
             raise ContractError(f"size mismatch for release asset: {name}")
 
+    verified_local_assets = {
+        name: Asset(name, path.stat().st_size, _sha256(path), path)
+        for name in expected_assets
+        for path in (assets_dir / name,)
+    }
+    verified_local_assets["assets.json"] = Asset(
+        "assets.json", manifest_path.stat().st_size, _sha256(manifest_path), manifest_path
+    )
+    verified_local_assets["SHA256SUMS"] = Asset(
+        "SHA256SUMS", checksums_path.stat().st_size, _sha256(checksums_path), checksums_path
+    )
+
     release: dict[str, Any] | None = None
     if publish_release:
         if not isinstance(release_metadata, Mapping):
@@ -357,16 +370,38 @@ def build_release_result(
         body = release_metadata.get("body")
         if not isinstance(body, str):
             raise ContractError("GitHub release metadata must include its provenance body")
-        transaction = re.search(r"publication transaction: `([0-9a-f]{64})`", body)
+        transaction = re.search(
+            r"publication transaction: `([0-9a-f]{64})`", body
+        )
+        expected_artifact_digest = _artifact_digest(publication_artifact_digest)
+        expected_transaction_id = build_publication_transaction_id(
+            tag=native_release_tag,
+            native_commit=native_commit,
+            upstream_ref=upstream_ref,
+            upstream_commit=contract["llama_cpp_commit"],
+            prerelease=contract["github_prerelease"] == "true",
+            workflow_run_url=workflow_run_url,
+            artifact_digest=expected_artifact_digest,
+            correlation_id=correlation_id,
+            smoke_policy=smoke_policy,
+            smoke_conclusion=smoke_conclusion,
+            workflow_head_sha=workflow_head_sha,
+            assets=verified_local_assets,
+        )
         for evidence in (
             f"orchestrator correlation: `{correlation_id}`",
             f"workflow run: {workflow_run_url}",
             f"workflow head SHA: `{workflow_head_sha}`",
+            f"publication artifact digest: `{expected_artifact_digest}`",
         ):
             if evidence not in body:
                 raise ContractError(f"GitHub release body is missing exact evidence: {evidence}")
         if transaction is None:
             raise ContractError("GitHub release body is missing publication transaction id")
+        if transaction.group(1) != expected_transaction_id:
+            raise ContractError(
+                "GitHub release transaction id does not match verified result inputs"
+            )
         remote_assets = _remote_asset_entries(release_metadata.get("assets"))
         remote_names = {item["name"] for item in remote_assets}
         expected_remote = expected_assets | {"assets.json", "SHA256SUMS"}

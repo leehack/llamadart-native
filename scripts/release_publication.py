@@ -81,6 +81,43 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def build_publication_transaction_id(
+    *,
+    tag: str,
+    native_commit: str,
+    upstream_ref: str,
+    upstream_commit: str,
+    prerelease: bool,
+    workflow_run_url: str,
+    artifact_digest: str,
+    correlation_id: str,
+    smoke_policy: str,
+    smoke_conclusion: str,
+    workflow_head_sha: str,
+    assets: Mapping[str, Asset],
+) -> str:
+    transaction_payload = {
+        "native_release_tag": tag,
+        "native_commit": native_commit,
+        "llama_cpp_tag": upstream_ref,
+        "llama_cpp_commit": upstream_commit,
+        "prerelease": prerelease,
+        "workflow_run_url": workflow_run_url,
+        "workflow_head_sha": workflow_head_sha,
+        "artifact_digest": artifact_digest,
+        "correlation_id": correlation_id,
+        "smoke_policy": smoke_policy,
+        "smoke_conclusion": smoke_conclusion,
+        "assets": {
+            name: {"sha256": asset.sha256, "size": asset.size}
+            for name, asset in assets.items()
+        },
+    }
+    return hashlib.sha256(
+        json.dumps(transaction_payload, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+
+
 def build_desired_release(
     *,
     tag: str,
@@ -138,28 +175,20 @@ def build_desired_release(
     if not assets:
         raise PublicationError(f"no release assets found in {assets_dir}")
 
-    transaction_payload = {
-        "native_release_tag": tag,
-        "native_commit": native_commit,
-        "llama_cpp_tag": upstream_ref,
-        "llama_cpp_commit": upstream_commit,
-        "prerelease": prerelease,
-        "workflow_run_url": workflow_run_url,
-        "workflow_head_sha": workflow_head_sha,
-        "artifact_digest": normalized_artifact_digest,
-        "correlation_id": correlation_id,
-        "smoke_policy": smoke_policy,
-        "smoke_conclusion": smoke_conclusion,
-        "assets": {
-            name: {"sha256": asset.sha256, "size": asset.size}
-            for name, asset in assets.items()
-        },
-    }
-    transaction_id = hashlib.sha256(
-        json.dumps(
-            transaction_payload, sort_keys=True, separators=(",", ":")
-        ).encode()
-    ).hexdigest()
+    transaction_id = build_publication_transaction_id(
+        tag=tag,
+        native_commit=native_commit,
+        upstream_ref=upstream_ref,
+        upstream_commit=upstream_commit,
+        prerelease=prerelease,
+        workflow_run_url=workflow_run_url,
+        artifact_digest=normalized_artifact_digest,
+        correlation_id=correlation_id,
+        smoke_policy=smoke_policy,
+        smoke_conclusion=smoke_conclusion,
+        workflow_head_sha=workflow_head_sha,
+        assets=assets,
+    )
     body = (
         f"llamadart-native tag: `{tag}`\n"
         f"llama.cpp tag/ref: `{upstream_ref}`\n"

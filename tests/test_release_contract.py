@@ -19,6 +19,7 @@ from release_contract import (  # noqa: E402
     build_release_result,
     validate_dispatch,
 )
+from release_publication import build_desired_release  # noqa: E402
 
 
 COMMIT = "1" * 40
@@ -156,6 +157,20 @@ class ReleaseResultTests(unittest.TestCase):
                 for index, name in enumerate(sorted(remote_names), 1)
             ],
         }
+        release["body"] = build_desired_release(
+            tag=tag,
+            native_commit=NATIVE_COMMIT,
+            upstream_ref=tag,
+            upstream_commit=COMMIT,
+            prerelease=False,
+            assets_dir=assets,
+            workflow_run_url="https://github.com/leehack/llamadart-native/actions/runs/123",
+            artifact_digest="a" * 64,
+            correlation_id="central-123",
+            smoke_policy="required",
+            smoke_conclusion="passed",
+            workflow_head_sha=HEAD_COMMIT,
+        ).body
         return assets, release
 
     def _result(self, assets: Path, release: dict[str, object]) -> dict[str, object]:
@@ -239,7 +254,7 @@ class ReleaseResultTests(unittest.TestCase):
             assets, release = self._fixture(Path(directory))
             missing = release["assets"][0]
             missing["digest"] = None
-            missing["url"] = "https://api.github.com/repos/example/releases/assets/1"
+            missing["url"] = "https://api.github.com/repos/example/repo/releases/assets/1"
             expected = hashlib.sha256((assets / missing["name"]).read_bytes()).hexdigest()
             with patch("release_contract._download_asset_digest", return_value=expected) as download:
                 result = self._result(assets, release)
@@ -252,9 +267,32 @@ class ReleaseResultTests(unittest.TestCase):
             assets, release = self._fixture(Path(directory))
             missing = release["assets"][0]
             missing["digest"] = None
-            missing["url"] = "https://example.invalid/asset"
+            missing["url"] = "https://attacker.example/payload"
             with self.assertRaisesRegex(
-                ContractError, "exact GitHub release-asset API URL"
+                ContractError, "exact api.github.com release-asset API URL"
+            ):
+                self._result(assets, release)
+
+    def test_result_rejects_transaction_marker_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            assets, release = self._fixture(Path(directory))
+            release["body"] = release["body"].replace(
+                "publication transaction: `", "publication transaction: `" + "b" * 64 + "`\n"
+            )
+            with self.assertRaisesRegex(
+                ContractError, "transaction id does not match"
+            ):
+                self._result(assets, release)
+
+    def test_result_rejects_publication_artifact_digest_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            assets, release = self._fixture(Path(directory))
+            release["body"] = release["body"].replace(
+                "publication artifact digest: `sha256:" + "a" * 64 + "`",
+                "publication artifact digest: `sha256:" + "b" * 64 + "`",
+            )
+            with self.assertRaisesRegex(
+                ContractError, "missing exact evidence: publication artifact digest"
             ):
                 self._result(assets, release)
 
