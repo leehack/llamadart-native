@@ -80,6 +80,42 @@ class PackageLinuxArtifactTest(unittest.TestCase):
             )
             self.assertFalse(output.exists())
 
+    def test_selected_parent_directory_symlink_fails_as_non_sibling(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            input_dir = root / "input"
+            input_dir.mkdir()
+            (input_dir / "libescape.so").symlink_to("..", target_is_directory=True)
+            output = root / "runtime.tar.gz"
+
+            result = self.run_packager(input_dir, output, "libescape.so")
+
+            self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+            self.assertIn(
+                "Linux runtime symlink libescape.so must target a sibling file, "
+                "not ..",
+                result.stdout,
+            )
+            self.assertFalse(output.exists())
+
+    def test_selected_current_directory_symlink_fails_as_non_sibling(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            input_dir = root / "input"
+            input_dir.mkdir()
+            (input_dir / "libescape.so").symlink_to(".", target_is_directory=True)
+            output = root / "runtime.tar.gz"
+
+            result = self.run_packager(input_dir, output, "libescape.so")
+
+            self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+            self.assertIn(
+                "Linux runtime symlink libescape.so must target a sibling file, "
+                "not .",
+                result.stdout,
+            )
+            self.assertFalse(output.exists())
+
 
 if __name__ == "__main__":
     unittest.main()

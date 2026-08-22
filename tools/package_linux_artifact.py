@@ -34,7 +34,11 @@ def select_members(input_dir: Path, patterns: list[str]) -> list[Path]:
 
         if path.is_symlink():
             target = path.readlink()
-            if target.is_absolute() or len(target.parts) != 1:
+            if (
+                target.is_absolute()
+                or len(target.parts) != 1
+                or target.name in {".", ".."}
+            ):
                 raise ValueError(
                     f"Linux runtime symlink {path.name} must target a sibling file, "
                     f"not {target}"
