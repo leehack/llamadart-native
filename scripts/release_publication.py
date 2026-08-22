@@ -20,6 +20,7 @@ class PublicationError(RuntimeError):
 
 
 ARTIFACT_DIGEST_RE = re.compile(r"^(?:sha256:)?([0-9a-fA-F]{64})$")
+COMMIT_SHA_RE = re.compile(r"^[0-9a-f]{40}$", re.IGNORECASE)
 WORKFLOW_RUN_PATH_RE = re.compile(
     r"^/[^/]+/[^/]+/actions/runs/[1-9][0-9]*(?:/attempts/[1-9][0-9]*)?$"
 )
@@ -90,6 +91,13 @@ def build_desired_release(
     workflow_run_url: str,
     artifact_digest: str,
 ) -> DesiredRelease:
+    if COMMIT_SHA_RE.fullmatch(native_commit) is None:
+        raise PublicationError("native commit must be a full 40-hex SHA")
+    if COMMIT_SHA_RE.fullmatch(upstream_commit) is None:
+        raise PublicationError("upstream commit must be a full 40-hex SHA")
+    native_commit = native_commit.lower()
+    upstream_commit = upstream_commit.lower()
+
     digest_match = ARTIFACT_DIGEST_RE.fullmatch(artifact_digest)
     if digest_match is None:
         raise PublicationError(
@@ -233,8 +241,8 @@ def reconcile_publication(
     )
 
 
-def _run(command: list[str], *, capture: bool = False) -> subprocess.CompletedProcess[str]:
-    result = subprocess.run(command, capture_output=capture, text=True)
+def _run(command: list[str]) -> subprocess.CompletedProcess[str]:
+    result = subprocess.run(command, capture_output=True, text=True)
     if result.returncode != 0:
         detail = (result.stderr or result.stdout or "command failed").strip()
         raise PublicationError(f"{' '.join(command)}: {detail}")
@@ -341,13 +349,12 @@ def _local_tag(tag: str) -> ExistingTag | None:
     if object_type.returncode != 0:
         return None
     target = _run(
-        ["git", "rev-parse", f"refs/tags/{tag}^{{commit}}"], capture=True
+        ["git", "rev-parse", f"refs/tags/{tag}^{{commit}}"]
     ).stdout.strip()
     if object_type.stdout.strip() != "tag":
         return ExistingTag(target, None)
     message = _run(
         ["git", "for-each-ref", "--format=%(contents)", f"refs/tags/{tag}"],
-        capture=True,
     ).stdout
     return ExistingTag(target, _tag_transaction(message))
 

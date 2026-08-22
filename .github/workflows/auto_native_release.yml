@@ -17,6 +17,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - name: Detect unbuilt stable upstream tag
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

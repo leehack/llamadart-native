@@ -21,6 +21,7 @@ from release_publication import (  # noqa: E402
     PublicationError,
     _ensure_tag,
     _remote_tag,
+    _run,
     build_desired_release,
     publish,
     reconcile_publication,
@@ -386,6 +387,53 @@ class ReleasePublicationTest(unittest.TestCase):
                     build_desired_release(
                         **{**base, "workflow_run_url": run_url}
                     )
+
+    def test_commit_inputs_require_full_shas_and_normalize_case(self) -> None:
+        base = {
+            "tag": self.desired.tag,
+            "native_commit": "A" * 40,
+            "upstream_ref": "v0.2.0",
+            "upstream_commit": "B" * 40,
+            "prerelease": True,
+            "assets_dir": Path(self.temp.name),
+            "workflow_run_url": (
+                "https://github.com/example/repository/actions/runs/123"
+            ),
+            "artifact_digest": "3" * 64,
+        }
+        normalized = build_desired_release(**base)
+        self.assertEqual(normalized.native_commit, "a" * 40)
+        self.assertIn(f"llamadart-native commit: `{'a' * 40}`", normalized.body)
+        self.assertIn(f"llama.cpp commit: `{'b' * 40}`", normalized.body)
+        plan = reconcile_publication(
+            normalized,
+            tag=ExistingTag("a" * 40, normalized.transaction_id),
+            release=None,
+        )
+        self.assertFalse(plan.create_tag)
+        self.assertTrue(plan.create_draft_release)
+
+        for field in ("native_commit", "upstream_commit"):
+            for value in ("main", "a" * 39, "g" * 40):
+                with self.subTest(field=field, value=value):
+                    with self.assertRaisesRegex(PublicationError, "full 40-hex"):
+                        build_desired_release(**{**base, field: value})
+
+    def test_command_failures_preserve_diagnostics(self) -> None:
+        failure = subprocess.CompletedProcess(
+            ["git", "tag"],
+            1,
+            "captured stdout",
+            "specific git failure",
+        )
+        with patch(
+            "release_publication.subprocess.run", return_value=failure
+        ) as run_command:
+            with self.assertRaisesRegex(PublicationError, "specific git failure"):
+                _run(["git", "tag"])
+        run_command.assert_called_once_with(
+            ["git", "tag"], capture_output=True, text=True
+        )
 
     def test_live_driver_is_draft_first_uploads_missing_and_publishes_last(self) -> None:
         state: dict[str, object] = {"tag": None, "release": None}

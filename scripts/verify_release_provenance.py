@@ -250,6 +250,8 @@ def verify_workflow_contract(errors: list[str]) -> None:
         and '"-a"' in publication_script
         and "llamadart-native publication transaction:" in publication_script
         and "tag {desired.tag!r} transaction mismatch" in publication_script
+        and "native commit must be a full 40-hex SHA" in publication_script
+        and "capture_output=True" in publication_script
         and "immutable asset mismatch" in publication_script
         and "release body/correlation mismatch" in publication_script,
         "publication driver must bind its annotated tag, remain draft-first and "
@@ -286,6 +288,13 @@ def verify_workflow_contract(errors: list[str]) -> None:
         and "--require-stable-upstream" in auto_workflow
         and "repos/ggml-org/llama.cpp/releases/latest" in auto_workflow,
         "automatic discovery must fail closed on anything except the upstream stable channel",
+        errors,
+    )
+    require(
+        auto_workflow.count("uses: actions/checkout@v7") > 0
+        and auto_workflow.count("uses: actions/checkout@v7")
+        == auto_workflow.count("persist-credentials: false"),
+        "read-only candidate detection must not persist checkout credentials",
         errors,
     )
     require(
