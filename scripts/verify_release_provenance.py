@@ -14,6 +14,7 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github/workflows/native_release.yml"
+AUTO_WORKFLOW = ROOT / ".github/workflows/auto_native_release.yml"
 CHECKOUT_ACTION = ROOT / ".github/actions/checkout-llama-ref/action.yml"
 MANIFEST_SCRIPT = ROOT / "scripts/generate_assets_manifest.sh"
 
@@ -30,26 +31,30 @@ RUNTIME_BUNDLES = {
     "windows-arm64": ("windows", "arm64"),
     "windows-x64": ("windows", "x64"),
 }
-RELEASE_ASSETS = {
-    f"llamadart-native-{bundle}-b10545.tar.gz": (*meta, "core", "core")
-    for bundle, meta in RUNTIME_BUNDLES.items()
-}
-RELEASE_ASSETS.update(
-    {
-        "llamadart-native-apple-xcframework-b10545.zip": (
-            "apple",
-            "universal",
-            "core",
-            "spm-xcframework",
-        ),
-        "llamadart-native-headers-b10545.tar.gz": (
-            "all",
-            "universal",
-            "core",
-            "headers",
-        ),
+
+
+def release_assets(tag: str) -> dict[str, tuple[str, str, str, str]]:
+    assets = {
+        f"llamadart-native-{bundle}-{tag}.tar.gz": (*meta, "core", "core")
+        for bundle, meta in RUNTIME_BUNDLES.items()
     }
-)
+    assets.update(
+        {
+            f"llamadart-native-apple-xcframework-{tag}.zip": (
+                "apple",
+                "universal",
+                "core",
+                "spm-xcframework",
+            ),
+            f"llamadart-native-headers-{tag}.tar.gz": (
+                "all",
+                "universal",
+                "core",
+                "headers",
+            ),
+        }
+    )
+    return assets
 
 
 def require(condition: bool, message: str, errors: list[str]) -> None:
@@ -59,6 +64,7 @@ def require(condition: bool, message: str, errors: list[str]) -> None:
 
 def verify_workflow_contract(errors: list[str]) -> None:
     workflow = WORKFLOW.read_text()
+    auto_workflow = AUTO_WORKFLOW.read_text()
     action = CHECKOUT_ACTION.read_text()
 
     workflow_bundles = set(
@@ -130,122 +136,155 @@ def verify_workflow_contract(errors: list[str]) -> None:
         "checkout action must expose and enforce exact commit provenance",
         errors,
     )
+    require(
+        "scripts/release_version_policy.py" in workflow
+        and "--existing-tags-file" in workflow
+        and "github_prerelease: ${{ steps.tag.outputs.github_prerelease }}" in workflow
+        and "prerelease: ${{ needs.resolve-tag.outputs.github_prerelease }}" in workflow,
+        "native release workflow must enforce version history and classify prereleases",
+        errors,
+    )
+    require(
+        "scripts/release_version_policy.py" in auto_workflow
+        and "--require-stable-upstream" in auto_workflow
+        and "repos/ggml-org/llama.cpp/releases/latest" in auto_workflow,
+        "automatic discovery must fail closed on anything except the upstream stable channel",
+        errors,
+    )
+    require(
+        "needs.resolve-tag.outputs.upstream_channel == 'stable'" in workflow
+        and "needs.resolve-tag.outputs.release_kind == 'upstream'" in workflow,
+        "nightly and wrapper-only releases must not move the repository's stable submodule pin",
+        errors,
+    )
 
 
 def verify_manifest_contract(errors: list[str]) -> None:
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)
-        assets = root / "assets"
-        assets.mkdir()
-        expected_payloads = {}
-        for index, filename in enumerate(RELEASE_ASSETS, start=1):
-            payload = f"native-test-{index}\n".encode()
-            (assets / filename).write_bytes(payload)
-            expected_payloads[filename] = payload
-        output_json = root / "assets.json"
-        output_checksums = root / "SHA256SUMS"
-        env = os.environ.copy()
-        env.update(
-            {
-                "LLAMADART_LLAMA_CPP_TAG": "b-test",
-                "LLAMADART_LLAMA_CPP_COMMIT": "1" * 40,
-                "LLAMADART_NATIVE_COMMIT": "2" * 40,
-            }
+        fixtures = (
+            ("stable", "v0.2.0", "v0.2.0"),
+            ("nightly", "b10545", "b10545"),
+            ("stable-wrapper", "v0.2.1-llamadart.1", "v0.2.0"),
+            ("legacy-wrapper", "b10356-llamadart.1", "b10356"),
         )
-        subprocess.run(
-            [
-                str(MANIFEST_SCRIPT),
-                "b10545",
-                str(assets),
-                str(output_json),
-                str(output_checksums),
-            ],
-            check=True,
-            cwd=ROOT,
-            env=env,
-        )
-        manifest = json.loads(output_json.read_text())
-        require(
-            manifest.get("llama_cpp_tag") == "b-test"
-            and manifest.get("llama_cpp_commit") == "1" * 40
-            and manifest.get("native_commit") == "2" * 40,
-            "assets.json must contain the upstream ref, exact upstream commit, and native release commit",
-            errors,
-        )
-        require(
-            set(manifest)
-            == {
-                "tag",
-                "llama_cpp_tag",
-                "llama_cpp_commit",
-                "native_commit",
-                "generated_at",
-                "hook_contract_version",
-                "artifacts",
-            }
-            and manifest.get("tag") == "b10545"
-            and manifest.get("hook_contract_version") == 1
-            and re.fullmatch(
-                r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z",
-                manifest.get("generated_at", ""),
+        for fixture_name, native_tag, upstream_ref in fixtures:
+            fixture_root = root / fixture_name
+            assets = fixture_root / "assets"
+            assets.mkdir(parents=True)
+            expected_assets = release_assets(native_tag)
+            expected_payloads = {}
+            for index, filename in enumerate(expected_assets, start=1):
+                payload = f"{fixture_name}-native-test-{index}\n".encode()
+                (assets / filename).write_bytes(payload)
+                expected_payloads[filename] = payload
+            output_json = fixture_root / "assets.json"
+            output_checksums = fixture_root / "SHA256SUMS"
+            env = os.environ.copy()
+            env.update(
+                {
+                    "LLAMADART_LLAMA_CPP_TAG": upstream_ref,
+                    "LLAMADART_LLAMA_CPP_COMMIT": "1" * 40,
+                    "LLAMADART_NATIVE_COMMIT": "2" * 40,
+                }
             )
-            is not None,
-            "assets.json must preserve the release manifest schema",
-            errors,
-        )
-
-        artifacts = manifest.get("artifacts", [])
-        require(
-            [artifact.get("file") for artifact in artifacts]
-            == sorted(RELEASE_ASSETS),
-            "assets.json must contain every supported release asset in filename order",
-            errors,
-        )
-        for artifact in artifacts:
-            filename = artifact.get("file")
-            expected_meta = RELEASE_ASSETS.get(filename)
+            subprocess.run(
+                [
+                    str(MANIFEST_SCRIPT),
+                    native_tag,
+                    str(assets),
+                    str(output_json),
+                    str(output_checksums),
+                ],
+                check=True,
+                cwd=ROOT,
+                env=env,
+            )
+            manifest = json.loads(output_json.read_text())
             require(
-                set(artifact)
+                manifest.get("native_release_tag") == native_tag
+                and manifest.get("tag") == native_tag
+                and manifest.get("llama_cpp_tag") == upstream_ref
+                and manifest.get("llama_cpp_commit") == "1" * 40
+                and manifest.get("native_commit") == "2" * 40,
+                f"{fixture_name}: manifest must distinguish native tag, upstream ref, "
+                "upstream commit, and native commit",
+                errors,
+            )
+            require(
+                set(manifest)
                 == {
-                    "module",
-                    "platform",
-                    "arch",
-                    "backend",
-                    "file",
-                    "sha256",
-                    "size",
-                },
-                f"{filename}: artifact entry must preserve the manifest schema",
-                errors,
-            )
-            if expected_meta is None:
-                continue
-            platform, arch, backend, module = expected_meta
-            payload = expected_payloads[filename]
-            require(
-                artifact.get("platform") == platform
-                and artifact.get("arch") == arch
-                and artifact.get("backend") == backend
-                and artifact.get("module") == module,
-                f"{filename}: incorrect platform/arch/backend/module classification",
-                errors,
-            )
-            require(
-                artifact.get("sha256") == hashlib.sha256(payload).hexdigest()
-                and artifact.get("size") == len(payload),
-                f"{filename}: incorrect checksum or size",
+                    "tag",
+                    "native_release_tag",
+                    "llama_cpp_tag",
+                    "llama_cpp_commit",
+                    "native_commit",
+                    "generated_at",
+                    "hook_contract_version",
+                    "artifacts",
+                }
+                and manifest.get("hook_contract_version") == 1
+                and re.fullmatch(
+                    r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z",
+                    manifest.get("generated_at", ""),
+                )
+                is not None,
+                f"{fixture_name}: assets.json must preserve the release manifest schema",
                 errors,
             )
 
-        expected_checksums = "".join(
-            f"{hashlib.sha256(expected_payloads[filename]).hexdigest()}  {filename}\n"
-            for filename in sorted(RELEASE_ASSETS)
-        )
-        require(
-            output_checksums.read_text() == expected_checksums,
-            "SHA256SUMS must contain the exact checksum for every supported release asset",
-            errors,
-        )
+            artifacts = manifest.get("artifacts", [])
+            require(
+                [artifact.get("file") for artifact in artifacts]
+                == sorted(expected_assets),
+                f"{fixture_name}: manifest must contain every supported release asset",
+                errors,
+            )
+            for artifact in artifacts:
+                filename = artifact.get("file")
+                expected_meta = expected_assets.get(filename)
+                require(
+                    set(artifact)
+                    == {
+                        "module",
+                        "platform",
+                        "arch",
+                        "backend",
+                        "file",
+                        "sha256",
+                        "size",
+                    },
+                    f"{fixture_name}/{filename}: artifact schema changed",
+                    errors,
+                )
+                if expected_meta is None:
+                    continue
+                platform, arch, backend, module = expected_meta
+                payload = expected_payloads[filename]
+                require(
+                    artifact.get("platform") == platform
+                    and artifact.get("arch") == arch
+                    and artifact.get("backend") == backend
+                    and artifact.get("module") == module,
+                    f"{fixture_name}/{filename}: incorrect artifact classification",
+                    errors,
+                )
+                require(
+                    artifact.get("sha256") == hashlib.sha256(payload).hexdigest()
+                    and artifact.get("size") == len(payload),
+                    f"{fixture_name}/{filename}: incorrect checksum or size",
+                    errors,
+                )
+
+            expected_checksums = "".join(
+                f"{hashlib.sha256(expected_payloads[filename]).hexdigest()}  {filename}\n"
+                for filename in sorted(expected_assets)
+            )
+            require(
+                output_checksums.read_text() == expected_checksums,
+                f"{fixture_name}: SHA256SUMS must cover every release asset",
+                errors,
+            )
 
 
 def main() -> int:

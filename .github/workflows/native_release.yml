@@ -4,11 +4,11 @@ on:
   workflow_dispatch:
     inputs:
       llama_cpp_tag:
-        description: 'llama.cpp ref to build (e.g., b8011, latest, submodule)'
+        description: 'llama.cpp release ref: latest stable, vX.Y.Z stable, bNNNN nightly, or tagged submodule'
         required: true
         default: 'latest'
       native_release_tag:
-        description: 'llamadart-native release tag/archive suffix (blank = resolved llama.cpp tag)'
+        description: 'Native tag (blank = upstream ref; stable rebuild: next patch -llamadart.N)'
         required: false
         default: ''
       publish_release:
@@ -40,6 +40,9 @@ jobs:
       llama_cpp_ref: ${{ steps.tag.outputs.tag }}
       llama_cpp_commit: ${{ steps.llama-checkout.outputs.commit }}
       release_tag: ${{ steps.tag.outputs.release_tag }}
+      upstream_channel: ${{ steps.tag.outputs.upstream_channel }}
+      release_kind: ${{ steps.tag.outputs.release_kind }}
+      github_prerelease: ${{ steps.tag.outputs.github_prerelease }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -51,7 +54,8 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          TAG="${{ github.event.inputs.llama_cpp_tag }}"
+          REQUESTED_TAG="${{ github.event.inputs.llama_cpp_tag }}"
+          TAG="$REQUESTED_TAG"
 
           if [ -z "$TAG" ] || [ "$TAG" = "latest" ]; then
             TAG=$(gh api repos/ggml-org/llama.cpp/releases/latest --jq '.tag_name')
@@ -63,41 +67,33 @@ jobs:
           if [ -z "$RELEASE_TAG" ]; then
             RELEASE_TAG="$TAG"
           fi
-          if ! [[ "$RELEASE_TAG" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
-            echo "Invalid native_release_tag: $RELEASE_TAG" >&2
-            exit 1
-          fi
 
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          echo "release_tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
-          echo "Resolved llama.cpp tag: $TAG"
-          echo "Resolved native release tag: $RELEASE_TAG"
+          policy_args=(
+            --upstream-ref "$TAG"
+            --native-tag "$RELEASE_TAG"
+          )
+          if [ -z "$REQUESTED_TAG" ] || [ "$REQUESTED_TAG" = "latest" ]; then
+            policy_args+=(--require-stable-upstream)
+          fi
 
           if [ "${{ github.event.inputs.publish_release }}" = "true" ]; then
             git fetch --tags --force origin
-
-            existing_sha="$(git rev-parse -q --verify "refs/tags/${RELEASE_TAG}^{commit}" || true)"
-            if [ -n "$existing_sha" ]; then
-              echo "Release tag $RELEASE_TAG already exists at $existing_sha." >&2
-              echo "Use a new native_release_tag for wrapper-only rebuilds, for example ${TAG}-llamadart.1." >&2
-              exit 1
-            fi
-
-            set +e
-            release_url="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" --jq '.html_url' 2>&1)"
-            release_status=$?
-            set -e
-            if [ "$release_status" -eq 0 ]; then
-              echo "GitHub release $RELEASE_TAG already exists at $release_url." >&2
-              echo "Use a new native_release_tag for wrapper-only rebuilds, for example ${TAG}-llamadart.1." >&2
-              exit 1
-            fi
-            if ! grep -q "HTTP 404" <<< "$release_url"; then
-              echo "Unable to verify whether GitHub release $RELEASE_TAG already exists:" >&2
-              echo "$release_url" >&2
-              exit 1
-            fi
+            existing_tags="$RUNNER_TEMP/existing-native-release-tags.txt"
+            {
+              git tag --list
+              gh api --paginate "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+                --jq '.[].tag_name'
+            } | sort -u > "$existing_tags"
+            policy_args+=(--existing-tags-file "$existing_tags")
           fi
+
+          {
+            python3 scripts/release_version_policy.py "${policy_args[@]}"
+            echo "tag=$TAG"
+            echo "release_tag=$RELEASE_TAG"
+          } >> "$GITHUB_OUTPUT"
+          echo "Resolved llama.cpp tag: $TAG"
+          echo "Resolved native release tag: $RELEASE_TAG"
 
       - name: Resolve exact llama.cpp commit
         id: llama-checkout
@@ -1148,28 +1144,16 @@ jobs:
           set -euo pipefail
 
           git fetch --tags --force origin
-
-          existing_sha="$(git rev-parse -q --verify "refs/tags/${RELEASE_TAG}^{commit}" || true)"
-          if [ -n "$existing_sha" ]; then
-            echo "Release tag $RELEASE_TAG already exists at $existing_sha." >&2
-            echo "Use a new native_release_tag for wrapper-only rebuilds, for example ${LLAMA_CPP_REF}-llamadart.1." >&2
-            exit 1
-          fi
-
-          set +e
-          release_url="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" --jq '.html_url' 2>&1)"
-          release_status=$?
-          set -e
-          if [ "$release_status" -eq 0 ]; then
-            echo "GitHub release $RELEASE_TAG already exists at $release_url." >&2
-            echo "Use a new native_release_tag for wrapper-only rebuilds, for example ${LLAMA_CPP_REF}-llamadart.1." >&2
-            exit 1
-          fi
-          if ! grep -q "HTTP 404" <<< "$release_url"; then
-            echo "Unable to verify whether GitHub release $RELEASE_TAG already exists:" >&2
-            echo "$release_url" >&2
-            exit 1
-          fi
+          existing_tags="$RUNNER_TEMP/existing-native-release-tags.txt"
+          {
+            git tag --list
+            gh api --paginate "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+              --jq '.[].tag_name'
+          } | sort -u > "$existing_tags"
+          python3 scripts/release_version_policy.py \
+            --upstream-ref "$LLAMA_CPP_REF" \
+            --native-tag "$RELEASE_TAG" \
+            --existing-tags-file "$existing_tags" >/dev/null
 
       - name: Push release provenance tag
         if: ${{ github.event.inputs.publish_release == 'true' }}
@@ -1189,16 +1173,17 @@ jobs:
           tag_name: ${{ needs.resolve-tag.outputs.release_tag }}
           name: ${{ needs.resolve-tag.outputs.release_tag }}
           body: |
+            llamadart-native tag: `${{ needs.resolve-tag.outputs.release_tag }}`
             llama.cpp tag/ref: `${{ needs.resolve-tag.outputs.llama_cpp_ref }}`
             llama.cpp commit: `${{ needs.resolve-tag.outputs.llama_cpp_commit }}`
             llamadart-native commit: `${{ steps.provenance.outputs.native_commit }}`
           files: release_assets/*
-          prerelease: false
+          prerelease: ${{ needs.resolve-tag.outputs.github_prerelease }}
           target_commitish: ${{ steps.provenance.outputs.native_commit }}
 
   update-llama-submodule:
     needs: [resolve-tag, package-and-release]
-    if: ${{ github.event.inputs.publish_release == 'true' && needs.package-and-release.result == 'success' }}
+    if: ${{ github.event.inputs.publish_release == 'true' && needs.package-and-release.result == 'success' && needs.resolve-tag.outputs.upstream_channel == 'stable' && needs.resolve-tag.outputs.release_kind == 'upstream' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7

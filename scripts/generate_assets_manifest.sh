@@ -85,7 +85,10 @@ EOF_FILES
 
 {
   echo "{"
+  # Keep tag as an immutable compatibility alias for existing consumers while
+  # making native artifact-version ownership explicit for new manifests.
   echo "  \"tag\": \"$tag\"," 
+  echo "  \"native_release_tag\": \"$tag\","
   echo "  \"llama_cpp_tag\": \"$llama_cpp_tag\","
   if [ -n "$llama_cpp_commit" ]; then
     echo "  \"llama_cpp_commit\": \"$llama_cpp_commit\","

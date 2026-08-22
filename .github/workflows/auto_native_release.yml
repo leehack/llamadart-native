@@ -17,6 +17,7 @@ jobs:
   dispatch:
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v7
       - name: Dispatch native release for new upstream tag
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -29,6 +30,13 @@ jobs:
             exit 1
           fi
           echo "Latest upstream llama.cpp tag: $tag"
+
+          # releases/latest is the stable channel only. Fail closed if upstream
+          # ever points it at a nightly, prerelease, or otherwise unsupported ref.
+          python3 scripts/release_version_policy.py \
+            --upstream-ref "$tag" \
+            --native-tag "$tag" \
+            --require-stable-upstream >/dev/null
 
           if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             echo "Release $tag already exists in $GITHUB_REPOSITORY; nothing to do."

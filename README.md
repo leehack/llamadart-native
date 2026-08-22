@@ -24,16 +24,19 @@ The Dart API/runtime stays in the main `llamadart` repository.
     tag whose submodule entry identifies that exact commit.
 - `Auto Trigger Native Release` (`.github/workflows/auto_native_release.yml`)
   - Daily schedule plus manual dispatch.
-  - Resolves latest upstream `ggml-org/llama.cpp` release tag.
+  - Resolves the latest stable upstream `ggml-org/llama.cpp`
+    `vMAJOR.MINOR.PATCH` release tag and fails closed on any other shape.
   - Dispatches `Native Build & Release` only when this repo does not already have that tag and no native release run is in flight.
 
 ## Native Version Management
 
-The published tag is the native version contract consumed by downstream package
-hooks and Swift Package manifests. `llama_cpp_tag` selects the upstream
-`llama.cpp` ref to build. `native_release_tag` selects the
-`llamadart-native` release tag and archive suffix; when blank, it defaults to
-the resolved `llama_cpp_tag`.
+Stable upstream `vMAJOR.MINOR.PATCH` releases are the default distribution
+channel. Historical and new `bNNNN` nightlies remain available only through an
+explicit workflow input. The published tag is the native version contract
+consumed by downstream package hooks and Swift Package manifests.
+`llama_cpp_tag` selects the upstream `llama.cpp` ref to build.
+`native_release_tag` selects the `llamadart-native` release tag and archive
+suffix; when blank, it defaults to the resolved `llama_cpp_tag`.
 
 When changing the upstream `llama.cpp` version:
 
@@ -47,16 +50,21 @@ When changing the upstream `llama.cpp` version:
 
 When rebuilding the wrapper without changing the upstream `llama.cpp` ref,
 dispatch `Native Build & Release` with the same `llama_cpp_tag` and a new
-`native_release_tag`, for example `b9873-llamadart.1`. Do not republish
-different source under an existing raw upstream tag; downstream caches are
-tag-keyed and the GitHub source tag should identify the native wrapper commit
-that produced the assets. Publish mode fails if the selected
-`native_release_tag` already exists as a tag or GitHub Release.
+`native_release_tag`. A rebuild of stable upstream `v0.2.0` uses
+`v0.2.1-llamadart.1`; a nightly rebuild retains the historical
+`b9873-llamadart.1` form. Do not republish different source under an existing
+tag; downstream caches are tag-keyed and the GitHub source tag should identify
+the native wrapper commit that produced the assets. Publish mode rejects tag
+collisions, stable rollbacks, and decreasing rebuild sequences.
 
-`assets.json` records both the requested `llama_cpp_tag` and its resolved
-`llama_cpp_commit`, plus the `native_commit` targeted by the published source
-tag. Consumers can therefore verify the built source independently of a moving
-ref or release label.
+`assets.json` records `native_release_tag`, the requested `llama_cpp_tag`, its
+resolved `llama_cpp_commit`, and the `native_commit` targeted by the published
+source tag. The historical `tag` field remains as a compatibility alias for the
+native tag. Consumers can therefore verify the built source independently of a
+moving ref or release label.
+
+See [Native Release Version Policy](docs/release_version_policy.md) for ordering,
+prerelease classification, legacy compatibility, and the downstream contract.
 
 ## Backend Policy (Worthy Sets)
 
@@ -121,6 +129,8 @@ Assets are suffixed with platform/arch, for example:
 - `scripts/verify_release_provenance.py`: verifies exact-source checkout, source
   tag, and manifest provenance contracts.
 - `docs/platform_backend_strategy.md`: platform/backend matrix.
+- `docs/release_version_policy.md`: stable/nightly channels, wrapper rebuild
+  ordering, provenance, and downstream coordination.
 
 ## Local Build (Preferred)
 
