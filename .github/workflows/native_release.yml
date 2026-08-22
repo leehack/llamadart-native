@@ -54,6 +54,8 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          set -euo pipefail
+
           REQUESTED_TAG="${{ github.event.inputs.llama_cpp_tag }}"
           TAG="$REQUESTED_TAG"
 

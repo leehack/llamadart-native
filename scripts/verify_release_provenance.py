@@ -151,6 +151,14 @@ def verify_workflow_contract(errors: list[str]) -> None:
         "native release workflow must enforce version history and classify prereleases",
         errors,
     )
+    resolve_tag = workflow.find("- name: Resolve llama.cpp tag")
+    resolve_commit = workflow.find("- name: Resolve exact llama.cpp commit")
+    require(
+        -1 not in (resolve_tag, resolve_commit)
+        and "set -euo pipefail" in workflow[resolve_tag:resolve_commit],
+        "release history collection must fail closed if any pipeline command fails",
+        errors,
+    )
     require(
         "scripts/release_version_policy.py" in auto_workflow
         and "--require-stable-upstream" in auto_workflow
