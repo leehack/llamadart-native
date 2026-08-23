@@ -71,9 +71,12 @@ def _artifact_digest(value: str) -> str:
 
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for block in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(block)
+    try:
+        with path.open("rb") as handle:
+            for block in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(block)
+    except OSError as error:
+        raise ContractError(f"unable to hash {path}: {error}") from error
     return digest.hexdigest()
 
 
@@ -210,7 +213,11 @@ def build_discovery_report(
 
 def _read_checksums(path: Path) -> dict[str, str]:
     checksums: dict[str, str] = {}
-    for line in path.read_text().splitlines():
+    try:
+        encoded = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as error:
+        raise ContractError(f"unable to read SHA256SUMS: {error}") from error
+    for line in encoded.splitlines():
         match = re.fullmatch(r"([0-9a-f]{64})  (.+)", line)
         if match is None:
             raise ContractError(f"invalid SHA256SUMS line: {line!r}")
@@ -511,8 +518,14 @@ def build_release_result(
 
 
 def _write_json(payload: Mapping[str, Any], output: Path) -> None:
-    output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+    try:
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(
+            json.dumps(payload, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+    except OSError as error:
+        raise ContractError(f"unable to write result JSON {output}: {error}") from error
 
 
 def main() -> int:

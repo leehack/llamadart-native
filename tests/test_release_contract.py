@@ -440,6 +440,23 @@ class ReleaseResultTests(unittest.TestCase):
         self.assertIn("unable to read assets.json", result.stderr)
         self.assertNotIn("Traceback", result.stderr)
 
+    def test_cli_rejects_invalid_utf8_checksums_without_traceback(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            assets, release = self._fixture(root)
+            (assets / "SHA256SUMS").write_bytes(b"\xff")
+            metadata = root / "release-metadata.json"
+            metadata.write_text(json.dumps(release), encoding="utf-8")
+            result = subprocess.run(
+                self._cli_result_args(assets, metadata),
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        self.assertEqual(2, result.returncode)
+        self.assertIn("unable to read SHA256SUMS", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()
