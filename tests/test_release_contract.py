@@ -94,6 +94,51 @@ class DiscoveryContractTests(unittest.TestCase):
 
 
 class ReleaseResultTests(unittest.TestCase):
+    def _cli_result_args(self, root: Path, metadata: Path) -> list[str]:
+        return [
+            sys.executable,
+            str(ROOT / "scripts/release_contract.py"),
+            "release-result",
+            "--assets-dir",
+            str(root),
+            "--release-metadata",
+            str(metadata),
+            "--native-release-tag",
+            "v0.2.0",
+            "--upstream-ref",
+            "v0.2.0",
+            "--upstream-commit",
+            COMMIT,
+            "--native-commit",
+            NATIVE_COMMIT,
+            "--correlation-id",
+            "central-123",
+            "--smoke-policy",
+            "required",
+            "--smoke-conclusion",
+            "passed",
+            "--publish-release",
+            "true",
+            "--workflow-repository",
+            "leehack/llamadart-native",
+            "--workflow-run-id",
+            "123",
+            "--workflow-run-attempt",
+            "1",
+            "--workflow-run-url",
+            "https://github.com/leehack/llamadart-native/actions/runs/123",
+            "--workflow-head-sha",
+            HEAD_COMMIT,
+            "--publication-artifact-id",
+            "456",
+            "--publication-artifact-url",
+            "https://github.com/example/artifacts/456",
+            "--publication-artifact-digest",
+            "a" * 64,
+            "--output",
+            str(root / "result.json"),
+        ]
+
     def _fixture(self, root: Path) -> tuple[Path, dict[str, object]]:
         assets = root / "release_assets"
         assets.mkdir()
@@ -340,49 +385,7 @@ class ReleaseResultTests(unittest.TestCase):
                 metadata = root / "release-metadata.json"
                 metadata.write_bytes(contents)
                 result = subprocess.run(
-                    [
-                        sys.executable,
-                        str(ROOT / "scripts/release_contract.py"),
-                        "release-result",
-                        "--assets-dir",
-                        str(root),
-                        "--release-metadata",
-                        str(metadata),
-                        "--native-release-tag",
-                        "v0.2.0",
-                        "--upstream-ref",
-                        "v0.2.0",
-                        "--upstream-commit",
-                        COMMIT,
-                        "--native-commit",
-                        NATIVE_COMMIT,
-                        "--correlation-id",
-                        "central-123",
-                        "--smoke-policy",
-                        "required",
-                        "--smoke-conclusion",
-                        "passed",
-                        "--publish-release",
-                        "true",
-                        "--workflow-repository",
-                        "leehack/llamadart-native",
-                        "--workflow-run-id",
-                        "123",
-                        "--workflow-run-attempt",
-                        "1",
-                        "--workflow-run-url",
-                        "https://github.com/leehack/llamadart-native/actions/runs/123",
-                        "--workflow-head-sha",
-                        HEAD_COMMIT,
-                        "--publication-artifact-id",
-                        "456",
-                        "--publication-artifact-url",
-                        "https://github.com/example/artifacts/456",
-                        "--publication-artifact-digest",
-                        "a" * 64,
-                        "--output",
-                        str(root / "result.json"),
-                    ],
+                    self._cli_result_args(root, metadata),
                     capture_output=True,
                     text=True,
                     check=False,
@@ -390,6 +393,23 @@ class ReleaseResultTests(unittest.TestCase):
                 self.assertEqual(2, result.returncode)
                 self.assertIn(message, result.stderr)
                 self.assertNotIn("Traceback", result.stderr)
+
+    def test_cli_rejects_invalid_utf8_assets_manifest_without_traceback(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            assets, release = self._fixture(root)
+            (assets / "assets.json").write_bytes(b"\xff")
+            metadata = root / "release-metadata.json"
+            metadata.write_text(json.dumps(release), encoding="utf-8")
+            result = subprocess.run(
+                self._cli_result_args(assets, metadata),
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        self.assertEqual(2, result.returncode)
+        self.assertIn("unable to read assets.json", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
 
 
 if __name__ == "__main__":

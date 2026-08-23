@@ -79,7 +79,7 @@ def _sha256(path: Path) -> str:
 
 def _read_json_object(path: Path, label: str) -> Mapping[str, Any]:
     try:
-        encoded = path.read_text()
+        encoded = path.read_text(encoding="utf-8")
     except (OSError, UnicodeError) as error:
         raise ContractError(f"unable to read {label}: {error}") from error
     try:
