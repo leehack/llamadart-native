@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -323,6 +324,72 @@ class ReleaseResultTests(unittest.TestCase):
                 ContractError, "missing exact evidence: native smoke"
             ):
                 self._result(assets, release)
+
+    def test_cli_rejects_malformed_release_metadata_without_traceback(self) -> None:
+        cases = (
+            (b"{", "release metadata is not valid JSON"),
+            (b"[]", "release metadata must contain a JSON object"),
+            (b"\xff", "unable to read release metadata"),
+        )
+        for contents, message in cases:
+            with (
+                self.subTest(message=message),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                metadata = root / "release-metadata.json"
+                metadata.write_bytes(contents)
+                result = subprocess.run(
+                    [
+                        sys.executable,
+                        str(ROOT / "scripts/release_contract.py"),
+                        "release-result",
+                        "--assets-dir",
+                        str(root),
+                        "--release-metadata",
+                        str(metadata),
+                        "--native-release-tag",
+                        "v0.2.0",
+                        "--upstream-ref",
+                        "v0.2.0",
+                        "--upstream-commit",
+                        COMMIT,
+                        "--native-commit",
+                        NATIVE_COMMIT,
+                        "--correlation-id",
+                        "central-123",
+                        "--smoke-policy",
+                        "required",
+                        "--smoke-conclusion",
+                        "passed",
+                        "--publish-release",
+                        "true",
+                        "--workflow-repository",
+                        "leehack/llamadart-native",
+                        "--workflow-run-id",
+                        "123",
+                        "--workflow-run-attempt",
+                        "1",
+                        "--workflow-run-url",
+                        "https://github.com/leehack/llamadart-native/actions/runs/123",
+                        "--workflow-head-sha",
+                        HEAD_COMMIT,
+                        "--publication-artifact-id",
+                        "456",
+                        "--publication-artifact-url",
+                        "https://github.com/example/artifacts/456",
+                        "--publication-artifact-digest",
+                        "a" * 64,
+                        "--output",
+                        str(root / "result.json"),
+                    ],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(2, result.returncode)
+                self.assertIn(message, result.stderr)
+                self.assertNotIn("Traceback", result.stderr)
 
 
 if __name__ == "__main__":

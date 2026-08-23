@@ -77,6 +77,20 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _read_json_object(path: Path, label: str) -> Mapping[str, Any]:
+    try:
+        encoded = path.read_text()
+    except (OSError, UnicodeError) as error:
+        raise ContractError(f"unable to read {label}: {error}") from error
+    try:
+        payload = json.loads(encoded)
+    except json.JSONDecodeError as error:
+        raise ContractError(f"{label} is not valid JSON: {error}") from error
+    if not isinstance(payload, Mapping):
+        raise ContractError(f"{label} must contain a JSON object")
+    return payload
+
+
 def _download_asset_digest(asset: Mapping[str, Any], *, repository: str) -> str:
     url = asset.get("url")
     if not isinstance(url, str) or not url:
@@ -318,12 +332,7 @@ def build_release_result(
     checksums_path = assets_dir / "SHA256SUMS"
     if not manifest_path.is_file() or not checksums_path.is_file():
         raise ContractError("release assets must contain assets.json and SHA256SUMS")
-    try:
-        manifest = json.loads(manifest_path.read_text())
-    except json.JSONDecodeError as error:
-        raise ContractError(f"assets.json is not valid JSON: {error}") from error
-    if not isinstance(manifest, dict):
-        raise ContractError("assets.json must contain a JSON object")
+    manifest = _read_json_object(manifest_path, "assets.json")
     if manifest.get("native_release_tag") != native_release_tag or manifest.get("tag") != native_release_tag:
         raise ContractError("manifest native_release_tag/tag does not match dispatch")
     for field, expected in {
@@ -574,7 +583,9 @@ def main() -> int:
         else:
             metadata = None
             if args.release_metadata is not None:
-                metadata = json.loads(args.release_metadata.read_text())
+                metadata = _read_json_object(
+                    args.release_metadata, "release metadata"
+                )
             _write_json(
                 build_release_result(
                     assets_dir=args.assets_dir,
