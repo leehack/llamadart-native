@@ -1405,7 +1405,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${{ needs.resolve-tag.outputs.native_release_tag }}" > release-metadata.json
-          echo "url=$(python3 -c 'import json; print(json.load(open("release-metadata.json"))["html_url"])')" >> "$GITHUB_OUTPUT"
+          python3 -c 'import json, pathlib, sys; print("url=" + json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))["html_url"])' release-metadata.json >> "$GITHUB_OUTPUT"
       - name: Generate exact machine-readable release result
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -326,6 +326,9 @@ def verify_workflow_contract(errors: list[str]) -> None:
         "native-release-result-${{ github.run_id }}" in result_job
         and "scripts/release_contract.py release-result" in result_job
         and "GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}" in result_job
+        and "pathlib.Path(sys.argv[1]).read_text" in result_job
+        and "release-metadata.json >> \"$GITHUB_OUTPUT\"" in result_job
+        and 'echo "url=$(python3 -c' not in result_job
         and "publication_artifact_digest" in result_job
         and "bundle_coverage" in contract_script
         and '"native_release_tag"' in contract_script
