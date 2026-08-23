@@ -40,6 +40,10 @@ jobs:
           echo "${{ github['event']['inputs']['smoke_policy'] }}"
           echo '${{ github["event"].inputs["correlation_id"] }}'
           echo "${{ github.event['inputs'].publish_release }}"
+          echo "${{ toJSON(github.event.inputs) }}"
+          echo "${{ toJSON(github['event']['inputs']) }}"
+          echo "${{ github.event.inputs[format('llama_cpp_tag')] }}"
+          echo "${{ github[format('event')]['inputs'][format('llama_cpp_tag')] }}"
 """
         self.assertEqual(
             (
@@ -49,6 +53,10 @@ jobs:
                 "${{ github['event']['inputs']['smoke_policy'] }}",
                 '${{ github["event"].inputs["correlation_id"] }}',
                 "${{ github.event['inputs'].publish_release }}",
+                "${{ toJSON(github.event.inputs) }}",
+                "${{ toJSON(github['event']['inputs']) }}",
+                "${{ github.event.inputs[format('llama_cpp_tag')] }}",
+                "${{ github[format('event')]['inputs'][format('llama_cpp_tag')] }}",
             ),
             direct_dispatch_input_expressions(synthetic),
         )

@@ -114,8 +114,11 @@ def direct_dispatch_input_expressions(workflow: str) -> tuple[str, ...]:
     bracket_key_pattern = re.compile(
         r"\[\s*(?P<quote>['\"])(?P<key>[A-Za-z0-9_-]+)(?P=quote)\s*\]"
     )
+    # Be deliberately conservative: any expression-level `inputs` context in
+    # shell source must be moved to step env. This also closes dynamic context
+    # paths that cannot be reduced reliably without a full expression parser.
     dispatch_input_pattern = re.compile(
-        r"(?<![A-Za-z0-9_])(?:github\.event\.)?inputs\."
+        r"(?<![A-Za-z0-9_])inputs(?![A-Za-z0-9_])"
     )
     matches: list[str] = []
     for block in workflow_run_blocks(workflow):
