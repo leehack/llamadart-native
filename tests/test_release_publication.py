@@ -38,6 +38,38 @@ EXACT_PROVENANCE = {
 
 
 class ReleasePublicationTest(unittest.TestCase):
+    def _cli_args(self, assets_dir: Path) -> list[str]:
+        return [
+            sys.executable,
+            str(ROOT / "scripts/release_publication.py"),
+            "--repository",
+            "leehack/llamadart-native",
+            "--tag",
+            "v0.2.0-1",
+            "--native-commit",
+            "1" * 40,
+            "--upstream-ref",
+            "v0.2.0",
+            "--upstream-commit",
+            "2" * 40,
+            "--assets-dir",
+            str(assets_dir),
+            "--prerelease",
+            "true",
+            "--workflow-run-url",
+            "https://github.com/example/repository/actions/runs/123",
+            "--workflow-head-sha",
+            "4" * 40,
+            "--artifact-digest",
+            "3" * 64,
+            "--correlation-id",
+            "central/run-123",
+            "--smoke-policy",
+            "required",
+            "--smoke-conclusion",
+            "passed",
+        ]
+
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
@@ -99,6 +131,45 @@ class ReleasePublicationTest(unittest.TestCase):
         directory.mkdir()
         with self.assertRaisesRegex(PublicationError, "not a regular file"):
             build_desired_release(**base)
+
+    def test_missing_or_non_directory_assets_fail_without_traceback(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            non_directory = root / "not-a-directory"
+            non_directory.write_text("fixture")
+            for assets_dir in (root / "missing", non_directory):
+                with self.subTest(assets_dir=assets_dir):
+                    result = subprocess.run(
+                        self._cli_args(assets_dir),
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                    )
+                    self.assertEqual(2, result.returncode)
+                    self.assertIn(
+                        "does not exist or is not a directory", result.stderr
+                    )
+                    self.assertNotIn("Traceback", result.stderr)
+
+    def test_unreadable_asset_directory_fails_with_publication_error(self) -> None:
+        base = {
+            "tag": self.desired.tag,
+            "native_commit": self.desired.native_commit,
+            "upstream_ref": "v0.2.0",
+            "upstream_commit": "2" * 40,
+            "prerelease": True,
+            "assets_dir": Path(self.temp.name),
+            "workflow_run_url": "https://github.com/example/repository/actions/runs/123",
+            "artifact_digest": "3" * 64,
+            **EXACT_PROVENANCE,
+        }
+        with patch.object(
+            Path, "iterdir", side_effect=PermissionError("permission denied")
+        ):
+            with self.assertRaisesRegex(
+                PublicationError, "unable to enumerate release assets directory"
+            ):
+                build_desired_release(**base)
 
     def _release(
         self,

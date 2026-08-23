@@ -190,8 +190,19 @@ def build_desired_release(
             "workflow run URL must identify an exact HTTPS GitHub Actions run"
         )
 
+    if not assets_dir.is_dir():
+        raise PublicationError(
+            f"release assets directory does not exist or is not a directory: {assets_dir}"
+        )
+    try:
+        asset_paths = sorted(assets_dir.iterdir())
+    except OSError as error:
+        raise PublicationError(
+            f"unable to enumerate release assets directory {assets_dir}: {error}"
+        ) from error
+
     expected_assets = _expected_release_assets(tag)
-    actual_assets = {path.name for path in assets_dir.iterdir()}
+    actual_assets = {path.name for path in asset_paths}
     if actual_assets != expected_assets:
         missing = sorted(expected_assets - actual_assets)
         unexpected = sorted(actual_assets - expected_assets)
@@ -201,10 +212,19 @@ def build_desired_release(
         )
 
     assets: dict[str, Asset] = {}
-    for path in sorted(assets_dir.iterdir()):
-        if not path.is_file():
-            raise PublicationError(f"release asset is not a regular file: {path.name}")
-        assets[path.name] = Asset(path.name, path.stat().st_size, _sha256(path), path)
+    for path in asset_paths:
+        try:
+            if not path.is_file():
+                raise PublicationError(
+                    f"release asset is not a regular file: {path.name}"
+                )
+            assets[path.name] = Asset(
+                path.name, path.stat().st_size, _sha256(path), path
+            )
+        except OSError as error:
+            raise PublicationError(
+                f"unable to inspect release asset {path.name!r}: {error}"
+            ) from error
 
     transaction_id = build_publication_transaction_id(
         tag=tag,
