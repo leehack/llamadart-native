@@ -348,6 +348,23 @@ class ReleaseResultTests(unittest.TestCase):
             ):
                 self._result(assets, release)
 
+    def test_result_wraps_asset_download_os_errors(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            assets, release = self._fixture(Path(directory))
+            missing = release["assets"][0]
+            missing["digest"] = None
+            missing["url"] = (
+                "https://api.github.com/repos/leehack/llamadart-native/releases/assets/1"
+            )
+            with patch(
+                "release_contract.subprocess.run",
+                side_effect=FileNotFoundError("gh executable missing"),
+            ):
+                with self.assertRaisesRegex(
+                    ContractError, "unable to download GitHub asset"
+                ):
+                    self._result(assets, release)
+
     def test_result_rejects_transaction_marker_mismatch(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             assets, release = self._fixture(Path(directory))

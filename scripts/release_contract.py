@@ -116,9 +116,9 @@ def _download_asset_digest(asset: Mapping[str, Any], *, repository: str) -> str:
             f"GitHub asset {asset.get('name')!r} must belong to workflow repository "
             f"{repository!r}"
         )
-    with tempfile.TemporaryDirectory() as directory:
-        output_path = Path(directory) / "asset"
-        try:
+    try:
+        with tempfile.TemporaryDirectory() as directory:
+            output_path = Path(directory) / "asset"
             with output_path.open("wb") as output:
                 result = subprocess.run(
                     ["gh", "api", url, "-H", "Accept: application/octet-stream"],
@@ -126,16 +126,20 @@ def _download_asset_digest(asset: Mapping[str, Any], *, repository: str) -> str:
                     stderr=subprocess.PIPE,
                     timeout=300,
                 )
-        except subprocess.TimeoutExpired as error:
-            raise ContractError(
-                f"timed out downloading GitHub asset {asset.get('name')!r}"
-            ) from error
-        if result.returncode != 0:
-            raise ContractError(
-                f"unable to download GitHub asset {asset.get('name')!r}: "
-                f"{result.stderr.decode(errors='replace').strip()}"
-            )
-        return _sha256(output_path)
+            if result.returncode != 0:
+                raise ContractError(
+                    f"unable to download GitHub asset {asset.get('name')!r}: "
+                    f"{result.stderr.decode(errors='replace').strip()}"
+                )
+            return _sha256(output_path)
+    except subprocess.TimeoutExpired as error:
+        raise ContractError(
+            f"timed out downloading GitHub asset {asset.get('name')!r}"
+        ) from error
+    except OSError as error:
+        raise ContractError(
+            f"unable to download GitHub asset {asset.get('name')!r}: {error}"
+        ) from error
 
 
 def validate_dispatch(

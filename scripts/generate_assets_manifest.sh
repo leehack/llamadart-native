@@ -23,6 +23,10 @@ hash_file() {
   fi
 }
 
+json_string() {
+  python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$1"
+}
+
 infer_meta() {
   local file="$1"
   local base platform="unknown" arch="unknown" backend="unknown" module="core"
@@ -93,34 +97,34 @@ EOF_FILES
   echo "{"
   # Keep tag as an immutable compatibility alias for existing consumers while
   # making native artifact-version ownership explicit for new manifests.
-  echo "  \"tag\": \"$tag\","
-  echo "  \"native_release_tag\": \"$tag\","
-  echo "  \"llama_cpp_tag\": \"$llama_cpp_tag\","
+  printf '  "tag": %s,\n' "$(json_string "$tag")"
+  printf '  "native_release_tag": %s,\n' "$(json_string "$tag")"
+  printf '  "llama_cpp_tag": %s,\n' "$(json_string "$llama_cpp_tag")"
   if [ -n "$llama_cpp_commit" ]; then
-    echo "  \"llama_cpp_commit\": \"$llama_cpp_commit\","
+    printf '  "llama_cpp_commit": %s,\n' "$(json_string "$llama_cpp_commit")"
   fi
   if [ -n "$native_commit" ]; then
-    echo "  \"native_commit\": \"$native_commit\","
+    printf '  "native_commit": %s,\n' "$(json_string "$native_commit")"
   fi
   if [ -n "$correlation_id" ]; then
-    echo "  \"correlation_id\": \"$correlation_id\","
+    printf '  "correlation_id": %s,\n' "$(json_string "$correlation_id")"
   fi
   if [ -n "$smoke_policy" ]; then
-    echo "  \"smoke_policy\": \"$smoke_policy\","
+    printf '  "smoke_policy": %s,\n' "$(json_string "$smoke_policy")"
   fi
   if [ -n "$smoke_conclusion" ]; then
-    echo "  \"smoke_conclusion\": \"$smoke_conclusion\","
+    printf '  "smoke_conclusion": %s,\n' "$(json_string "$smoke_conclusion")"
   fi
   if [ -n "$workflow_run_id" ]; then
-    echo "  \"workflow_run_id\": \"$workflow_run_id\","
+    printf '  "workflow_run_id": %s,\n' "$(json_string "$workflow_run_id")"
   fi
   if [ -n "$workflow_run_url" ]; then
-    echo "  \"workflow_run_url\": \"$workflow_run_url\","
+    printf '  "workflow_run_url": %s,\n' "$(json_string "$workflow_run_url")"
   fi
   if [ -n "$workflow_head_sha" ]; then
-    echo "  \"workflow_head_sha\": \"$workflow_head_sha\","
+    printf '  "workflow_head_sha": %s,\n' "$(json_string "$workflow_head_sha")"
   fi
-  echo "  \"generated_at\": \"$timestamp\","
+  printf '  "generated_at": %s,\n' "$(json_string "$timestamp")"
   echo "  \"hook_contract_version\": 1,"
   echo "  \"artifacts\": ["
 
@@ -147,12 +151,12 @@ EOF_FILES
     fi
 
     echo "    {"
-    echo "      \"module\": \"$module\","
-    echo "      \"platform\": \"$platform\","
-    echo "      \"arch\": \"$arch\","
-    echo "      \"backend\": \"$backend\","
-    echo "      \"file\": \"$b\","
-    echo "      \"sha256\": \"$sha\","
+    printf '      "module": %s,\n' "$(json_string "$module")"
+    printf '      "platform": %s,\n' "$(json_string "$platform")"
+    printf '      "arch": %s,\n' "$(json_string "$arch")"
+    printf '      "backend": %s,\n' "$(json_string "$backend")"
+    printf '      "file": %s,\n' "$(json_string "$b")"
+    printf '      "sha256": %s,\n' "$(json_string "$sha")"
     echo "      \"size\": $size"
     echo "    }$comma"
   done <<EOF_FILES
