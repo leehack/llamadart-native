@@ -79,6 +79,50 @@ def workflow_job(workflow: str, name: str) -> str:
     return match.group(0) if match else ""
 
 
+def workflow_run_blocks(workflow: str) -> tuple[str, ...]:
+    """Returns inline and block scalar shell sources from a workflow."""
+    lines = workflow.splitlines()
+    blocks: list[str] = []
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        match = re.match(r"^(?P<indent>\s*)(?:-\s+)?run:\s*(?P<body>.*)$", line)
+        if match is None:
+            index += 1
+            continue
+        body = match.group("body")
+        if body not in {"|", "|-", "|+", ">", ">-", ">+"}:
+            blocks.append(body)
+            index += 1
+            continue
+        base_indent = len(match.group("indent"))
+        index += 1
+        block_lines: list[str] = []
+        while index < len(lines):
+            candidate = lines[index]
+            if candidate.strip() and len(candidate) - len(candidate.lstrip()) <= base_indent:
+                break
+            block_lines.append(candidate)
+            index += 1
+        blocks.append("\n".join(block_lines))
+    return tuple(blocks)
+
+
+def direct_dispatch_input_expressions(workflow: str) -> tuple[str, ...]:
+    """Finds workflow-dispatch expressions embedded directly in shell source."""
+    expression_pattern = re.compile(r"\$\{\{.*?\}\}", flags=re.DOTALL)
+    dispatch_input_pattern = re.compile(
+        r"(?<![A-Za-z0-9_])(?:github\s*\.\s*event\s*\.\s*)?"
+        r"inputs\s*(?:\.|\[)"
+    )
+    return tuple(
+        match.group(0)
+        for block in workflow_run_blocks(workflow)
+        for match in expression_pattern.finditer(block)
+        if dispatch_input_pattern.search(match.group(0))
+    )
+
+
 def verify_workflow_contract(errors: list[str]) -> None:
     workflow = WORKFLOW.read_text()
     wrapper_workflow = WRAPPER_WORKFLOW.read_text()
@@ -88,6 +132,34 @@ def verify_workflow_contract(errors: list[str]) -> None:
     contract_script = CONTRACT_SCRIPT.read_text()
     smoke_script = SMOKE_SCRIPT.read_text()
     action = CHECKOUT_ACTION.read_text()
+
+    require(
+        not direct_dispatch_input_expressions(workflow),
+        "workflow_dispatch inputs must enter shell only through step env variables",
+        errors,
+    )
+    require(
+        all(
+            contract in workflow
+            for contract in (
+                'INPUT_LLAMA_CPP_TAG: ${{ github.event.inputs.llama_cpp_tag }}',
+                'INPUT_LLAMA_CPP_COMMIT: ${{ github.event.inputs.llama_cpp_commit }}',
+                'INPUT_NATIVE_RELEASE_TAG: ${{ github.event.inputs.native_release_tag }}',
+                'INPUT_SMOKE_POLICY: ${{ github.event.inputs.smoke_policy }}',
+                'INPUT_CORRELATION_ID: ${{ github.event.inputs.correlation_id }}',
+                'INPUT_PUBLISH_RELEASE: ${{ github.event.inputs.publish_release }}',
+                'TAG="$INPUT_LLAMA_CPP_TAG"',
+                'EXPECTED_COMMIT="$INPUT_LLAMA_CPP_COMMIT"',
+                'RELEASE_TAG="$INPUT_NATIVE_RELEASE_TAG"',
+                '--smoke-policy "$INPUT_SMOKE_POLICY"',
+                '--correlation-id "$INPUT_CORRELATION_ID"',
+                '--publish-release "$INPUT_PUBLISH_RELEASE"',
+                '[ "$INPUT_PUBLISH_RELEASE" = "true" ]',
+            )
+        ),
+        "every dispatch input must use the documented quoted step-env transport",
+        errors,
+    )
 
     workflow_bundles = set(
         re.findall(r'^\s+bundle="([^"]+)"', workflow, flags=re.MULTILINE)

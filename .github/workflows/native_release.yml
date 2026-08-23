@@ -69,20 +69,26 @@ jobs:
         id: contract
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          INPUT_LLAMA_CPP_TAG: ${{ github.event.inputs.llama_cpp_tag }}
+          INPUT_LLAMA_CPP_COMMIT: ${{ github.event.inputs.llama_cpp_commit }}
+          INPUT_NATIVE_RELEASE_TAG: ${{ github.event.inputs.native_release_tag }}
+          INPUT_SMOKE_POLICY: ${{ github.event.inputs.smoke_policy }}
+          INPUT_CORRELATION_ID: ${{ github.event.inputs.correlation_id }}
+          INPUT_PUBLISH_RELEASE: ${{ github.event.inputs.publish_release }}
         run: |
           set -euo pipefail
 
-          TAG="${{ github.event.inputs.llama_cpp_tag }}"
-          EXPECTED_COMMIT="${{ github.event.inputs.llama_cpp_commit }}"
-          RELEASE_TAG="${{ github.event.inputs.native_release_tag }}"
+          TAG="$INPUT_LLAMA_CPP_TAG"
+          EXPECTED_COMMIT="$INPUT_LLAMA_CPP_COMMIT"
+          RELEASE_TAG="$INPUT_NATIVE_RELEASE_TAG"
 
           python3 scripts/release_contract.py validate-dispatch \
             --upstream-ref "$TAG" \
             --upstream-commit "$EXPECTED_COMMIT" \
             --native-release-tag "$RELEASE_TAG" \
-            --smoke-policy "${{ github.event.inputs.smoke_policy }}" \
-            --correlation-id "${{ github.event.inputs.correlation_id }}" \
-            --publish-release "${{ github.event.inputs.publish_release }}" \
+            --smoke-policy "$INPUT_SMOKE_POLICY" \
+            --correlation-id "$INPUT_CORRELATION_ID" \
+            --publish-release "$INPUT_PUBLISH_RELEASE" \
             >> "$GITHUB_OUTPUT"
 
           policy_args=(
@@ -90,7 +96,7 @@ jobs:
             --native-tag "$RELEASE_TAG"
           )
 
-          if [ "${{ github.event.inputs.publish_release }}" = "true" ]; then
+          if [ "$INPUT_PUBLISH_RELEASE" = "true" ]; then
             git fetch --tags origin
             existing_tags="$RUNNER_TEMP/existing-native-release-tags.txt"
             {
@@ -1409,9 +1415,10 @@ jobs:
       - name: Generate exact machine-readable release result
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          INPUT_PUBLISH_RELEASE: ${{ github.event.inputs.publish_release }}
         run: |
           release_args=()
-          if [ "${{ github.event.inputs.publish_release }}" = "true" ]; then
+          if [ "$INPUT_PUBLISH_RELEASE" = "true" ]; then
             release_args+=(--release-metadata release-metadata.json)
           fi
           python3 scripts/release_contract.py release-result \
@@ -1424,7 +1431,7 @@ jobs:
             --correlation-id "${{ needs.resolve-tag.outputs.correlation_id }}" \
             --smoke-policy "${{ needs.resolve-tag.outputs.smoke_policy }}" \
             --smoke-conclusion "${{ needs.smoke-release-contract.outputs.conclusion }}" \
-            --publish-release "${{ github.event.inputs.publish_release }}" \
+            --publish-release "$INPUT_PUBLISH_RELEASE" \
             --workflow-repository "$GITHUB_REPOSITORY" \
             --workflow-run-id "$GITHUB_RUN_ID" \
             --workflow-run-attempt "$GITHUB_RUN_ATTEMPT" \
