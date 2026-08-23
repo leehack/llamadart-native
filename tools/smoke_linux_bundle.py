@@ -27,12 +27,16 @@ def smoke(bundle: Path) -> None:
         "    raise RuntimeError(f'unexpected wrapper API version: {version}')\n"
         "print(f'loaded libllamadart.so; TTS API version={version}')"
     )
-    result = subprocess.run(
-        [sys.executable, "-c", probe, str(wrapper)],
-        capture_output=True,
-        text=True,
-        env=environment,
-    )
+    try:
+        result = subprocess.run(
+            [sys.executable, "-c", probe, str(wrapper)],
+            capture_output=True,
+            text=True,
+            env=environment,
+            timeout=60,
+        )
+    except subprocess.TimeoutExpired as error:
+        raise RuntimeError("timed out loading packaged wrapper") from error
     if result.returncode != 0:
         detail = (result.stderr or result.stdout or "load probe failed").strip()
         raise RuntimeError(detail)

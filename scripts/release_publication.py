@@ -28,6 +28,19 @@ TAG_TRANSACTION_RE = re.compile(
     r"^llamadart-native publication transaction: ([0-9a-f]{64})$"
 )
 CORRELATION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$")
+RUNTIME_BUNDLES = (
+    "android-arm64",
+    "android-x64",
+    "ios-arm64",
+    "ios-arm64-sim",
+    "ios-x86_64-sim",
+    "linux-arm64",
+    "linux-x64",
+    "macos-arm64",
+    "macos-x86_64",
+    "windows-arm64",
+    "windows-x64",
+)
 
 
 @dataclass(frozen=True)
@@ -79,6 +92,16 @@ def _sha256(path: Path) -> str:
         for block in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(block)
     return digest.hexdigest()
+
+
+def _expected_release_assets(tag: str) -> set[str]:
+    return {
+        "assets.json",
+        "SHA256SUMS",
+        f"llamadart-native-apple-xcframework-{tag}.zip",
+        f"llamadart-native-headers-{tag}.tar.gz",
+        *(f"llamadart-native-{bundle}-{tag}.tar.gz" for bundle in RUNTIME_BUNDLES),
+    }
 
 
 def build_publication_transaction_id(
@@ -167,13 +190,21 @@ def build_desired_release(
             "workflow run URL must identify an exact HTTPS GitHub Actions run"
         )
 
+    expected_assets = _expected_release_assets(tag)
+    actual_assets = {path.name for path in assets_dir.iterdir()}
+    if actual_assets != expected_assets:
+        missing = sorted(expected_assets - actual_assets)
+        unexpected = sorted(actual_assets - expected_assets)
+        raise PublicationError(
+            "release asset inventory mismatch before publication: "
+            f"missing={missing}, unexpected={unexpected}"
+        )
+
     assets: dict[str, Asset] = {}
     for path in sorted(assets_dir.iterdir()):
         if not path.is_file():
-            continue
+            raise PublicationError(f"release asset is not a regular file: {path.name}")
         assets[path.name] = Asset(path.name, path.stat().st_size, _sha256(path), path)
-    if not assets:
-        raise PublicationError(f"no release assets found in {assets_dir}")
 
     transaction_id = build_publication_transaction_id(
         tag=tag,

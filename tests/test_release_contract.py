@@ -16,11 +16,16 @@ sys.path.insert(0, str(ROOT / "scripts"))
 from release_contract import (  # noqa: E402
     ContractError,
     RUNTIME_BUNDLES,
+    _expected_assets,
     build_discovery_report,
     build_release_result,
     validate_dispatch,
 )
-from release_publication import build_desired_release  # noqa: E402
+from release_publication import (  # noqa: E402
+    RUNTIME_BUNDLES as PUBLICATION_RUNTIME_BUNDLES,
+    _expected_release_assets,
+    build_desired_release,
+)
 
 
 COMMIT = "1" * 40
@@ -94,6 +99,13 @@ class DiscoveryContractTests(unittest.TestCase):
 
 
 class ReleaseResultTests(unittest.TestCase):
+    def test_publication_and_result_inventory_contracts_match(self) -> None:
+        self.assertEqual(RUNTIME_BUNDLES, PUBLICATION_RUNTIME_BUNDLES)
+        self.assertEqual(
+            _expected_assets("v0.2.0-1") | {"assets.json", "SHA256SUMS"},
+            _expected_release_assets("v0.2.0-1"),
+        )
+
     def _cli_result_args(self, root: Path, metadata: Path) -> list[str]:
         return [
             sys.executable,

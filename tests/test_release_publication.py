@@ -19,6 +19,7 @@ from release_publication import (  # noqa: E402
     ExistingRelease,
     ExistingTag,
     PublicationError,
+    RUNTIME_BUNDLES,
     _ensure_tag,
     _remote_tag,
     _run,
@@ -42,9 +43,20 @@ class ReleasePublicationTest(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         assets = Path(self.temp.name)
         (assets / "assets.json").write_text("{}\n")
-        (assets / "bundle.tar.gz").write_bytes(b"native bundle")
+        (assets / "SHA256SUMS").write_text("fixture\n")
+        tag = "v0.2.0-1"
+        for bundle in RUNTIME_BUNDLES:
+            (assets / f"llamadart-native-{bundle}-{tag}.tar.gz").write_bytes(
+                f"native bundle:{bundle}".encode()
+            )
+        (assets / f"llamadart-native-apple-xcframework-{tag}.zip").write_bytes(
+            b"apple bundle"
+        )
+        (assets / f"llamadart-native-headers-{tag}.tar.gz").write_bytes(
+            b"headers"
+        )
         self.desired = build_desired_release(
-            tag="v0.2.0-1",
+            tag=tag,
             native_commit="1" * 40,
             upstream_ref="v0.2.0",
             upstream_commit="2" * 40,
@@ -54,6 +66,39 @@ class ReleasePublicationTest(unittest.TestCase):
             artifact_digest="sha256:" + "3" * 64,
             **EXACT_PROVENANCE,
         )
+
+    def test_publication_rejects_missing_unexpected_or_non_file_assets(self) -> None:
+        assets = Path(self.temp.name)
+        base = {
+            "tag": self.desired.tag,
+            "native_commit": self.desired.native_commit,
+            "upstream_ref": "v0.2.0",
+            "upstream_commit": "2" * 40,
+            "prerelease": True,
+            "assets_dir": assets,
+            "workflow_run_url": "https://github.com/example/repository/actions/runs/123",
+            "artifact_digest": "3" * 64,
+            **EXACT_PROVENANCE,
+        }
+
+        missing = assets / sorted(self.desired.assets)[0]
+        original = missing.read_bytes()
+        missing.unlink()
+        with self.assertRaisesRegex(PublicationError, "inventory mismatch"):
+            build_desired_release(**base)
+        missing.write_bytes(original)
+
+        unexpected = assets / "unexpected.tmp"
+        unexpected.write_text("stray")
+        with self.assertRaisesRegex(PublicationError, "unexpected.tmp"):
+            build_desired_release(**base)
+        unexpected.unlink()
+
+        directory = assets / sorted(self.desired.assets)[0]
+        directory.unlink()
+        directory.mkdir()
+        with self.assertRaisesRegex(PublicationError, "not a regular file"):
+            build_desired_release(**base)
 
     def _release(
         self,

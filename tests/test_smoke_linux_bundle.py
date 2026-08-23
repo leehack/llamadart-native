@@ -36,6 +36,7 @@ class LinuxBundleSmokeTests(unittest.TestCase):
             self.assertEqual(str(bundle.resolve()), environment["LD_LIBRARY_PATH"])
             self.assertIn("if version != 1:", command[2])
             self.assertNotIn("assert version", command[2])
+            self.assertEqual(60, run.call_args.kwargs["timeout"])
             compile(command[2], "<smoke-probe>", "exec")
 
     def test_probe_uses_unconditional_api_version_check(self) -> None:
@@ -58,6 +59,21 @@ class LinuxBundleSmokeTests(unittest.TestCase):
             probe = run.call_args.args[0][2]
             self.assertIn("if version != 1:", probe)
             self.assertNotIn("assert version == 1", probe)
+
+    def test_probe_timeout_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            bundle = Path(directory) / "bundle"
+            bundle.mkdir()
+            (bundle / "libllamadart.so").touch()
+
+            with patch(
+                "smoke_linux_bundle.subprocess.run",
+                side_effect=subprocess.TimeoutExpired([sys.executable], 60),
+            ):
+                with self.assertRaisesRegex(
+                    RuntimeError, "timed out loading packaged wrapper"
+                ):
+                    smoke(bundle)
 
 
 if __name__ == "__main__":
