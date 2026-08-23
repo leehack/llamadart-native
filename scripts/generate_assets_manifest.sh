@@ -23,6 +23,10 @@ hash_file() {
   fi
 }
 
+json_string() {
+  python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$1"
+}
+
 infer_meta() {
   local file="$1"
   local base platform="unknown" arch="unknown" backend="unknown" module="core"
@@ -72,6 +76,12 @@ timestamp="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 llama_cpp_tag="${LLAMADART_LLAMA_CPP_TAG:-$tag}"
 llama_cpp_commit="${LLAMADART_LLAMA_CPP_COMMIT:-}"
 native_commit="${LLAMADART_NATIVE_COMMIT:-}"
+correlation_id="${LLAMADART_CORRELATION_ID:-}"
+smoke_policy="${LLAMADART_SMOKE_POLICY:-}"
+smoke_conclusion="${LLAMADART_SMOKE_CONCLUSION:-}"
+workflow_run_id="${LLAMADART_WORKFLOW_RUN_ID:-}"
+workflow_run_url="${LLAMADART_WORKFLOW_RUN_URL:-}"
+workflow_head_sha="${LLAMADART_WORKFLOW_HEAD_SHA:-}"
 
 : > "$output_checksums"
 while IFS= read -r f; do
@@ -87,16 +97,34 @@ EOF_FILES
   echo "{"
   # Keep tag as an immutable compatibility alias for existing consumers while
   # making native artifact-version ownership explicit for new manifests.
-  echo "  \"tag\": \"$tag\","
-  echo "  \"native_release_tag\": \"$tag\","
-  echo "  \"llama_cpp_tag\": \"$llama_cpp_tag\","
+  printf '  "tag": %s,\n' "$(json_string "$tag")"
+  printf '  "native_release_tag": %s,\n' "$(json_string "$tag")"
+  printf '  "llama_cpp_tag": %s,\n' "$(json_string "$llama_cpp_tag")"
   if [ -n "$llama_cpp_commit" ]; then
-    echo "  \"llama_cpp_commit\": \"$llama_cpp_commit\","
+    printf '  "llama_cpp_commit": %s,\n' "$(json_string "$llama_cpp_commit")"
   fi
   if [ -n "$native_commit" ]; then
-    echo "  \"native_commit\": \"$native_commit\","
+    printf '  "native_commit": %s,\n' "$(json_string "$native_commit")"
   fi
-  echo "  \"generated_at\": \"$timestamp\","
+  if [ -n "$correlation_id" ]; then
+    printf '  "correlation_id": %s,\n' "$(json_string "$correlation_id")"
+  fi
+  if [ -n "$smoke_policy" ]; then
+    printf '  "smoke_policy": %s,\n' "$(json_string "$smoke_policy")"
+  fi
+  if [ -n "$smoke_conclusion" ]; then
+    printf '  "smoke_conclusion": %s,\n' "$(json_string "$smoke_conclusion")"
+  fi
+  if [ -n "$workflow_run_id" ]; then
+    printf '  "workflow_run_id": %s,\n' "$(json_string "$workflow_run_id")"
+  fi
+  if [ -n "$workflow_run_url" ]; then
+    printf '  "workflow_run_url": %s,\n' "$(json_string "$workflow_run_url")"
+  fi
+  if [ -n "$workflow_head_sha" ]; then
+    printf '  "workflow_head_sha": %s,\n' "$(json_string "$workflow_head_sha")"
+  fi
+  printf '  "generated_at": %s,\n' "$(json_string "$timestamp")"
   echo "  \"hook_contract_version\": 1,"
   echo "  \"artifacts\": ["
 
@@ -123,12 +151,12 @@ EOF_FILES
     fi
 
     echo "    {"
-    echo "      \"module\": \"$module\","
-    echo "      \"platform\": \"$platform\","
-    echo "      \"arch\": \"$arch\","
-    echo "      \"backend\": \"$backend\","
-    echo "      \"file\": \"$b\","
-    echo "      \"sha256\": \"$sha\","
+    printf '      "module": %s,\n' "$(json_string "$module")"
+    printf '      "platform": %s,\n' "$(json_string "$platform")"
+    printf '      "arch": %s,\n' "$(json_string "$arch")"
+    printf '      "backend": %s,\n' "$(json_string "$backend")"
+    printf '      "file": %s,\n' "$(json_string "$b")"
+    printf '      "sha256": %s,\n' "$(json_string "$sha")"
     echo "      \"size\": $size"
     echo "    }$comma"
   done <<EOF_FILES

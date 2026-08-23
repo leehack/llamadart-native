@@ -66,9 +66,18 @@ newer upstream stable release instead of inventing a different suffix.
 - Scheduled automation detects and reports unbuilt stable upstream candidates.
   It may prepare validation context, but it never dispatches a publishing
   workflow.
+- Each detection uploads `native-discovery-report-<run-id>` containing a
+  machine-readable `candidate`, `noop`, or `incompatible` status, the exact
+  upstream ref/commit, the native workflow head, and run metadata. Detection
+  has read-only permissions and cannot push, publish, or move the submodule.
 - Central `llamadart` orchestration coordinates native, Dart, and Web
   preparation. Publishing requires explicit cross-repository maintainer
   approval, followed by a manual native release dispatch.
+- The explicit dispatch contract requires an exact `llama_cpp_tag`, its full
+  40-hex `llama_cpp_commit`, an exact `native_release_tag`, `smoke_policy`, and
+  stable caller `correlation_id`. Publication requires
+  `smoke_policy=required`; explicit `skip` is allowed only for a non-publishing
+  preparation run. Moving `latest` and `submodule` inputs are rejected.
 - Native publication does not require dependency-pin PRs in companion
   repositories. Any companion code, asset, or pin change is independent and
   retains its own validation and approval boundary.
@@ -84,7 +93,8 @@ New `assets.json` manifests carry four distinct identities:
 
 The historical `tag` field remains as a compatibility alias for
 `native_release_tag`. Older immutable manifests that contain only `tag` remain
-valid. The release notes repeat all four identities.
+valid. New manifests and release notes also bind the caller correlation ID,
+smoke policy/conclusion, exact workflow run, and workflow head SHA.
 
 Do not mutate, republish, or reuse a tag. For a wrapper-only fix, keep the same
 `llama_cpp_tag`, choose the next policy-compliant native rebuild tag, and run the
@@ -119,6 +129,16 @@ a different transaction and cannot take over partial state from the old run.
 This also applies when failure occurs immediately after the tag push: an orphan
 tag resumes only when its annotated transaction marker matches the same run.
 Unmarked tags and different transaction markers are ambiguous and fail closed.
+
+Before packaging, `smoke_policy=required` downloads the same-run Linux x64 core
+artifact, loads `libllamadart.so` with only packaged sibling libraries visible,
+and calls the model-free wrapper API-version probe. A failed required smoke
+blocks packaging and publication. The final
+`native-release-result-<run-id>` JSON artifact provides the exact workflow and
+release metadata, publication artifact digest, manifest/checksum digests and
+entries, complete required/actual bundle coverage, and smoke conclusion for
+central verification. The result repeats both `native_release_tag` and legacy
+`tag` and keeps the upstream ref/commit and native commit separate.
 
 ## Downstream coordination
 

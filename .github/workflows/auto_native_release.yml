@@ -15,43 +15,112 @@ concurrency:
 jobs:
   detect:
     runs-on: ubuntu-latest
+    outputs:
+      status: ${{ steps.detect.outputs.status }}
+      native_release_tag: ${{ steps.detect.outputs.native_release_tag }}
+      tag: ${{ steps.detect.outputs.tag }}
+      llama_cpp_ref: ${{ steps.detect.outputs.llama_cpp_ref }}
+      llama_cpp_commit: ${{ steps.detect.outputs.llama_cpp_commit }}
+      report_artifact: native-discovery-report-${{ github.run_id }}
     steps:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - name: Detect unbuilt stable upstream tag
+      - name: Detect exact unbuilt stable upstream candidate
+        id: detect
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
 
-          tag="$(gh api repos/ggml-org/llama.cpp/releases/latest --jq '.tag_name')"
-          if [ -z "$tag" ]; then
+          upstream_ref="$(gh api repos/ggml-org/llama.cpp/releases/latest --jq '.tag_name')"
+          if [ -z "$upstream_ref" ]; then
             echo "Failed to resolve latest llama.cpp tag" >&2
             exit 1
           fi
-          echo "Latest upstream llama.cpp tag: $tag"
-
-          # releases/latest is the stable channel only. Fail closed if upstream
-          # ever points it at a nightly, prerelease, or otherwise unsupported ref.
-          python3 scripts/release_version_policy.py \
-            --upstream-ref "$tag" \
-            --native-tag "$tag" \
-            --require-stable-upstream >/dev/null
-
-          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "Release $tag already exists in $GITHUB_REPOSITORY; nothing to do."
-            exit 0
+          upstream_commit="$(gh api "repos/ggml-org/llama.cpp/commits/${upstream_ref}" --jq '.sha')"
+          if ! [[ "$upstream_commit" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Failed to resolve exact llama.cpp commit for $upstream_ref" >&2
+            exit 1
           fi
 
-          {
-            echo "## Native release candidate"
-            echo
-            echo "Detected unbuilt stable upstream tag: $tag"
-            echo
-            echo "Publication requires explicit cross-repository approval through central llamadart orchestration."
-            echo "After approval, dispatch native_release.yml manually with llama_cpp_tag=$tag and native_release_tag=$tag."
-            echo "Companion repositories do not require dependency-pin PRs as a publication prerequisite."
-          } >> "$GITHUB_STEP_SUMMARY"
+          status=""
+          message=""
+          if ! policy_error="$(python3 scripts/release_version_policy.py \
+            --upstream-ref "$upstream_ref" \
+            --native-tag "$upstream_ref" \
+            --require-stable-upstream 2>&1)"; then
+            status="incompatible"
+            message="Latest upstream release is incompatible with the stable native release policy: ${policy_error}"
+          else
+            set +e
+            release_error="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${upstream_ref}" --silent 2>&1)"
+            release_status=$?
+            set -e
+            if [ "$release_status" -eq 0 ]; then
+              status="noop"
+              message="Native release ${upstream_ref} already exists; no publication or submodule mutation was attempted."
+            elif [[ "$release_error" == *"HTTP 404"* || "$release_error" == *"Not Found"* ]]; then
+              status="candidate"
+              message="Unbuilt stable candidate detected; explicit central approval and exact native release dispatch are required."
+            else
+              echo "Unable to determine native release state: $release_error" >&2
+              exit 1
+            fi
+          fi
 
-          echo "Prepared candidate $tag for central orchestration; no release workflow was dispatched."
+          run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          python3 scripts/release_contract.py discovery-report \
+            --status "$status" \
+            --upstream-ref "$upstream_ref" \
+            --upstream-commit "$upstream_commit" \
+            --native-head-commit "$GITHUB_SHA" \
+            --workflow-run-id "$GITHUB_RUN_ID" \
+            --workflow-run-url "$run_url" \
+            --message "$message" \
+            --output native-discovery-report.json
+
+          {
+            echo "status=$status"
+            echo "native_release_tag=$upstream_ref"
+            echo "tag=$upstream_ref"
+            echo "llama_cpp_ref=$upstream_ref"
+            echo "llama_cpp_commit=$upstream_commit"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Report exact discovery result
+        if: ${{ always() && hashFiles('native-discovery-report.json') != '' }}
+        run: |
+          python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json
+          from pathlib import Path
+
+          report = json.loads(Path("native-discovery-report.json").read_text())
+          print("## Native release discovery")
+          print()
+          print(f"- Status: `{report['status']}`")
+          print(f"- Native release tag: `{report['native_release_tag']}`")
+          print(f"- llama.cpp ref: `{report['llama_cpp_ref']}`")
+          print(f"- llama.cpp commit: `{report['llama_cpp_commit']}`")
+          print(f"- Native workflow head: `{report['native_head_commit']}`")
+          print(f"- Machine-readable report: `native-discovery-report-{report['workflow_run']['id']}`")
+          print()
+          print(report["message"])
+          print()
+          print("This detect-only workflow cannot dispatch, publish, or mutate the native submodule.")
+          PY
+
+      - name: Upload machine-readable discovery report
+        if: ${{ always() && hashFiles('native-discovery-report.json') != '' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: native-discovery-report-${{ github.run_id }}
+          path: native-discovery-report.json
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Fail closed for incompatible upstream metadata
+        if: ${{ steps.detect.outputs.status == 'incompatible' }}
+        run: |
+          echo "Latest upstream release is incompatible; see native-discovery-report.json." >&2
+          exit 1

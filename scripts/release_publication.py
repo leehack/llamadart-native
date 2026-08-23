@@ -27,6 +27,20 @@ WORKFLOW_RUN_PATH_RE = re.compile(
 TAG_TRANSACTION_RE = re.compile(
     r"^llamadart-native publication transaction: ([0-9a-f]{64})$"
 )
+CORRELATION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$")
+RUNTIME_BUNDLES = (
+    "android-arm64",
+    "android-x64",
+    "ios-arm64",
+    "ios-arm64-sim",
+    "ios-x86_64-sim",
+    "linux-arm64",
+    "linux-x64",
+    "macos-arm64",
+    "macos-x86_64",
+    "windows-arm64",
+    "windows-x64",
+)
 
 
 @dataclass(frozen=True)
@@ -80,6 +94,53 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _expected_release_assets(tag: str) -> set[str]:
+    return {
+        "assets.json",
+        "SHA256SUMS",
+        f"llamadart-native-apple-xcframework-{tag}.zip",
+        f"llamadart-native-headers-{tag}.tar.gz",
+        *(f"llamadart-native-{bundle}-{tag}.tar.gz" for bundle in RUNTIME_BUNDLES),
+    }
+
+
+def build_publication_transaction_id(
+    *,
+    tag: str,
+    native_commit: str,
+    upstream_ref: str,
+    upstream_commit: str,
+    prerelease: bool,
+    workflow_run_url: str,
+    artifact_digest: str,
+    correlation_id: str,
+    smoke_policy: str,
+    smoke_conclusion: str,
+    workflow_head_sha: str,
+    assets: Mapping[str, Asset],
+) -> str:
+    transaction_payload = {
+        "native_release_tag": tag,
+        "native_commit": native_commit,
+        "llama_cpp_tag": upstream_ref,
+        "llama_cpp_commit": upstream_commit,
+        "prerelease": prerelease,
+        "workflow_run_url": workflow_run_url,
+        "workflow_head_sha": workflow_head_sha,
+        "artifact_digest": artifact_digest,
+        "correlation_id": correlation_id,
+        "smoke_policy": smoke_policy,
+        "smoke_conclusion": smoke_conclusion,
+        "assets": {
+            name: {"sha256": asset.sha256, "size": asset.size}
+            for name, asset in assets.items()
+        },
+    }
+    return hashlib.sha256(
+        json.dumps(transaction_payload, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+
+
 def build_desired_release(
     *,
     tag: str,
@@ -90,6 +151,10 @@ def build_desired_release(
     assets_dir: Path,
     workflow_run_url: str,
     artifact_digest: str,
+    correlation_id: str,
+    smoke_policy: str,
+    smoke_conclusion: str,
+    workflow_head_sha: str,
 ) -> DesiredRelease:
     if COMMIT_SHA_RE.fullmatch(native_commit) is None:
         raise PublicationError("native commit must be a full 40-hex SHA")
@@ -97,6 +162,13 @@ def build_desired_release(
         raise PublicationError("upstream commit must be a full 40-hex SHA")
     native_commit = native_commit.lower()
     upstream_commit = upstream_commit.lower()
+    if COMMIT_SHA_RE.fullmatch(workflow_head_sha) is None:
+        raise PublicationError("workflow head SHA must be a full 40-hex SHA")
+    workflow_head_sha = workflow_head_sha.lower()
+    if CORRELATION_RE.fullmatch(correlation_id) is None:
+        raise PublicationError("invalid release correlation identifier")
+    if smoke_policy != "required" or smoke_conclusion != "passed":
+        raise PublicationError("publication requires a passed required smoke policy")
 
     digest_match = ARTIFACT_DIGEST_RE.fullmatch(artifact_digest)
     if digest_match is None:
@@ -118,32 +190,56 @@ def build_desired_release(
             "workflow run URL must identify an exact HTTPS GitHub Actions run"
         )
 
-    assets: dict[str, Asset] = {}
-    for path in sorted(assets_dir.iterdir()):
-        if not path.is_file():
-            continue
-        assets[path.name] = Asset(path.name, path.stat().st_size, _sha256(path), path)
-    if not assets:
-        raise PublicationError(f"no release assets found in {assets_dir}")
+    if not assets_dir.is_dir():
+        raise PublicationError(
+            f"release assets directory does not exist or is not a directory: {assets_dir}"
+        )
+    try:
+        asset_paths = sorted(assets_dir.iterdir())
+    except OSError as error:
+        raise PublicationError(
+            f"unable to enumerate release assets directory {assets_dir}: {error}"
+        ) from error
 
-    transaction_payload = {
-        "native_release_tag": tag,
-        "native_commit": native_commit,
-        "llama_cpp_tag": upstream_ref,
-        "llama_cpp_commit": upstream_commit,
-        "prerelease": prerelease,
-        "workflow_run_url": workflow_run_url,
-        "artifact_digest": normalized_artifact_digest,
-        "assets": {
-            name: {"sha256": asset.sha256, "size": asset.size}
-            for name, asset in assets.items()
-        },
-    }
-    transaction_id = hashlib.sha256(
-        json.dumps(
-            transaction_payload, sort_keys=True, separators=(",", ":")
-        ).encode()
-    ).hexdigest()
+    expected_assets = _expected_release_assets(tag)
+    actual_assets = {path.name for path in asset_paths}
+    if actual_assets != expected_assets:
+        missing = sorted(expected_assets - actual_assets)
+        unexpected = sorted(actual_assets - expected_assets)
+        raise PublicationError(
+            "release asset inventory mismatch before publication: "
+            f"missing={missing}, unexpected={unexpected}"
+        )
+
+    assets: dict[str, Asset] = {}
+    for path in asset_paths:
+        try:
+            if not path.is_file():
+                raise PublicationError(
+                    f"release asset is not a regular file: {path.name}"
+                )
+            assets[path.name] = Asset(
+                path.name, path.stat().st_size, _sha256(path), path
+            )
+        except OSError as error:
+            raise PublicationError(
+                f"unable to inspect release asset {path.name!r}: {error}"
+            ) from error
+
+    transaction_id = build_publication_transaction_id(
+        tag=tag,
+        native_commit=native_commit,
+        upstream_ref=upstream_ref,
+        upstream_commit=upstream_commit,
+        prerelease=prerelease,
+        workflow_run_url=workflow_run_url,
+        artifact_digest=normalized_artifact_digest,
+        correlation_id=correlation_id,
+        smoke_policy=smoke_policy,
+        smoke_conclusion=smoke_conclusion,
+        workflow_head_sha=workflow_head_sha,
+        assets=assets,
+    )
     body = (
         f"llamadart-native tag: `{tag}`\n"
         f"llama.cpp tag/ref: `{upstream_ref}`\n"
@@ -151,7 +247,10 @@ def build_desired_release(
         f"llamadart-native commit: `{native_commit}`\n"
         f"publication transaction: `{transaction_id}`\n"
         f"workflow run: {workflow_run_url}\n"
+        f"workflow head SHA: `{workflow_head_sha}`\n"
         f"publication artifact digest: `{normalized_artifact_digest}`\n"
+        f"orchestrator correlation: `{correlation_id}`\n"
+        f"native smoke: `{smoke_policy}/{smoke_conclusion}`\n"
     )
     return DesiredRelease(
         tag=tag,
@@ -517,7 +616,11 @@ def main() -> int:
     parser.add_argument("--assets-dir", required=True, type=Path)
     parser.add_argument("--prerelease", required=True, choices=("true", "false"))
     parser.add_argument("--workflow-run-url", required=True)
+    parser.add_argument("--workflow-head-sha", required=True)
     parser.add_argument("--artifact-digest", required=True)
+    parser.add_argument("--correlation-id", required=True)
+    parser.add_argument("--smoke-policy", required=True)
+    parser.add_argument("--smoke-conclusion", required=True)
     args = parser.parse_args()
 
     try:
@@ -530,6 +633,10 @@ def main() -> int:
             assets_dir=args.assets_dir,
             workflow_run_url=args.workflow_run_url,
             artifact_digest=args.artifact_digest,
+            correlation_id=args.correlation_id,
+            smoke_policy=args.smoke_policy,
+            smoke_conclusion=args.smoke_conclusion,
+            workflow_head_sha=args.workflow_head_sha,
         )
         publish(args.repository, desired)
     except PublicationError as error:

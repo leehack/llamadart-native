@@ -4,13 +4,25 @@ on:
   workflow_dispatch:
     inputs:
       llama_cpp_tag:
-        description: 'llama.cpp release ref: latest stable, vX.Y.Z stable, bNNNN nightly, or tagged submodule'
+        description: 'Exact llama.cpp release ref: vMAJOR.MINOR.PATCH stable or bNNNN nightly'
         required: true
-        default: 'latest'
+      llama_cpp_commit:
+        description: 'Expected exact 40-hex llama.cpp commit for the selected ref'
+        required: true
       native_release_tag:
-        description: 'Native tag (blank = upstream ref; wrapper rebuild: append -N)'
-        required: false
-        default: ''
+        description: 'Exact native tag (upstream-aligned or compact -N wrapper rebuild)'
+        required: true
+      smoke_policy:
+        description: 'Required package load smoke, or explicit skip for non-publishing preparation'
+        required: true
+        default: required
+        type: choice
+        options:
+          - required
+          - skip
+      correlation_id:
+        description: 'Stable caller correlation identifier (1-128 safe characters)'
+        required: true
       publish_release:
         description: 'Publish GitHub release'
         required: true
@@ -36,13 +48,16 @@ jobs:
   resolve-tag:
     runs-on: ubuntu-latest
     outputs:
-      tag: ${{ steps.tag.outputs.tag }}
-      llama_cpp_ref: ${{ steps.tag.outputs.tag }}
+      tag: ${{ steps.contract.outputs.tag }}
+      native_release_tag: ${{ steps.contract.outputs.native_release_tag }}
+      llama_cpp_ref: ${{ steps.contract.outputs.llama_cpp_ref }}
       llama_cpp_commit: ${{ steps.llama-checkout.outputs.commit }}
-      release_tag: ${{ steps.tag.outputs.release_tag }}
-      upstream_channel: ${{ steps.tag.outputs.upstream_channel }}
-      release_kind: ${{ steps.tag.outputs.release_kind }}
-      github_prerelease: ${{ steps.tag.outputs.github_prerelease }}
+      release_tag: ${{ steps.contract.outputs.native_release_tag }}
+      upstream_channel: ${{ steps.contract.outputs.upstream_channel }}
+      release_kind: ${{ steps.contract.outputs.release_kind }}
+      github_prerelease: ${{ steps.contract.outputs.github_prerelease }}
+      smoke_policy: ${{ steps.contract.outputs.smoke_policy }}
+      correlation_id: ${{ steps.contract.outputs.correlation_id }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -50,40 +65,38 @@ jobs:
           submodules: recursive
           persist-credentials: false
 
-      - name: Resolve llama.cpp tag
-        id: tag
+      - name: Validate exact approved dispatch
+        id: contract
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          INPUT_LLAMA_CPP_TAG: ${{ github.event.inputs.llama_cpp_tag }}
+          INPUT_LLAMA_CPP_COMMIT: ${{ github.event.inputs.llama_cpp_commit }}
+          INPUT_NATIVE_RELEASE_TAG: ${{ github.event.inputs.native_release_tag }}
+          INPUT_SMOKE_POLICY: ${{ github.event.inputs.smoke_policy }}
+          INPUT_CORRELATION_ID: ${{ github.event.inputs.correlation_id }}
+          INPUT_PUBLISH_RELEASE: ${{ github.event.inputs.publish_release }}
         run: |
           set -euo pipefail
 
-          REQUESTED_TAG="${{ github.event.inputs.llama_cpp_tag }}"
-          TAG="$REQUESTED_TAG"
+          TAG="$INPUT_LLAMA_CPP_TAG"
+          EXPECTED_COMMIT="$INPUT_LLAMA_CPP_COMMIT"
+          RELEASE_TAG="$INPUT_NATIVE_RELEASE_TAG"
 
-          if [ -z "$TAG" ] || [ "$TAG" = "latest" ]; then
-            TAG=$(gh api repos/ggml-org/llama.cpp/releases/latest --jq '.tag_name')
-          elif [ "$TAG" = "submodule" ]; then
-            if ! TAG=$(git -C third_party/llama.cpp describe --tags --exact-match 2>/dev/null); then
-              submodule_commit=$(git -C third_party/llama.cpp rev-parse HEAD)
-              echo "llama_cpp_tag=submodule requires the pinned commit to have an exact vMAJOR.MINOR.PATCH or bNNNN tag; $submodule_commit is untagged." >&2
-              exit 1
-            fi
-          fi
-
-          RELEASE_TAG="${{ github.event.inputs.native_release_tag }}"
-          if [ -z "$RELEASE_TAG" ]; then
-            RELEASE_TAG="$TAG"
-          fi
+          python3 scripts/release_contract.py validate-dispatch \
+            --upstream-ref "$TAG" \
+            --upstream-commit "$EXPECTED_COMMIT" \
+            --native-release-tag "$RELEASE_TAG" \
+            --smoke-policy "$INPUT_SMOKE_POLICY" \
+            --correlation-id "$INPUT_CORRELATION_ID" \
+            --publish-release "$INPUT_PUBLISH_RELEASE" \
+            >> "$GITHUB_OUTPUT"
 
           policy_args=(
             --upstream-ref "$TAG"
             --native-tag "$RELEASE_TAG"
           )
-          if [ -z "$REQUESTED_TAG" ] || [ "$REQUESTED_TAG" = "latest" ]; then
-            policy_args+=(--require-stable-upstream)
-          fi
 
-          if [ "${{ github.event.inputs.publish_release }}" = "true" ]; then
+          if [ "$INPUT_PUBLISH_RELEASE" = "true" ]; then
             git fetch --tags origin
             existing_tags="$RUNNER_TEMP/existing-native-release-tags.txt"
             {
@@ -97,19 +110,16 @@ jobs:
             )
           fi
 
-          {
-            python3 scripts/release_version_policy.py "${policy_args[@]}"
-            echo "tag=$TAG"
-            echo "release_tag=$RELEASE_TAG"
-          } >> "$GITHUB_OUTPUT"
-          echo "Resolved llama.cpp tag: $TAG"
-          echo "Resolved native release tag: $RELEASE_TAG"
+          python3 scripts/release_version_policy.py "${policy_args[@]}" >/dev/null
+          echo "Validated exact llama.cpp ref/commit: $TAG at $EXPECTED_COMMIT"
+          echo "Validated native release tag: $RELEASE_TAG"
 
       - name: Resolve exact llama.cpp commit
         id: llama-checkout
         uses: ./.github/actions/checkout-llama-ref
         with:
-          tag: ${{ steps.tag.outputs.tag }}
+          tag: ${{ steps.contract.outputs.llama_cpp_ref }}
+          expected_commit: ${{ steps.contract.outputs.llama_cpp_commit }}
           github_token: ${{ github.token }}
 
   build-android:
@@ -1027,11 +1037,47 @@ jobs:
             C:\vcpkg\installed
           key: vcpkg-${{ runner.os }}-${{ matrix.vcpkg_triplet }}-${{ env.VCPKG_CACHE_VERSION }}
 
+  smoke-release-contract:
+    needs: [resolve-tag, build-linux]
+    runs-on: ubuntu-latest
+    outputs:
+      conclusion: ${{ steps.conclusion.outputs.conclusion }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Download Linux x64 core bundle
+        if: ${{ needs.resolve-tag.outputs.smoke_policy == 'required' }}
+        uses: actions/download-artifact@v8
+        with:
+          name: native_linux_x64_vulkan
+          path: candidate-linux-x64
+      - name: Extract Linux x64 core bundle
+        if: ${{ needs.resolve-tag.outputs.smoke_policy == 'required' }}
+        run: |
+          set -euo pipefail
+          mkdir -p candidate-linux-x64/extracted
+          tar -xzf candidate-linux-x64/runtime.tar.gz \
+            -C candidate-linux-x64/extracted
+      - name: Load packaged wrapper and call model-free API probe
+        if: ${{ needs.resolve-tag.outputs.smoke_policy == 'required' }}
+        run: python3 tools/smoke_linux_bundle.py candidate-linux-x64/extracted
+      - name: Record smoke conclusion
+        id: conclusion
+        run: |
+          if [ "${{ needs.resolve-tag.outputs.smoke_policy }}" = "required" ]; then
+            echo "conclusion=passed" >> "$GITHUB_OUTPUT"
+          else
+            echo "conclusion=skipped" >> "$GITHUB_OUTPUT"
+          fi
+
   package-and-release:
-    needs: [resolve-tag, build-android, build-apple, build-linux, build-linux-hip, build-windows]
+    needs: [resolve-tag, build-android, build-apple, build-linux, build-linux-hip, build-windows, smoke-release-contract]
     runs-on: macos-latest
     outputs:
       native_commit: ${{ steps.provenance.outputs.native_commit }}
+      publication_artifact_id: ${{ steps.upload-publication.outputs.artifact-id }}
+      publication_artifact_url: ${{ steps.upload-publication.outputs.artifact-url }}
       publication_artifact_digest: ${{ steps.upload-publication.outputs.artifact-digest }}
     steps:
       - uses: actions/checkout@v7
@@ -1180,6 +1226,12 @@ jobs:
           LLAMADART_LLAMA_CPP_TAG: ${{ needs.resolve-tag.outputs.llama_cpp_ref }}
           LLAMADART_LLAMA_CPP_COMMIT: ${{ needs.resolve-tag.outputs.llama_cpp_commit }}
           LLAMADART_NATIVE_COMMIT: ${{ steps.provenance.outputs.native_commit }}
+          LLAMADART_CORRELATION_ID: ${{ needs.resolve-tag.outputs.correlation_id }}
+          LLAMADART_SMOKE_POLICY: ${{ needs.resolve-tag.outputs.smoke_policy }}
+          LLAMADART_SMOKE_CONCLUSION: ${{ needs.smoke-release-contract.outputs.conclusion }}
+          LLAMADART_WORKFLOW_RUN_ID: ${{ github.run_id }}
+          LLAMADART_WORKFLOW_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          LLAMADART_WORKFLOW_HEAD_SHA: ${{ github.sha }}
         run: |
           chmod +x scripts/generate_assets_manifest.sh
           scripts/generate_assets_manifest.sh \
@@ -1214,7 +1266,7 @@ jobs:
           retention-days: 7
 
   publish-release:
-    needs: [resolve-tag, package-and-release]
+    needs: [resolve-tag, smoke-release-contract, package-and-release]
     if: ${{ github.event.inputs.publish_release == 'true' && needs.package-and-release.result == 'success' }}
     runs-on: ubuntu-latest
     permissions:
@@ -1268,7 +1320,11 @@ jobs:
             --assets-dir prepared/release_assets \
             --prerelease "${{ needs.resolve-tag.outputs.github_prerelease }}" \
             --workflow-run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
-            --artifact-digest "${{ needs.package-and-release.outputs.publication_artifact_digest }}"
+            --workflow-head-sha "${{ github.sha }}" \
+            --artifact-digest "${{ needs.package-and-release.outputs.publication_artifact_digest }}" \
+            --correlation-id "${{ needs.resolve-tag.outputs.correlation_id }}" \
+            --smoke-policy "${{ needs.resolve-tag.outputs.smoke_policy }}" \
+            --smoke-conclusion "${{ needs.smoke-release-contract.outputs.conclusion }}"
 
   update-llama-submodule:
     needs: [resolve-tag, publish-release]
@@ -1317,3 +1373,99 @@ jobs:
 
           echo "Failed to push submodule update after retries."
           exit 1
+
+  emit-release-result:
+    needs: [resolve-tag, smoke-release-contract, package-and-release, publish-release, update-llama-submodule]
+    if: ${{ always() && needs.smoke-release-contract.result == 'success' && needs.package-and-release.result == 'success' && (github.event.inputs.publish_release != 'true' || needs.publish-release.result == 'success') && (needs.update-llama-submodule.result == 'success' || needs.update-llama-submodule.result == 'skipped') }}
+    runs-on: ubuntu-latest
+    outputs:
+      native_release_tag: ${{ needs.resolve-tag.outputs.native_release_tag }}
+      tag: ${{ needs.resolve-tag.outputs.tag }}
+      llama_cpp_ref: ${{ needs.resolve-tag.outputs.llama_cpp_ref }}
+      llama_cpp_commit: ${{ needs.resolve-tag.outputs.llama_cpp_commit }}
+      native_commit: ${{ needs.package-and-release.outputs.native_commit }}
+      correlation_id: ${{ needs.resolve-tag.outputs.correlation_id }}
+      smoke_conclusion: ${{ needs.smoke-release-contract.outputs.conclusion }}
+      workflow_run_id: ${{ github.run_id }}
+      workflow_run_url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      release_url: ${{ steps.release.outputs.url }}
+      publication_artifact_id: ${{ needs.package-and-release.outputs.publication_artifact_id }}
+      publication_artifact_url: ${{ needs.package-and-release.outputs.publication_artifact_url }}
+      publication_artifact_digest: ${{ needs.package-and-release.outputs.publication_artifact_digest }}
+      result_artifact_id: ${{ steps.upload-result.outputs.artifact-id }}
+      result_artifact_url: ${{ steps.upload-result.outputs.artifact-url }}
+      result_artifact_digest: ${{ steps.upload-result.outputs.artifact-digest }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Download verified publication transaction
+        uses: actions/download-artifact@v8
+        with:
+          name: release-publication-${{ github.run_id }}
+          path: prepared
+      - name: Read exact published release metadata
+        id: release
+        if: ${{ github.event.inputs.publish_release == 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${{ needs.resolve-tag.outputs.native_release_tag }}" > release-metadata.json
+          python3 -c 'import json, pathlib, sys; print("url=" + json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))["html_url"])' release-metadata.json >> "$GITHUB_OUTPUT"
+      - name: Generate exact machine-readable release result
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          INPUT_PUBLISH_RELEASE: ${{ github.event.inputs.publish_release }}
+        run: |
+          release_args=()
+          if [ "$INPUT_PUBLISH_RELEASE" = "true" ]; then
+            release_args+=(--release-metadata release-metadata.json)
+          fi
+          python3 scripts/release_contract.py release-result \
+            --assets-dir prepared/release_assets \
+            "${release_args[@]}" \
+            --native-release-tag "${{ needs.resolve-tag.outputs.native_release_tag }}" \
+            --upstream-ref "${{ needs.resolve-tag.outputs.llama_cpp_ref }}" \
+            --upstream-commit "${{ needs.resolve-tag.outputs.llama_cpp_commit }}" \
+            --native-commit "${{ needs.package-and-release.outputs.native_commit }}" \
+            --correlation-id "${{ needs.resolve-tag.outputs.correlation_id }}" \
+            --smoke-policy "${{ needs.resolve-tag.outputs.smoke_policy }}" \
+            --smoke-conclusion "${{ needs.smoke-release-contract.outputs.conclusion }}" \
+            --publish-release "$INPUT_PUBLISH_RELEASE" \
+            --workflow-repository "$GITHUB_REPOSITORY" \
+            --workflow-run-id "$GITHUB_RUN_ID" \
+            --workflow-run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --workflow-run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            --workflow-head-sha "$GITHUB_SHA" \
+            --publication-artifact-id "${{ needs.package-and-release.outputs.publication_artifact_id }}" \
+            --publication-artifact-url "${{ needs.package-and-release.outputs.publication_artifact_url }}" \
+            --publication-artifact-digest "${{ needs.package-and-release.outputs.publication_artifact_digest }}" \
+            --output native-release-result.json
+      - name: Report exact release result
+        run: |
+          python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json
+          from pathlib import Path
+
+          result = json.loads(Path("native-release-result.json").read_text())
+          print("## Native release result")
+          print()
+          print(f"- Status: `{result['status']}`")
+          print(f"- Correlation: `{result['correlation_id']}`")
+          print(f"- Native tag: `{result['native_release_tag']}`")
+          print(f"- Upstream: `{result['llama_cpp_ref']}` at `{result['llama_cpp_commit']}`")
+          print(f"- Native commit: `{result['native_commit']}`")
+          print(f"- Smoke: `{result['smoke']['policy']}/{result['smoke']['conclusion']}`")
+          print(f"- Bundle coverage complete: `{result['bundle_coverage']['complete']}`")
+          print(f"- Publication artifact digest: `{result['publication_artifact']['digest']}`")
+          if result["release"]:
+              print(f"- Release: {result['release']['url']}")
+          PY
+      - name: Upload exact release result
+        id: upload-result
+        uses: actions/upload-artifact@v7
+        with:
+          name: native-release-result-${{ github.run_id }}
+          path: native-release-result.json
+          if-no-files-found: error
+          retention-days: 30

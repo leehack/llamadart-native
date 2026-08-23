@@ -15,7 +15,8 @@ The Dart API/runtime stays in the main `llamadart` repository.
 ## Workflow
 
 - `Native Build & Release` (`.github/workflows/native_release.yml`)
-  - Manual dispatch.
+  - Explicit manual dispatch with an exact upstream ref/40-hex commit, exact
+    native tag, smoke policy, and caller correlation identifier.
   - Builds one full backend set per platform/arch target.
   - Fails when any enabled backend in that target fails.
   - Publishes per-target native assets (Apple consolidated, others split core/backend libs).
@@ -28,6 +29,9 @@ The Dart API/runtime stays in the main `llamadart` repository.
     `vMAJOR.MINOR.PATCH` release tag and fails closed on any other shape.
   - Reports an unbuilt stable tag for central `llamadart` orchestration; it never
     dispatches or publishes a native release.
+  - Uploads `native-discovery-report-<run-id>` with a machine-readable
+    `candidate`, `noop`, or `incompatible` result and the exact upstream tag and
+    commit.
 
 ## Native Version Management
 
@@ -35,9 +39,11 @@ Stable upstream `vMAJOR.MINOR.PATCH` releases are the default distribution
 channel. Historical and new `bNNNN` nightlies remain available only through an
 explicit workflow input. The published tag is the native version contract
 consumed by downstream package hooks and Swift Package manifests.
-`llama_cpp_tag` selects the upstream `llama.cpp` ref to build.
+`llama_cpp_tag` selects the exact upstream `llama.cpp` release ref to build and
+`llama_cpp_commit` pins its expected full commit SHA; moving aliases such as
+`latest` and `submodule` are not dispatch inputs.
 `native_release_tag` selects the `llamadart-native` release tag and archive
-suffix; when blank, it defaults to the resolved `llama_cpp_tag`.
+suffix and is always explicit.
 
 When changing the upstream `llama.cpp` version:
 
@@ -47,8 +53,10 @@ When changing the upstream `llama.cpp` version:
 2. Use central `llamadart` orchestration to prepare and validate the coordinated
    native, Dart, and Web change set. Publication requires an explicit
    cross-repository maintainer approval.
-3. After that approval, manually dispatch `Native Build & Release` for the
-   selected `llama_cpp_tag`.
+3. After that approval, manually dispatch `Native Build & Release` with the
+   discovery report's exact `llama_cpp_tag`/`llama_cpp_commit`, an exact
+   `native_release_tag`, `smoke_policy=required`, and the central operation's
+   stable `correlation_id`.
 4. Verify the release contains per-platform native archives,
    `llamadart-native-apple-xcframework-<tag>.zip`, `assets.json`, and
    `SHA256SUMS`.
@@ -74,9 +82,10 @@ are prereleases, but immutable historical releases `b10545` and
 
 `assets.json` records `native_release_tag`, the requested `llama_cpp_tag`, its
 resolved `llama_cpp_commit`, and the `native_commit` targeted by the published
-source tag. The historical `tag` field remains as a compatibility alias for the
-native tag. Consumers can therefore verify the built source independently of a
-moving ref or release label.
+source tag. It also records the caller correlation, smoke policy/conclusion,
+and exact workflow run/head. The historical `tag` field remains as a
+compatibility alias for the native tag. Consumers can therefore verify the
+built source independently of a moving ref or release label.
 
 Candidate builds and packaging are read-only. The final publication job alone
 can create the transaction-marked annotated tag and draft-first release; its
@@ -85,6 +94,15 @@ partial publication by rerunning the failed job in the same workflow run. Exact
 matching partial state—including a tag-only state with the same transaction
 marker—is resumed, while any unmarked tag or tag, release, correlation, or asset
 mismatch fails closed without force-moving tags or replacing assets.
+
+Every successful preparation or publication uploads
+`native-release-result-<run-id>`. Its JSON returns the correlation identifier,
+workflow run ID/attempt/URL/head SHA, native tag plus legacy `tag`, upstream
+ref/commit, native commit, publication artifact ID/URL/digest, manifest and
+checksum digests, exact checksum entries, required/actual bundle coverage,
+smoke conclusion, and exact GitHub Release and asset metadata when published.
+Publishing is rejected unless the required Linux x64 package-load smoke passes;
+`smoke_policy=skip` is explicit preparation-only behavior.
 
 See [Native Release Version Policy](docs/release_version_policy.md) for ordering,
 prerelease classification, legacy compatibility, and the downstream contract.

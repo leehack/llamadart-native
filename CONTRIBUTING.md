@@ -36,21 +36,26 @@ python3 tools/build.py windows --arch x64 --backend vulkan
 
 1. Ensure working tree is clean and submodules are in intended state.
 2. Select a policy-compliant version from
-   [`docs/release_version_policy.md`](docs/release_version_policy.md): use
-   `latest`/`vMAJOR.MINOR.PATCH` for stable distribution, or an explicit
-   `bNNNN` only for a nightly/development build. For a wrapper-only stable
+   [`docs/release_version_policy.md`](docs/release_version_policy.md): use an
+   exact `vMAJOR.MINOR.PATCH` for stable distribution, or an explicit `bNNNN`
+   only for a nightly/development build. For a wrapper-only stable
    rebuild, preserve the upstream version prefix and append the next native
    rebuild number, such as `v0.2.0-1` for upstream `v0.2.0`.
    Nightly rebuilds use the same compact suffix, such as `b10545-1` for
    upstream `b10545`; `bNNNN-llamadart.N` remains read-only legacy syntax.
 3. Let scheduled detection report and prepare candidates through central
    `llamadart` orchestration. It must not dispatch publication. Obtain explicit
-   cross-repository maintainer approval before publishing.
+   cross-repository maintainer approval before publishing. Use the uploaded
+   discovery JSON's exact upstream ref and commit.
 4. After approval, manually run `Native Build & Release` workflow:
-   `.github/workflows/native_release.yml`
+   `.github/workflows/native_release.yml`. Supply the exact upstream ref and
+   40-hex commit, exact native tag, `smoke_policy=required`, and a stable caller
+   correlation identifier.
 5. Verify release assets (`assets.json`, `SHA256SUMS`, per-target bundles) and
    confirm that the native tag, upstream ref/commit, and native commit are
-   distinct and correct in the manifest and release notes.
+   distinct and correct in the manifest and release notes. Download the final
+   release-result JSON and verify its workflow/release metadata, digests,
+   checksum entries, bundle coverage, correlation, and smoke conclusion.
 
 Never reuse or republish a release tag. Automatic discovery is stable-only;
 newly emitted nightly and wrapper rebuild releases are GitHub prereleases and

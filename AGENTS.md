@@ -43,7 +43,8 @@ Optional Linux container build:
 - `.github/workflows/native_release.yml`
   - Manual native build + release publish.
 - `.github/workflows/auto_native_release.yml`
-  - Scheduled/manual dispatcher when upstream `llama.cpp` tag advances.
+  - Scheduled/manual read-only detector when the stable upstream `llama.cpp`
+    tag advances; it never dispatches or publishes.
 
 ## Change Boundaries
 

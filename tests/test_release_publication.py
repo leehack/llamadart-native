@@ -19,6 +19,7 @@ from release_publication import (  # noqa: E402
     ExistingRelease,
     ExistingTag,
     PublicationError,
+    RUNTIME_BUNDLES,
     _ensure_tag,
     _remote_tag,
     _run,
@@ -28,15 +29,66 @@ from release_publication import (  # noqa: E402
 )
 
 
+EXACT_PROVENANCE = {
+    "correlation_id": "central/run-123",
+    "smoke_policy": "required",
+    "smoke_conclusion": "passed",
+    "workflow_head_sha": "4" * 40,
+}
+
+
 class ReleasePublicationTest(unittest.TestCase):
+    def _cli_args(self, assets_dir: Path) -> list[str]:
+        return [
+            sys.executable,
+            str(ROOT / "scripts/release_publication.py"),
+            "--repository",
+            "leehack/llamadart-native",
+            "--tag",
+            "v0.2.0-1",
+            "--native-commit",
+            "1" * 40,
+            "--upstream-ref",
+            "v0.2.0",
+            "--upstream-commit",
+            "2" * 40,
+            "--assets-dir",
+            str(assets_dir),
+            "--prerelease",
+            "true",
+            "--workflow-run-url",
+            "https://github.com/example/repository/actions/runs/123",
+            "--workflow-head-sha",
+            "4" * 40,
+            "--artifact-digest",
+            "3" * 64,
+            "--correlation-id",
+            "central/run-123",
+            "--smoke-policy",
+            "required",
+            "--smoke-conclusion",
+            "passed",
+        ]
+
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         assets = Path(self.temp.name)
         (assets / "assets.json").write_text("{}\n")
-        (assets / "bundle.tar.gz").write_bytes(b"native bundle")
+        (assets / "SHA256SUMS").write_text("fixture\n")
+        tag = "v0.2.0-1"
+        for bundle in RUNTIME_BUNDLES:
+            (assets / f"llamadart-native-{bundle}-{tag}.tar.gz").write_bytes(
+                f"native bundle:{bundle}".encode()
+            )
+        (assets / f"llamadart-native-apple-xcframework-{tag}.zip").write_bytes(
+            b"apple bundle"
+        )
+        (assets / f"llamadart-native-headers-{tag}.tar.gz").write_bytes(
+            b"headers"
+        )
         self.desired = build_desired_release(
-            tag="v0.2.0-1",
+            tag=tag,
             native_commit="1" * 40,
             upstream_ref="v0.2.0",
             upstream_commit="2" * 40,
@@ -44,7 +96,80 @@ class ReleasePublicationTest(unittest.TestCase):
             assets_dir=assets,
             workflow_run_url="https://github.com/example/repository/actions/runs/123",
             artifact_digest="sha256:" + "3" * 64,
+            **EXACT_PROVENANCE,
         )
+
+    def test_publication_rejects_missing_unexpected_or_non_file_assets(self) -> None:
+        assets = Path(self.temp.name)
+        base = {
+            "tag": self.desired.tag,
+            "native_commit": self.desired.native_commit,
+            "upstream_ref": "v0.2.0",
+            "upstream_commit": "2" * 40,
+            "prerelease": True,
+            "assets_dir": assets,
+            "workflow_run_url": "https://github.com/example/repository/actions/runs/123",
+            "artifact_digest": "3" * 64,
+            **EXACT_PROVENANCE,
+        }
+
+        missing = assets / sorted(self.desired.assets)[0]
+        original = missing.read_bytes()
+        missing.unlink()
+        with self.assertRaisesRegex(PublicationError, "inventory mismatch"):
+            build_desired_release(**base)
+        missing.write_bytes(original)
+
+        unexpected = assets / "unexpected.tmp"
+        unexpected.write_text("stray")
+        with self.assertRaisesRegex(PublicationError, "unexpected.tmp"):
+            build_desired_release(**base)
+        unexpected.unlink()
+
+        directory = assets / sorted(self.desired.assets)[0]
+        directory.unlink()
+        directory.mkdir()
+        with self.assertRaisesRegex(PublicationError, "not a regular file"):
+            build_desired_release(**base)
+
+    def test_missing_or_non_directory_assets_fail_without_traceback(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            non_directory = root / "not-a-directory"
+            non_directory.write_text("fixture")
+            for assets_dir in (root / "missing", non_directory):
+                with self.subTest(assets_dir=assets_dir):
+                    result = subprocess.run(
+                        self._cli_args(assets_dir),
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                    )
+                    self.assertEqual(2, result.returncode)
+                    self.assertIn(
+                        "does not exist or is not a directory", result.stderr
+                    )
+                    self.assertNotIn("Traceback", result.stderr)
+
+    def test_unreadable_asset_directory_fails_with_publication_error(self) -> None:
+        base = {
+            "tag": self.desired.tag,
+            "native_commit": self.desired.native_commit,
+            "upstream_ref": "v0.2.0",
+            "upstream_commit": "2" * 40,
+            "prerelease": True,
+            "assets_dir": Path(self.temp.name),
+            "workflow_run_url": "https://github.com/example/repository/actions/runs/123",
+            "artifact_digest": "3" * 64,
+            **EXACT_PROVENANCE,
+        }
+        with patch.object(
+            Path, "iterdir", side_effect=PermissionError("permission denied")
+        ):
+            with self.assertRaisesRegex(
+                PublicationError, "unable to enumerate release assets directory"
+            ):
+                build_desired_release(**base)
 
     def _release(
         self,
@@ -144,6 +269,66 @@ class ReleasePublicationTest(unittest.TestCase):
                 tag=self._tag(),
                 release=self._release(draft=True, body="different transaction"),
             )
+
+    def test_publication_transaction_binds_caller_smoke_and_head(self) -> None:
+        assets = Path(self.temp.name)
+        desired = build_desired_release(
+            tag="v0.2.0-1",
+            native_commit="1" * 40,
+            upstream_ref="v0.2.0",
+            upstream_commit="2" * 40,
+            prerelease=True,
+            assets_dir=assets,
+            workflow_run_url="https://github.com/example/repository/actions/runs/123",
+            artifact_digest="3" * 64,
+            correlation_id="central/run-456",
+            smoke_policy="required",
+            smoke_conclusion="passed",
+            workflow_head_sha="4" * 40,
+        )
+        self.assertIn("orchestrator correlation: `central/run-456`", desired.body)
+        self.assertIn("native smoke: `required/passed`", desired.body)
+        self.assertIn(f"workflow head SHA: `{'4' * 40}`", desired.body)
+        self.assertNotEqual(self.desired.transaction_id, desired.transaction_id)
+
+    def test_publication_rejects_unapproved_smoke_or_correlation(self) -> None:
+        base = {
+            "tag": "v0.2.0-1",
+            "native_commit": "1" * 40,
+            "upstream_ref": "v0.2.0",
+            "upstream_commit": "2" * 40,
+            "prerelease": True,
+            "assets_dir": Path(self.temp.name),
+            "workflow_run_url": "https://github.com/example/repository/actions/runs/123",
+            "artifact_digest": "3" * 64,
+            **EXACT_PROVENANCE,
+        }
+        for update in (
+            {"correlation_id": "contains whitespace"},
+            {"smoke_policy": "skip"},
+            {"smoke_conclusion": "skipped"},
+            {"workflow_head_sha": "4" * 39},
+        ):
+            with self.subTest(update=update), self.assertRaises(PublicationError):
+                build_desired_release(**(base | update))
+
+    def test_publication_builder_requires_explicit_provenance(self) -> None:
+        base = {
+            "tag": "v0.2.0-1",
+            "native_commit": "1" * 40,
+            "upstream_ref": "v0.2.0",
+            "upstream_commit": "2" * 40,
+            "prerelease": True,
+            "assets_dir": Path(self.temp.name),
+            "workflow_run_url": "https://github.com/example/repository/actions/runs/123",
+            "artifact_digest": "3" * 64,
+            **EXACT_PROVENANCE,
+        }
+        for field in EXACT_PROVENANCE:
+            missing = dict(base)
+            missing.pop(field)
+            with self.subTest(field=field), self.assertRaisesRegex(TypeError, field):
+                build_desired_release(**missing)
 
     def test_published_partial_release_fails_closed(self) -> None:
         with self.assertRaisesRegex(PublicationError, "incomplete"):
@@ -289,6 +474,7 @@ class ReleasePublicationTest(unittest.TestCase):
             assets_dir=Path(self.temp.name),
             workflow_run_url="https://github.com/example/repository/actions/runs/456",
             artifact_digest="sha256:" + "4" * 64,
+            **EXACT_PROVENANCE,
         )
         self.assertNotEqual(rerun.transaction_id, self.desired.transaction_id)
         foreign_tag = ExistingTag(
@@ -356,6 +542,7 @@ class ReleasePublicationTest(unittest.TestCase):
             assets_dir=Path(self.temp.name),
             workflow_run_url="https://github.com/example/repository/actions/runs/123",
             artifact_digest="3" * 64,
+            **EXACT_PROVENANCE,
         )
         self.assertNotEqual(
             stable_classification.transaction_id,
@@ -372,6 +559,7 @@ class ReleasePublicationTest(unittest.TestCase):
             "assets_dir": Path(self.temp.name),
             "workflow_run_url": "https://github.com/example/actions/runs/123",
             "artifact_digest": "3" * 64,
+            **EXACT_PROVENANCE,
         }
         for digest in ("", "sha256:not-a-digest", "3" * 63):
             with self.subTest(digest=digest):
@@ -400,6 +588,7 @@ class ReleasePublicationTest(unittest.TestCase):
                 "https://github.com/example/repository/actions/runs/123"
             ),
             "artifact_digest": "3" * 64,
+            **EXACT_PROVENANCE,
         }
         normalized = build_desired_release(**base)
         self.assertEqual(normalized.native_commit, "a" * 40)

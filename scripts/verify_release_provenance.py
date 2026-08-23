@@ -23,6 +23,8 @@ POLICY_DOC = ROOT / "docs/release_version_policy.md"
 README = ROOT / "README.md"
 CONTRIBUTING = ROOT / "CONTRIBUTING.md"
 PUBLICATION_SCRIPT = ROOT / "scripts/release_publication.py"
+CONTRACT_SCRIPT = ROOT / "scripts/release_contract.py"
+SMOKE_SCRIPT = ROOT / "tools/smoke_linux_bundle.py"
 
 RUNTIME_BUNDLES = {
     "android-arm64": ("android", "arm64"),
@@ -77,13 +79,94 @@ def workflow_job(workflow: str, name: str) -> str:
     return match.group(0) if match else ""
 
 
+def workflow_run_blocks(workflow: str) -> tuple[str, ...]:
+    """Returns inline and block scalar shell sources from a workflow."""
+    lines = workflow.splitlines()
+    blocks: list[str] = []
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        match = re.match(r"^(?P<indent>\s*)(?:-\s+)?run:\s*(?P<body>.*)$", line)
+        if match is None:
+            index += 1
+            continue
+        body = match.group("body")
+        if body not in {"|", "|-", "|+", ">", ">-", ">+"}:
+            blocks.append(body)
+            index += 1
+            continue
+        base_indent = len(match.group("indent"))
+        index += 1
+        block_lines: list[str] = []
+        while index < len(lines):
+            candidate = lines[index]
+            if candidate.strip() and len(candidate) - len(candidate.lstrip()) <= base_indent:
+                break
+            block_lines.append(candidate)
+            index += 1
+        blocks.append("\n".join(block_lines))
+    return tuple(blocks)
+
+
+def direct_dispatch_input_expressions(workflow: str) -> tuple[str, ...]:
+    """Finds workflow-dispatch expressions embedded directly in shell source."""
+    expression_pattern = re.compile(r"\$\{\{.*?\}\}", flags=re.DOTALL)
+    bracket_key_pattern = re.compile(
+        r"\[\s*(?P<quote>['\"])(?P<key>[A-Za-z0-9_-]+)(?P=quote)\s*\]"
+    )
+    # Be deliberately conservative: any expression-level `inputs` context in
+    # shell source must be moved to step env. This also closes dynamic context
+    # paths that cannot be reduced reliably without a full expression parser.
+    dispatch_input_pattern = re.compile(
+        r"(?<![A-Za-z0-9_])inputs(?![A-Za-z0-9_])"
+    )
+    matches: list[str] = []
+    for block in workflow_run_blocks(workflow):
+        for match in expression_pattern.finditer(block):
+            normalized = bracket_key_pattern.sub(r".\g<key>", match.group(0))
+            normalized = re.sub(r"\s+", "", normalized)
+            if dispatch_input_pattern.search(normalized):
+                matches.append(match.group(0))
+    return tuple(matches)
+
+
 def verify_workflow_contract(errors: list[str]) -> None:
     workflow = WORKFLOW.read_text()
     wrapper_workflow = WRAPPER_WORKFLOW.read_text()
     auto_workflow = AUTO_WORKFLOW.read_text()
     validation_workflow = VALIDATION_WORKFLOW.read_text()
     publication_script = PUBLICATION_SCRIPT.read_text()
+    contract_script = CONTRACT_SCRIPT.read_text()
+    smoke_script = SMOKE_SCRIPT.read_text()
     action = CHECKOUT_ACTION.read_text()
+
+    require(
+        not direct_dispatch_input_expressions(workflow),
+        "workflow_dispatch inputs must enter shell only through step env variables",
+        errors,
+    )
+    require(
+        all(
+            contract in workflow
+            for contract in (
+                'INPUT_LLAMA_CPP_TAG: ${{ github.event.inputs.llama_cpp_tag }}',
+                'INPUT_LLAMA_CPP_COMMIT: ${{ github.event.inputs.llama_cpp_commit }}',
+                'INPUT_NATIVE_RELEASE_TAG: ${{ github.event.inputs.native_release_tag }}',
+                'INPUT_SMOKE_POLICY: ${{ github.event.inputs.smoke_policy }}',
+                'INPUT_CORRELATION_ID: ${{ github.event.inputs.correlation_id }}',
+                'INPUT_PUBLISH_RELEASE: ${{ github.event.inputs.publish_release }}',
+                'TAG="$INPUT_LLAMA_CPP_TAG"',
+                'EXPECTED_COMMIT="$INPUT_LLAMA_CPP_COMMIT"',
+                'RELEASE_TAG="$INPUT_NATIVE_RELEASE_TAG"',
+                '--smoke-policy "$INPUT_SMOKE_POLICY"',
+                '--correlation-id "$INPUT_CORRELATION_ID"',
+                '--publish-release "$INPUT_PUBLISH_RELEASE"',
+                '[ "$INPUT_PUBLISH_RELEASE" = "true" ]',
+            )
+        ),
+        "every dispatch input must use the documented quoted step-env transport",
+        errors,
+    )
 
     workflow_bundles = set(
         re.findall(r'^\s+bundle="([^"]+)"', workflow, flags=re.MULTILINE)
@@ -110,20 +193,23 @@ def verify_workflow_contract(errors: list[str]) -> None:
         errors,
     )
     require(
+        "expected_commit: ${{ steps.contract.outputs.llama_cpp_commit }}" in workflow,
+        "initial checkout must enforce the normalized exact commit from the dispatch contract",
+        errors,
+    )
+    require(
         workflow.count(expected_commit_input) == 7,
         "all six build/package checkouts and the submodule update must assert the resolved commit",
         errors,
     )
     require(
-        "if: ${{ github.event.inputs.llama_cpp_tag != 'submodule' }}" not in workflow,
-        "submodule releases must use the same exact-commit checkout path",
-        errors,
-    )
-    require(
-        "llama_cpp_tag=submodule requires the pinned commit to have an exact "
-        "vMAJOR.MINOR.PATCH or bNNNN tag" in workflow
-        and "rev-parse --short HEAD" not in workflow,
-        "untagged submodules must fail before release policy validation",
+        "llama_cpp_commit:" in workflow
+        and "correlation_id:" in workflow
+        and "smoke_policy:" in workflow
+        and "scripts/release_contract.py validate-dispatch" in workflow
+        and "latest" not in workflow[: workflow.find("permissions:")]
+        and "submodule" not in workflow[: workflow.find("permissions:")],
+        "release dispatch must require exact ref/commit, native tag, smoke policy, and correlation",
         errors,
     )
     require(
@@ -165,7 +251,9 @@ def verify_workflow_contract(errors: list[str]) -> None:
         "build-linux",
         "build-linux-hip",
         "build-windows",
+        "smoke-release-contract",
         "package-and-release",
+        "emit-release-result",
     )
     require(
         re.search(r"^permissions:\n  contents: read$", workflow, re.MULTILINE)
@@ -257,7 +345,7 @@ def verify_workflow_contract(errors: list[str]) -> None:
         "scripts/release_version_policy.py" in workflow
         and "--existing-tags-file" in workflow
         and "--allow-existing-candidate" in workflow
-        and "github_prerelease: ${{ steps.tag.outputs.github_prerelease }}" in workflow
+        and "github_prerelease: ${{ steps.contract.outputs.github_prerelease }}" in workflow
         and '--prerelease "${{ needs.resolve-tag.outputs.github_prerelease }}"'
         in publish_job,
         "native release workflow must enforce version history while permitting "
@@ -293,11 +381,38 @@ def verify_workflow_contract(errors: list[str]) -> None:
     )
     require(
         "needs: [resolve-tag, build-android, build-apple, build-linux, "
-        "build-linux-hip, build-windows]"
+        "build-linux-hip, build-windows, smoke-release-contract]"
         in package_job
-        and "needs: [resolve-tag, package-and-release]" in publish_job
+        and "needs: [resolve-tag, smoke-release-contract, package-and-release]" in publish_job
         and "needs.package-and-release.result == 'success'" in publish_job,
         "publication must remain downstream of the complete build and packaging matrix",
+        errors,
+    )
+    smoke_job = workflow_job(workflow, "smoke-release-contract")
+    result_job = workflow_job(workflow, "emit-release-result")
+    require(
+        "native_linux_x64_vulkan" in smoke_job
+        and "tools/smoke_linux_bundle.py" in smoke_job
+        and "tar -xzf candidate-linux-x64/runtime.tar.gz" in smoke_job
+        and "candidate-linux-x64/extracted" in smoke_job
+        and "llama_dart_tts_api_version" in smoke_script
+        and "conclusion=passed" in smoke_job,
+        "required publication smoke must extract and load the packaged Linux wrapper "
+        "and report its conclusion",
+        errors,
+    )
+    require(
+        "native-release-result-${{ github.run_id }}" in result_job
+        and "scripts/release_contract.py release-result" in result_job
+        and "GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}" in result_job
+        and "pathlib.Path(sys.argv[1]).read_text" in result_job
+        and "release-metadata.json >> \"$GITHUB_OUTPUT\"" in result_job
+        and 'echo "url=$(python3 -c' not in result_job
+        and "publication_artifact_digest" in result_job
+        and "bundle_coverage" in contract_script
+        and '"native_release_tag"' in contract_script
+        and '"tag"' in contract_script,
+        "release workflow must return exact correlated metadata, digests, bundle coverage, and aliases",
         errors,
     )
     require(
@@ -308,7 +423,7 @@ def verify_workflow_contract(errors: list[str]) -> None:
         "non-persisted checkout credentials",
         errors,
     )
-    resolve_tag = workflow.find("- name: Resolve llama.cpp tag")
+    resolve_tag = workflow.find("- name: Validate exact approved dispatch")
     resolve_commit = workflow.find("- name: Resolve exact llama.cpp commit")
     require(
         -1 not in (resolve_tag, resolve_commit)
@@ -334,8 +449,35 @@ def verify_workflow_contract(errors: list[str]) -> None:
         "gh workflow run" not in auto_workflow
         and "publish_release=true" not in auto_workflow
         and "actions: write" not in auto_workflow
-        and "Publication requires explicit cross-repository approval" in auto_workflow,
+        and "native_release.yml" not in auto_workflow
+        and "git push" not in auto_workflow
+        and "git commit" not in auto_workflow
+        and "submodule update" not in auto_workflow
+        and "This detect-only workflow cannot dispatch, publish, or mutate" in auto_workflow,
         "scheduled automation must detect and prepare only, never dispatch publication",
+        errors,
+    )
+    require(
+        "native-discovery-report-${{ github.run_id }}" in auto_workflow
+        and "scripts/release_contract.py discovery-report" in auto_workflow
+        and 'status="candidate"' in auto_workflow
+        and 'status="noop"' in auto_workflow
+        and 'status="incompatible"' in auto_workflow
+        and 'commits/${upstream_ref}' in auto_workflow,
+        "scheduled discovery must emit exact candidate/noop/incompatible machine-readable evidence",
+        errors,
+    )
+    require(
+        "--require-stable-upstream 2>&1)" in auto_workflow
+        and "2>&1 >/dev/null" not in auto_workflow,
+        "incompatible discovery must retain the release-policy diagnostic in its JSON report",
+        errors,
+    )
+    require(
+        "schedule:" not in workflow[: workflow.find("permissions:")]
+        and "workflow_dispatch:" in workflow[: workflow.find("permissions:")]
+        and "publication requires smoke_policy=required" in contract_script,
+        "only explicit exact dispatch may reach publication",
         errors,
     )
     require(
