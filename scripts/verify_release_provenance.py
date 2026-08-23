@@ -111,16 +111,20 @@ def workflow_run_blocks(workflow: str) -> tuple[str, ...]:
 def direct_dispatch_input_expressions(workflow: str) -> tuple[str, ...]:
     """Finds workflow-dispatch expressions embedded directly in shell source."""
     expression_pattern = re.compile(r"\$\{\{.*?\}\}", flags=re.DOTALL)
+    bracket_key_pattern = re.compile(
+        r"\[\s*(?P<quote>['\"])(?P<key>[A-Za-z0-9_-]+)(?P=quote)\s*\]"
+    )
     dispatch_input_pattern = re.compile(
-        r"(?<![A-Za-z0-9_])(?:github\s*\.\s*event\s*\.\s*)?"
-        r"inputs\s*(?:\.|\[)"
+        r"(?<![A-Za-z0-9_])(?:github\.event\.)?inputs\."
     )
-    return tuple(
-        match.group(0)
-        for block in workflow_run_blocks(workflow)
-        for match in expression_pattern.finditer(block)
-        if dispatch_input_pattern.search(match.group(0))
-    )
+    matches: list[str] = []
+    for block in workflow_run_blocks(workflow):
+        for match in expression_pattern.finditer(block):
+            normalized = bracket_key_pattern.sub(r".\g<key>", match.group(0))
+            normalized = re.sub(r"\s+", "", normalized)
+            if dispatch_input_pattern.search(normalized):
+                matches.append(match.group(0))
+    return tuple(matches)
 
 
 def verify_workflow_contract(errors: list[str]) -> None:

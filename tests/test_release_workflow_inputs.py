@@ -37,12 +37,18 @@ jobs:
       - run: |
           echo "${{ github.event.inputs.llama_cpp_tag }}"
           echo "${{ github . event . inputs['native_release_tag'] }}"
+          echo "${{ github['event']['inputs']['smoke_policy'] }}"
+          echo '${{ github["event"].inputs["correlation_id"] }}'
+          echo "${{ github.event['inputs'].publish_release }}"
 """
         self.assertEqual(
             (
                 "${{ inputs.correlation_id }}",
                 "${{ github.event.inputs.llama_cpp_tag }}",
                 "${{ github . event . inputs['native_release_tag'] }}",
+                "${{ github['event']['inputs']['smoke_policy'] }}",
+                '${{ github["event"].inputs["correlation_id"] }}',
+                "${{ github.event['inputs'].publish_release }}",
             ),
             direct_dispatch_input_expressions(synthetic),
         )
