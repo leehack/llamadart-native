@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 import subprocess
 import sys
@@ -21,6 +22,7 @@ from release_publication import (  # noqa: E402
     PublicationError,
     RUNTIME_BUNDLES,
     _ensure_tag,
+    _release_json,
     _remote_tag,
     _run,
     build_desired_release,
@@ -463,6 +465,104 @@ class ReleasePublicationTest(unittest.TestCase):
                 _remote_tag("example/repository", self.desired.tag),
                 ExistingTag(self.desired.native_commit, None),
             )
+
+    def test_release_read_back_finds_exact_draft_in_paginated_listing(self) -> None:
+        draft = {
+            "id": 376263566,
+            "tag_name": self.desired.tag,
+            "draft": True,
+        }
+        responses = [
+            subprocess.CompletedProcess(
+                ["gh", "api"], 1, "", "gh: Not Found (HTTP 404)"
+            ),
+            subprocess.CompletedProcess(
+                ["gh", "api"],
+                0,
+                json.dumps(
+                    [
+                        [{"id": 1, "tag_name": "v0.1.0", "draft": False}],
+                        [draft],
+                    ]
+                ),
+                "",
+            ),
+        ]
+        with patch(
+            "release_publication.subprocess.run", side_effect=responses
+        ) as run_command:
+            self.assertEqual(
+                _release_json("example/repository", self.desired.tag), draft
+            )
+
+        self.assertEqual(
+            run_command.call_args_list[1].args[0],
+            [
+                "gh",
+                "api",
+                "--paginate",
+                "--slurp",
+                "repos/example/repository/releases?per_page=100",
+            ],
+        )
+
+    def test_release_read_back_rejects_duplicate_exact_drafts(self) -> None:
+        duplicate = {
+            "tag_name": self.desired.tag,
+            "draft": True,
+        }
+        responses = [
+            subprocess.CompletedProcess(
+                ["gh", "api"], 1, "", "gh: Not Found (HTTP 404)"
+            ),
+            subprocess.CompletedProcess(
+                ["gh", "api"], 0, json.dumps([[duplicate, duplicate]]), ""
+            ),
+        ]
+        with patch("release_publication.subprocess.run", side_effect=responses):
+            with self.assertRaisesRegex(PublicationError, "multiple releases"):
+                _release_json("example/repository", self.desired.tag)
+
+    def test_retry_discovered_draft_does_not_create_duplicate(self) -> None:
+        state = {"draft": True}
+        payload_assets = [
+            {
+                "name": asset.name,
+                "size": asset.size,
+                "digest": f"sha256:{asset.sha256}",
+            }
+            for asset in self.desired.assets.values()
+        ]
+
+        def github_command(command, **_kwargs):
+            self.assertEqual(
+                command[:4], ["gh", "api", "--paginate", "--slurp"]
+            )
+            payload = {
+                "id": 376263566,
+                "tag_name": self.desired.tag,
+                "draft": state["draft"],
+                "prerelease": self.desired.prerelease,
+                "name": self.desired.name,
+                "body": self.desired.body,
+                "assets": payload_assets,
+            }
+            return subprocess.CompletedProcess(command, 0, json.dumps([[payload]]), "")
+
+        def run(command, **_kwargs):
+            if command[:3] == ["gh", "release", "edit"]:
+                state["draft"] = False
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        with (
+            patch("release_publication._remote_tag", return_value=self._tag()),
+            patch("release_publication._api_json_or_none", return_value=None),
+            patch("release_publication.subprocess.run", side_effect=github_command),
+            patch("release_publication._run", side_effect=run),
+        ):
+            publish("example/repository", self.desired)
+
+        self.assertFalse(state["draft"])
 
     def test_new_workflow_transaction_has_distinct_correlation(self) -> None:
         rerun = build_desired_release(
