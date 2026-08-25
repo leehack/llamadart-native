@@ -506,6 +506,31 @@ class ReleasePublicationTest(unittest.TestCase):
             ],
         )
 
+    def test_release_read_back_rejects_malformed_paginated_listing_shapes(self) -> None:
+        malformed_shapes = (
+            ("non-list top-level payload", {"message": "not a page list"}),
+            ("non-list page", [{"id": 1, "tag_name": self.desired.tag}]),
+        )
+        for shape, payload in malformed_shapes:
+            with self.subTest(shape=shape):
+                responses = [
+                    subprocess.CompletedProcess(
+                        ["gh", "api"], 1, "", "gh: Not Found (HTTP 404)"
+                    ),
+                    subprocess.CompletedProcess(
+                        ["gh", "api"], 0, json.dumps(payload), ""
+                    ),
+                ]
+                with patch(
+                    "release_publication.subprocess.run", side_effect=responses
+                ):
+                    with self.assertRaises(PublicationError) as raised:
+                        _release_json("example/repository", self.desired.tag)
+                self.assertEqual(
+                    str(raised.exception),
+                    "unexpected GitHub releases listing shape",
+                )
+
     def test_release_read_back_rejects_duplicate_exact_drafts(self) -> None:
         duplicate = {
             "tag_name": self.desired.tag,
