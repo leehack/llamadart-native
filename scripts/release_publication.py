@@ -390,7 +390,54 @@ def _remote_tag(repository: str, tag: str) -> ExistingTag | None:
 
 
 def _release_json(repository: str, tag: str) -> dict[str, Any] | None:
-    return _api_json_or_none(f"repos/{repository}/releases/tags/{tag}")
+    published = _api_json_or_none(f"repos/{repository}/releases/tags/{tag}")
+    if published is not None:
+        return published
+
+    # GitHub deliberately omits draft releases from the tag endpoint. The
+    # authenticated releases listing includes drafts for callers with push
+    # access, so search every page before deciding that no release exists.
+    resource = f"repos/{repository}/releases?per_page=100"
+    result = subprocess.run(
+        ["gh", "api", "--paginate", "--slurp", resource],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "command failed").strip()
+        raise PublicationError(
+            f"unable to list GitHub releases for draft read-back: {detail}"
+        )
+    try:
+        pages = json.loads(result.stdout)
+    except json.JSONDecodeError as error:
+        raise PublicationError(
+            "unable to parse GitHub releases listing for draft read-back"
+        ) from error
+    if not isinstance(pages, list) or any(
+        not isinstance(page, list) for page in pages
+    ):
+        raise PublicationError("unexpected GitHub releases listing shape")
+    if any(
+        not isinstance(release, dict)
+        or not isinstance(release.get("tag_name"), str)
+        for page in pages
+        for release in page
+    ):
+        raise PublicationError("unexpected GitHub releases listing shape")
+
+    matches = [
+        release
+        for page in pages
+        for release in page
+        if isinstance(release, dict) and release.get("tag_name") == tag
+    ]
+    if len(matches) > 1:
+        release_ids = [release.get("id") for release in matches]
+        raise PublicationError(
+            f"multiple releases found for exact tag {tag!r}: ids={release_ids}"
+        )
+    return matches[0] if matches else None
 
 
 def _download_asset_digest(asset: Mapping[str, Any]) -> str:
