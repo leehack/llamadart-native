@@ -531,6 +531,31 @@ class ReleasePublicationTest(unittest.TestCase):
                     "unexpected GitHub releases listing shape",
                 )
 
+    def test_release_read_back_rejects_malformed_release_entries(self) -> None:
+        malformed_entries = (
+            ("non-dict release", "not a release"),
+            ("non-string tag_name", {"tag_name": 123}),
+        )
+        for shape, entry in malformed_entries:
+            with self.subTest(shape=shape):
+                responses = [
+                    subprocess.CompletedProcess(
+                        ["gh", "api"], 1, "", "gh: Not Found (HTTP 404)"
+                    ),
+                    subprocess.CompletedProcess(
+                        ["gh", "api"], 0, json.dumps([[entry]]), ""
+                    ),
+                ]
+                with patch(
+                    "release_publication.subprocess.run", side_effect=responses
+                ):
+                    with self.assertRaises(PublicationError) as raised:
+                        _release_json("example/repository", self.desired.tag)
+                self.assertEqual(
+                    str(raised.exception),
+                    "unexpected GitHub releases listing shape",
+                )
+
     def test_release_read_back_rejects_duplicate_exact_drafts(self) -> None:
         duplicate = {
             "tag_name": self.desired.tag,

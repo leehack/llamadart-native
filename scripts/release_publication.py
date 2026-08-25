@@ -418,6 +418,13 @@ def _release_json(repository: str, tag: str) -> dict[str, Any] | None:
         not isinstance(page, list) for page in pages
     ):
         raise PublicationError("unexpected GitHub releases listing shape")
+    if any(
+        not isinstance(release, dict)
+        or not isinstance(release.get("tag_name"), str)
+        for page in pages
+        for release in page
+    ):
+        raise PublicationError("unexpected GitHub releases listing shape")
 
     matches = [
         release
