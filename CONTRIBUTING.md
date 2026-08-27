@@ -43,11 +43,14 @@ python3 tools/build.py windows --arch x64 --backend vulkan
    rebuild number, such as `v0.2.0-1` for upstream `v0.2.0`.
    Nightly rebuilds use the same compact suffix, such as `b10545-1` for
    upstream `b10545`; `bNNNN-llamadart.N` remains read-only legacy syntax.
-3. Let scheduled detection report and prepare candidates through central
-   `llamadart` orchestration. It must not dispatch publication. Obtain explicit
-   cross-repository maintainer approval before publishing. Use the uploaded
-   discovery JSON's exact upstream ref and commit.
-4. After approval, manually run `Native Build & Release` workflow:
+3. For an exact stable upstream release, let `Auto Stable Native Release`
+   dispatch it. Scheduled detection publishes nothing itself; it dispatches
+   `Native Build & Release` at most once per detector run, with the exact
+   upstream ref/commit, the identical native tag, `smoke_policy=required`,
+   `publish_release=true`, and a retry-stable `auto-stable/<tag>/<digest>`
+   correlation identifier.
+4. For a policy-compliant nightly ref or wrapper-only rebuild, manually run
+   `Native Build & Release` workflow:
    `.github/workflows/native_release.yml`. Supply the exact upstream ref and
    40-hex commit, exact native tag, `smoke_policy=required`, and a stable caller
    correlation identifier.
@@ -57,7 +60,9 @@ python3 tools/build.py windows --arch x64 --backend vulkan
    release-result JSON and verify its workflow/release metadata, digests,
    checksum entries, bundle coverage, correlation, and smoke conclusion.
 
-Never reuse or republish a release tag. Automatic discovery is stable-only;
+Never reuse or republish a release tag. Automatic dispatch is stable-only and
+is suppressed when its planning or final pre-dispatch query observes a native
+release run queued or in progress;
 newly emitted nightly and wrapper rebuild releases are GitHub prereleases and
 require explicit selection. Historical metadata is immutable: `b10545` and
 `b10356-llamadart.1` have `prerelease=false`, so consumers must parse tag grammar

@@ -10,6 +10,7 @@ from pathlib import Path
 import re
 import subprocess
 import tempfile
+import textwrap
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -24,6 +25,7 @@ README = ROOT / "README.md"
 CONTRIBUTING = ROOT / "CONTRIBUTING.md"
 PUBLICATION_SCRIPT = ROOT / "scripts/release_publication.py"
 CONTRACT_SCRIPT = ROOT / "scripts/release_contract.py"
+DISPATCH_SCRIPT = ROOT / "scripts/auto_release_dispatch.py"
 SMOKE_SCRIPT = ROOT / "tools/smoke_linux_bundle.py"
 
 RUNTIME_BUNDLES = {
@@ -104,7 +106,10 @@ def workflow_run_blocks(workflow: str) -> tuple[str, ...]:
                 break
             block_lines.append(candidate)
             index += 1
-        blocks.append("\n".join(block_lines))
+        # YAML removes the block scalar's common indentation before the shell
+        # sees it. Mirror that behavior so executable workflow tests also cover
+        # heredocs and other indentation-sensitive shell syntax faithfully.
+        blocks.append(textwrap.dedent("\n".join(block_lines)))
     return tuple(blocks)
 
 
@@ -137,6 +142,7 @@ def verify_workflow_contract(errors: list[str]) -> None:
     validation_workflow = VALIDATION_WORKFLOW.read_text()
     publication_script = PUBLICATION_SCRIPT.read_text()
     contract_script = CONTRACT_SCRIPT.read_text()
+    dispatch_script = DISPATCH_SCRIPT.read_text()
     smoke_script = SMOKE_SCRIPT.read_text()
     action = CHECKOUT_ACTION.read_text()
 
@@ -446,25 +452,118 @@ def verify_workflow_contract(errors: list[str]) -> None:
         errors,
     )
     require(
-        "gh workflow run" not in auto_workflow
-        and "publish_release=true" not in auto_workflow
-        and "actions: write" not in auto_workflow
-        and "native_release.yml" not in auto_workflow
+        "gh release" not in auto_workflow
         and "git push" not in auto_workflow
         and "git commit" not in auto_workflow
         and "submodule update" not in auto_workflow
-        and "This detect-only workflow cannot dispatch, publish, or mutate" in auto_workflow,
-        "scheduled automation must detect and prepare only, never dispatch publication",
+        and "contents: write" not in auto_workflow
+        and re.search(r"^permissions:\n  contents: read$", auto_workflow, re.MULTILINE)
+        is not None
+        and auto_workflow.count("actions: write") == 1
+        and "may only dispatch native_release.yml for an exact unbuilt" in auto_workflow,
+        "scheduled automation may only dispatch the native release workflow; it must "
+        "never publish assets or mutate this repository",
+        errors,
+    )
+    require(
+        auto_workflow.count("gh workflow run") == 1
+        and "gh workflow run native_release.yml" in auto_workflow
+        and '--repo "$GITHUB_REPOSITORY"' in auto_workflow
+        and '--ref "$GITHUB_REF_NAME"' in auto_workflow
+        and "--json < native-dispatch-inputs.json" in auto_workflow
+        and "steps.detect.outputs.decision == 'dispatch'" in auto_workflow
+        and "steps.detect.outputs.decision == 'fail'" in auto_workflow
+        and auto_workflow.count("actions/workflows/native_release.yml/runs") == 2
+        and auto_workflow.count("gh api --paginate --slurp") == 2
+        and auto_workflow.count("| jq -r") == 2
+        and "--slurp --jq" not in auto_workflow
+        and 'select(.status != "completed")' in auto_workflow
+        and "--in-flight-native-runs" in auto_workflow,
+        "automatic dispatch must be a single plan-driven call that fails closed and is "
+        "suppressed when either planning or final revalidation observes another native "
+        "release run",
+        errors,
+    )
+    require(
+        "scripts/auto_release_dispatch.py plan" in auto_workflow
+        and "build_discovery_report(" in dispatch_script
+        and "validate_dispatch(" in dispatch_script
+        and 'SMOKE_POLICY = "required"' in dispatch_script
+        and "PUBLISH_RELEASE = True" in dispatch_script
+        and "def deterministic_correlation_id(" in dispatch_script
+        and '"llama_cpp_commit": contract["llama_cpp_commit"]' in dispatch_script
+        and '"publish_release": PUBLISH_RELEASE' in dispatch_script
+        and 'contract["upstream_channel"] != "stable"' in dispatch_script
+        and 'contract["release_kind"] != "upstream"' in dispatch_script,
+        "the dispatch planner must reuse the exact publication contract and restrict "
+        "automation to upstream-aligned stable releases with required smoke",
+        errors,
+    )
+    require(
+        "def workflow_dispatch_inputs(" in dispatch_script
+        and 'rendered[key] = "true" if value else "false"' in dispatch_script
+        and "dispatch input transport must be an exact string map" in auto_workflow
+        and "dispatch input transport does not match uploaded evidence" in auto_workflow
+        and 'dispatch.get("workflow") != "native_release.yml"' in auto_workflow
+        and 'inputs["publish_release"] != "true"' in auto_workflow
+        and 'inputs["smoke_policy"] != "required"' in auto_workflow,
+        "the typed plan must preserve boolean publication intent while gh workflow run "
+        "receives its required string-valued JSON input map",
         errors,
     )
     require(
         "native-discovery-report-${{ github.run_id }}" in auto_workflow
-        and "scripts/release_contract.py discovery-report" in auto_workflow
         and 'status="candidate"' in auto_workflow
         and 'status="noop"' in auto_workflow
         and 'status="incompatible"' in auto_workflow
         and 'commits/${upstream_ref}' in auto_workflow,
         "scheduled discovery must emit exact candidate/noop/incompatible machine-readable evidence",
+        errors,
+    )
+    report_step = auto_workflow.find("- name: Report exact discovery")
+    upload_step = auto_workflow.find("- name: Upload machine-readable discovery report")
+    dispatch_step = auto_workflow.find("- name: Dispatch exact native release")
+    fail_step = auto_workflow.find("- name: Fail closed for incompatible upstream metadata")
+    require(
+        -1 not in (report_step, upload_step, dispatch_step, fail_step)
+        and report_step < upload_step < dispatch_step < fail_step
+        and "Authorized workflow:" in auto_workflow,
+        "automatic discovery evidence must be reported and uploaded before dispatch, "
+        "without claiming that an authorized but failed dispatch succeeded",
+        errors,
+    )
+    cleanup_step = auto_workflow.find("rm -f --")
+    first_upstream_lookup = auto_workflow.find(
+        "gh api repos/ggml-org/llama.cpp/releases/latest"
+    )
+    require(
+        -1 < cleanup_step < first_upstream_lookup
+        and all(
+            name in auto_workflow[cleanup_step:first_upstream_lookup]
+            for name in (
+                "native-discovery-report.json",
+                "native-dispatch-plan.json",
+                "native-dispatch-inputs.json",
+            )
+        ),
+        "discovery must remove every stale report and dispatch file before its first API "
+        "lookup",
+        errors,
+    )
+    require(
+        'commits/${planned_ref}' in auto_workflow
+        and auto_workflow.count("releases/tags/${") == 2
+        and 'current_commit" != "$planned_commit"' in auto_workflow
+        and "Native release ${planned_ref} now exists; dispatch suppressed." in auto_workflow
+        and "A native release run is now in flight; dispatch suppressed." in auto_workflow,
+        "the final dispatch step must revalidate exact upstream identity, release absence, "
+        "and unsettled native runs after evidence upload",
+        errors,
+    )
+    require(
+        '[[ "$release_error" == *"(HTTP 404)"* ]]' in auto_workflow
+        and '*"Not Found"*' not in auto_workflow,
+        "only an explicit GitHub HTTP 404 may classify the native release as absent",
         errors,
     )
     require(

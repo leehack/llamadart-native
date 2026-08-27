@@ -1,4 +1,4 @@
-name: Detect Native Release Candidate
+name: Auto Stable Native Release
 
 on:
   schedule:
@@ -13,14 +13,19 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  detect:
+  detect-and-dispatch:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: write
     outputs:
       status: ${{ steps.detect.outputs.status }}
+      decision: ${{ steps.detect.outputs.decision }}
       native_release_tag: ${{ steps.detect.outputs.native_release_tag }}
       tag: ${{ steps.detect.outputs.tag }}
       llama_cpp_ref: ${{ steps.detect.outputs.llama_cpp_ref }}
       llama_cpp_commit: ${{ steps.detect.outputs.llama_cpp_commit }}
+      correlation_id: ${{ steps.detect.outputs.correlation_id }}
       report_artifact: native-discovery-report-${{ github.run_id }}
     steps:
       - uses: actions/checkout@v7
@@ -32,6 +37,13 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
+
+          # A failed API lookup must not expose a checked-in or partially written
+          # report through the later always() evidence steps.
+          rm -f -- \
+            native-discovery-report.json \
+            native-dispatch-plan.json \
+            native-dispatch-inputs.json
 
           upstream_ref="$(gh api repos/ggml-org/llama.cpp/releases/latest --jq '.tag_name')"
           if [ -z "$upstream_ref" ]; then
@@ -45,50 +57,58 @@ jobs:
           fi
 
           status=""
-          message=""
+          policy_error=""
           if ! policy_error="$(python3 scripts/release_version_policy.py \
             --upstream-ref "$upstream_ref" \
             --native-tag "$upstream_ref" \
             --require-stable-upstream 2>&1)"; then
             status="incompatible"
-            message="Latest upstream release is incompatible with the stable native release policy: ${policy_error}"
           else
+            policy_error=""
             set +e
             release_error="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${upstream_ref}" --silent 2>&1)"
             release_status=$?
             set -e
             if [ "$release_status" -eq 0 ]; then
               status="noop"
-              message="Native release ${upstream_ref} already exists; no publication or submodule mutation was attempted."
-            elif [[ "$release_error" == *"HTTP 404"* || "$release_error" == *"Not Found"* ]]; then
+            elif [[ "$release_error" == *"(HTTP 404)"* ]]; then
               status="candidate"
-              message="Unbuilt stable candidate detected; explicit central approval and exact native release dispatch are required."
             else
               echo "Unable to determine native release state: $release_error" >&2
               exit 1
             fi
           fi
 
+          # Suppress a duplicate as soon as an earlier native run is observable.
+          # Native workflow concurrency and immutable publication checks remain
+          # the fail-closed backstop for a dispatch/listing race.
+          in_flight_native_runs=0
+          if [ "$status" = "candidate" ]; then
+            in_flight_native_runs="$(gh api --paginate --slurp \
+              "repos/${GITHUB_REPOSITORY}/actions/workflows/native_release.yml/runs?per_page=100" \
+              | jq -r '[.[].workflow_runs[] | select(.status != "completed")] | length')"
+            if ! [[ "$in_flight_native_runs" =~ ^[0-9]+$ ]]; then
+              echo "Unable to determine in-flight native release runs" >&2
+              exit 1
+            fi
+          fi
+
           run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
-          python3 scripts/release_contract.py discovery-report \
+          python3 scripts/auto_release_dispatch.py plan \
             --status "$status" \
             --upstream-ref "$upstream_ref" \
             --upstream-commit "$upstream_commit" \
             --native-head-commit "$GITHUB_SHA" \
             --workflow-run-id "$GITHUB_RUN_ID" \
             --workflow-run-url "$run_url" \
-            --message "$message" \
-            --output native-discovery-report.json
+            --policy-error "$policy_error" \
+            --in-flight-native-runs "$in_flight_native_runs" \
+            --report-output native-discovery-report.json \
+            --plan-output native-dispatch-plan.json \
+            --dispatch-inputs-output native-dispatch-inputs.json \
+            >> "$GITHUB_OUTPUT"
 
-          {
-            echo "status=$status"
-            echo "native_release_tag=$upstream_ref"
-            echo "tag=$upstream_ref"
-            echo "llama_cpp_ref=$upstream_ref"
-            echo "llama_cpp_commit=$upstream_commit"
-          } >> "$GITHUB_OUTPUT"
-
-      - name: Report exact discovery result
+      - name: Report exact discovery and dispatch decision
         if: ${{ always() && hashFiles('native-discovery-report.json') != '' }}
         run: |
           python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
@@ -96,18 +116,27 @@ jobs:
           from pathlib import Path
 
           report = json.loads(Path("native-discovery-report.json").read_text())
+          dispatch = report.get("dispatch")
           print("## Native release discovery")
           print()
           print(f"- Status: `{report['status']}`")
+          print(f"- Decision: `{report['decision']}`")
           print(f"- Native release tag: `{report['native_release_tag']}`")
           print(f"- llama.cpp ref: `{report['llama_cpp_ref']}`")
           print(f"- llama.cpp commit: `{report['llama_cpp_commit']}`")
-          print(f"- Native workflow head: `{report['native_head_commit']}`")
+          print(f"- Detector workflow head: `{report['native_head_commit']}`")
+          print(f"- In-flight native release runs: `{report['in_flight_native_runs']}`")
+          if dispatch is not None:
+              print(f"- Authorized workflow: `{dispatch['workflow']}`")
+              print(f"- Correlation: `{dispatch['inputs']['correlation_id']}`")
           print(f"- Machine-readable report: `native-discovery-report-{report['workflow_run']['id']}`")
           print()
           print(report["message"])
           print()
-          print("This detect-only workflow cannot dispatch, publish, or mutate the native submodule.")
+          print(
+              "This workflow may only dispatch native_release.yml for an exact unbuilt "
+              "stable upstream release; it never publishes assets or mutates this repository."
+          )
           PY
 
       - name: Upload machine-readable discovery report
@@ -115,12 +144,115 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: native-discovery-report-${{ github.run_id }}
-          path: native-discovery-report.json
+          path: |
+            native-discovery-report.json
+            native-dispatch-plan.json
           if-no-files-found: error
           retention-days: 30
 
+      - name: Dispatch exact native release
+        if: ${{ success() && steps.detect.outputs.decision == 'dispatch' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          planned_identity="$(python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          plan = json.loads(Path("native-dispatch-plan.json").read_text())
+          inputs = json.loads(Path("native-dispatch-inputs.json").read_text())
+          required = {
+              "llama_cpp_tag",
+              "llama_cpp_commit",
+              "native_release_tag",
+              "smoke_policy",
+              "correlation_id",
+              "publish_release",
+          }
+          if set(inputs) != required or not all(
+              isinstance(value, str) for value in inputs.values()
+          ):
+              raise SystemExit("dispatch input transport must be an exact string map")
+          dispatch = plan.get("dispatch")
+          if (
+              plan.get("decision") != "dispatch"
+              or not isinstance(dispatch, dict)
+              or dispatch.get("workflow") != "native_release.yml"
+              or not isinstance(dispatch.get("inputs"), dict)
+          ):
+              raise SystemExit("dispatch plan does not authorize native_release.yml")
+          expected = {
+              key: (
+                  "true"
+                  if value is True
+                  else "false"
+                  if value is False
+                  else value
+              )
+              for key, value in dispatch["inputs"].items()
+          }
+          if inputs != expected:
+              raise SystemExit("dispatch input transport does not match uploaded evidence")
+          if inputs["llama_cpp_tag"] != inputs["native_release_tag"]:
+              raise SystemExit("automatic native tag must exactly match the upstream ref")
+          if inputs["smoke_policy"] != "required" or inputs["publish_release"] != "true":
+              raise SystemExit("automatic dispatch requires smoke and publication confirmation")
+          print(f'{inputs["llama_cpp_tag"]}\t{inputs["llama_cpp_commit"]}')
+          PY
+          )"
+          IFS=$'\t' read -r planned_ref planned_commit extra <<< "$planned_identity"
+          if [ -z "$planned_ref" ] || [ -z "$planned_commit" ] || [ -n "$extra" ]; then
+            echo "Unable to recover the exact planned release identity" >&2
+            exit 1
+          fi
+
+          # Evidence is uploaded before this step. Recheck mutable API state so
+          # an intervening publication, native run, or moved upstream ref cannot
+          # turn a formerly valid plan into a stale dispatch.
+          current_commit="$(gh api \
+            "repos/ggml-org/llama.cpp/commits/${planned_ref}" --jq '.sha')"
+          if ! [[ "$current_commit" =~ ^[0-9a-f]{40}$ ]] || \
+              [ "$current_commit" != "$planned_commit" ]; then
+            echo "Upstream ref no longer resolves to the planned exact commit" >&2
+            exit 1
+          fi
+
+          set +e
+          release_error="$(gh api \
+            "repos/${GITHUB_REPOSITORY}/releases/tags/${planned_ref}" \
+            --silent 2>&1)"
+          release_status=$?
+          set -e
+          if [ "$release_status" -eq 0 ]; then
+            echo "Native release ${planned_ref} now exists; dispatch suppressed."
+            exit 0
+          elif [[ "$release_error" != *"(HTTP 404)"* ]]; then
+            echo "Unable to revalidate native release state: $release_error" >&2
+            exit 1
+          fi
+
+          in_flight_native_runs="$(gh api --paginate --slurp \
+            "repos/${GITHUB_REPOSITORY}/actions/workflows/native_release.yml/runs?per_page=100" \
+            | jq -r '[.[].workflow_runs[] | select(.status != "completed")] | length')"
+          if ! [[ "$in_flight_native_runs" =~ ^[0-9]+$ ]]; then
+            echo "Unable to revalidate in-flight native release runs" >&2
+            exit 1
+          fi
+          if [ "$in_flight_native_runs" -ne 0 ]; then
+            echo "A native release run is now in flight; dispatch suppressed."
+            exit 0
+          fi
+
+          gh workflow run native_release.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref "$GITHUB_REF_NAME" \
+            --json < native-dispatch-inputs.json
+          echo "Dispatched the authorized exact native release."
+
       - name: Fail closed for incompatible upstream metadata
-        if: ${{ steps.detect.outputs.status == 'incompatible' }}
+        if: ${{ always() && steps.detect.outputs.decision == 'fail' }}
         run: |
           echo "Latest upstream release is incompatible; see native-discovery-report.json." >&2
           exit 1

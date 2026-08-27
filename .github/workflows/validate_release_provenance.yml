@@ -11,7 +11,9 @@ on:
       - 'CONTRIBUTING.md'
       - 'README.md'
       - 'docs/release_version_policy.md'
+      - 'scripts/auto_release_dispatch.py'
       - 'scripts/generate_assets_manifest.sh'
+      - 'scripts/release_contract.py'
       - 'scripts/release_publication.py'
       - 'scripts/release_version_policy.py'
       - 'scripts/verify_historical_release_metadata.py'
@@ -23,8 +25,11 @@ on:
       - 'tools/validate_linux_artifact.py'
       - 'tests/fixtures/historical_release_metadata.json'
       - 'tests/test_historical_release_metadata.py'
+      - 'tests/test_auto_release_dispatch.py'
+      - 'tests/test_release_contract.py'
       - 'tests/test_release_publication.py'
       - 'tests/test_release_version_policy.py'
+      - 'tests/test_release_workflow_inputs.py'
   push:
     branches:
       - main
@@ -37,7 +42,9 @@ on:
       - 'CONTRIBUTING.md'
       - 'README.md'
       - 'docs/release_version_policy.md'
+      - 'scripts/auto_release_dispatch.py'
       - 'scripts/generate_assets_manifest.sh'
+      - 'scripts/release_contract.py'
       - 'scripts/release_publication.py'
       - 'scripts/release_version_policy.py'
       - 'scripts/verify_historical_release_metadata.py'
@@ -49,8 +56,11 @@ on:
       - 'tools/validate_linux_artifact.py'
       - 'tests/fixtures/historical_release_metadata.json'
       - 'tests/test_historical_release_metadata.py'
+      - 'tests/test_auto_release_dispatch.py'
+      - 'tests/test_release_contract.py'
       - 'tests/test_release_publication.py'
       - 'tests/test_release_version_policy.py'
+      - 'tests/test_release_workflow_inputs.py'
 
 permissions:
   contents: read
