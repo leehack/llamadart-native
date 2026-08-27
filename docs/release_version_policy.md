@@ -63,16 +63,39 @@ newer upstream stable release instead of inventing a different suffix.
 
 ## Orchestration and approval
 
-- Scheduled automation detects and reports unbuilt stable upstream candidates.
-  It may prepare validation context, but it never dispatches a publishing
-  workflow.
+- Scheduled automation detects unbuilt stable upstream candidates daily. It may
+  dispatch the native release workflow, and only for an exact upstream-aligned
+  stable `vMAJOR.MINOR.PATCH` release that has no corresponding native release.
+  Every other discovery result stops without a dispatch.
+- The automatic dispatch always supplies the exact upstream ref, its full 40-hex
+  upstream commit, the identical native release tag, `smoke_policy=required`,
+  and `publish_release=true`. It cannot select a nightly ref, a wrapper rebuild
+  tag, or a skipped smoke.
+- The automatic caller correlation identifier is
+  `auto-stable/<native-tag>/<sha256-prefix>`, derived only from the upstream
+  ref, upstream commit, and native tag. It is therefore identical on a retried
+  dispatch and on every later scheduled run for the same release, so all
+  attempts at one release correlate to a single central operation. The
+  publication transaction itself stays bound to its own workflow run, so a new
+  dispatch still cannot take over a previous run's partial state.
+- Automation queries for unsettled `native_release.yml` runs while planning and
+  again immediately before dispatch. The final check also reconfirms the exact
+  upstream commit and release absence; any changed or ambiguous state fails or
+  suppresses the dispatch. The workflow's own concurrency group serializes
+  detection, while the native workflow's concurrency group and immutable
+  publication checks remain the fail-closed backstop for a final API
+  dispatch/listing race.
 - Each detection uploads `native-discovery-report-<run-id>` containing a
-  machine-readable `candidate`, `noop`, or `incompatible` status, the exact
-  upstream ref/commit, the native workflow head, and run metadata. Detection
-  has read-only permissions and cannot push, publish, or move the submodule.
-- Central `llamadart` orchestration coordinates native, Dart, and Web
-  preparation. Publishing requires explicit cross-repository maintainer
-  approval, followed by a manual native release dispatch.
+  machine-readable `candidate`, `noop`, or `incompatible` status, the
+  `dispatch`/`skip`/`fail` decision, the exact upstream ref/commit, the detector
+  workflow head, the in-flight native release run count, and run metadata.
+  Detection holds `contents: read` plus `actions: write` for the dispatch alone;
+  it cannot push, publish, or move the submodule. The report and plan upload
+  completes before any authorized dispatch is attempted.
+- Nightly refs and wrapper-only rebuilds remain manual dispatches. Reuse or
+  republication of an existing tag is rejected. Central `llamadart`
+  orchestration coordinates native, Dart, and Web preparation for valid manual
+  change sets.
 - The explicit dispatch contract requires an exact `llama_cpp_tag`, its full
   40-hex `llama_cpp_commit`, an exact `native_release_tag`, `smoke_policy`, and
   stable caller `correlation_id`. Publication requires
@@ -98,8 +121,8 @@ smoke policy/conclusion, exact workflow run, and workflow head SHA.
 
 Do not mutate, republish, or reuse a tag. For a wrapper-only fix, keep the same
 `llama_cpp_tag`, choose the next policy-compliant native rebuild tag, and run the
-full build matrix. Workflow dispatch, publication, downstream pin updates, and
-downstream releases remain separate maintainer actions.
+full build matrix. Publication, downstream pin updates, and downstream releases
+remain separate actions; only the exact stable upstream dispatch is automatic.
 
 ## Publication and recovery
 

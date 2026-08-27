@@ -41,10 +41,12 @@ Optional Linux container build:
 ## Release Workflows
 
 - `.github/workflows/native_release.yml`
-  - Manual native build + release publish.
+  - Exact native build + release workflow, used by manual dispatch and the
+    automated stable dispatcher.
 - `.github/workflows/auto_native_release.yml`
-  - Scheduled/manual read-only detector when the stable upstream `llama.cpp`
-    tag advances; it never dispatches or publishes.
+  - Scheduled/manual detector for stable upstream `llama.cpp` tag advances.
+    It dispatches `native_release.yml` for an exact unbuilt stable release and
+    never publishes assets or mutates the repository itself.
 
 ## Change Boundaries
 
