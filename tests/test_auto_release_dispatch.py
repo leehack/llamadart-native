@@ -25,6 +25,7 @@ from verify_release_provenance import workflow_run_blocks  # noqa: E402
 
 
 AUTO_WORKFLOW = ROOT / ".github/workflows/auto_native_release.yml"
+RELEASE_WORKFLOW = ROOT / ".github/workflows/native_release.yml"
 UPSTREAM_COMMIT = "a" * 40
 NATIVE_HEAD_COMMIT = "b" * 40
 
@@ -208,19 +209,21 @@ class AutoReleaseDispatchPlanTests(unittest.TestCase):
         self.assertEqual(128, len(longest))
         self.assertIsNotNone(CORRELATION_RE.fullmatch(longest))
 
-    def test_candidate_plan_carries_the_exact_publication_contract(self) -> None:
+    def test_candidate_plan_separates_preparation_from_owner_publication(self) -> None:
         plan = build_dispatch_plan(
             status="candidate",
             upstream_ref="v9.9.9",
             upstream_commit=UPSTREAM_COMMIT.upper(),
             in_flight_native_runs=0,
+            native_head_commit=NATIVE_HEAD_COMMIT,
         )
-        self.assertEqual("dispatch", plan["decision"])
+        self.assertEqual("prepare", plan["decision"])
         self.assertEqual("native_release.yml", plan["dispatch"]["workflow"])
         self.assertEqual(
             {
                 "llama_cpp_tag": "v9.9.9",
                 "llama_cpp_commit": UPSTREAM_COMMIT,
+                "native_source_sha": NATIVE_HEAD_COMMIT,
                 "native_release_tag": "v9.9.9",
                 "smoke_policy": "required",
                 "correlation_id": deterministic_correlation_id(
@@ -228,16 +231,22 @@ class AutoReleaseDispatchPlanTests(unittest.TestCase):
                     upstream_commit=UPSTREAM_COMMIT,
                     native_release_tag="v9.9.9",
                 ),
-                "publish_release": True,
+                "publish_release": False,
             },
             plan["dispatch"]["inputs"],
         )
-        self.assertIs(True, plan["dispatch"]["inputs"]["publish_release"])
+        self.assertIs(False, plan["dispatch"]["inputs"]["publish_release"])
         self.assertEqual(
-            "true", workflow_dispatch_inputs(plan)["publish_release"]
+            "false", workflow_dispatch_inputs(plan)["publish_release"]
         )
         self.assertTrue(
             all(isinstance(value, str) for value in workflow_dispatch_inputs(plan).values())
+        )
+        self.assertEqual("repository-owner", plan["approval"]["required_actor"])
+        self.assertIs(True, plan["approval"]["inputs"]["publish_release"])
+        self.assertEqual(
+            plan["dispatch"]["inputs"] | {"publish_release": True},
+            plan["approval"]["inputs"],
         )
 
     def test_noop_and_in_flight_plans_never_dispatch(self) -> None:
@@ -248,6 +257,7 @@ class AutoReleaseDispatchPlanTests(unittest.TestCase):
                     upstream_ref="v9.9.9",
                     upstream_commit=UPSTREAM_COMMIT,
                     in_flight_native_runs=in_flight,
+                    native_head_commit=NATIVE_HEAD_COMMIT,
                 )
                 self.assertEqual("skip", plan["decision"])
                 self.assertIsNone(plan["dispatch"])
@@ -258,6 +268,7 @@ class AutoReleaseDispatchPlanTests(unittest.TestCase):
             upstream_ref="b10545",
             upstream_commit=UPSTREAM_COMMIT,
             in_flight_native_runs=0,
+            native_head_commit=NATIVE_HEAD_COMMIT,
             policy_error="automatic release discovery requires stable vMAJOR.MINOR.PATCH",
         )
         self.assertEqual("fail", plan["decision"])
@@ -273,6 +284,7 @@ class AutoReleaseDispatchPlanTests(unittest.TestCase):
                         upstream_ref=upstream_ref,
                         upstream_commit=UPSTREAM_COMMIT,
                         in_flight_native_runs=0,
+                        native_head_commit=NATIVE_HEAD_COMMIT,
                     )
 
     def test_invalid_discovery_state_fails_closed(self) -> None:
@@ -282,6 +294,7 @@ class AutoReleaseDispatchPlanTests(unittest.TestCase):
                 upstream_ref="v9.9.9",
                 upstream_commit=UPSTREAM_COMMIT,
                 in_flight_native_runs=0,
+                native_head_commit=NATIVE_HEAD_COMMIT,
             )
         with self.assertRaises(ContractError):
             build_dispatch_plan(
@@ -289,6 +302,7 @@ class AutoReleaseDispatchPlanTests(unittest.TestCase):
                 upstream_ref="v9.9.9",
                 upstream_commit=UPSTREAM_COMMIT,
                 in_flight_native_runs=-1,
+                native_head_commit=NATIVE_HEAD_COMMIT,
             )
         with self.assertRaises(ContractError):
             build_dispatch_plan(
@@ -296,6 +310,7 @@ class AutoReleaseDispatchPlanTests(unittest.TestCase):
                 upstream_ref="v9.9.9",
                 upstream_commit="abc",
                 in_flight_native_runs=1,
+                native_head_commit=NATIVE_HEAD_COMMIT,
             )
         with self.assertRaises(ContractError):
             build_dispatch_plan(
@@ -303,6 +318,7 @@ class AutoReleaseDispatchPlanTests(unittest.TestCase):
                 upstream_ref="b10545",
                 upstream_commit=UPSTREAM_COMMIT,
                 in_flight_native_runs=0,
+                native_head_commit=NATIVE_HEAD_COMMIT,
             )
 
     def test_unsafe_upstream_ref_never_reaches_step_outputs(self) -> None:
@@ -321,6 +337,7 @@ class AutoReleaseDispatchPlanTests(unittest.TestCase):
                             upstream_ref=upstream_ref,
                             upstream_commit=UPSTREAM_COMMIT,
                             in_flight_native_runs=0,
+                            native_head_commit=NATIVE_HEAD_COMMIT,
                             policy_error="unrecognized upstream ref",
                         )
 
@@ -499,7 +516,7 @@ class AutoReleaseDispatchWorkflowTests(unittest.TestCase):
                 for line in output.read_text().splitlines()
                 if "=" in line
             )
-            if outputs["decision"] == "dispatch":
+            if outputs["decision"] == "prepare":
                 if mutate_dispatch_input is not None:
                     inputs_path = root / "native-dispatch-inputs.json"
                     inputs = json.loads(inputs_path.read_text())
@@ -526,7 +543,7 @@ class AutoReleaseDispatchWorkflowTests(unittest.TestCase):
                 )
         return OrchestrationRun(process, root, log)
 
-    def test_candidate_dispatches_exactly_one_exact_native_release(self) -> None:
+    def test_candidate_dispatches_exactly_one_non_publishing_preparation(self) -> None:
         run = self.run_orchestration()
         self.assertEqual(0, run.process.returncode, run.process.stderr)
         self.assertEqual(1, len(run.dispatches), run.gh_calls)
@@ -548,6 +565,7 @@ class AutoReleaseDispatchWorkflowTests(unittest.TestCase):
             {
                 "llama_cpp_tag": "v9.9.9",
                 "llama_cpp_commit": UPSTREAM_COMMIT,
+                "native_source_sha": NATIVE_HEAD_COMMIT,
                 "native_release_tag": "v9.9.9",
                 "smoke_policy": "required",
                 "correlation_id": deterministic_correlation_id(
@@ -555,16 +573,17 @@ class AutoReleaseDispatchWorkflowTests(unittest.TestCase):
                     upstream_commit=UPSTREAM_COMMIT,
                     native_release_tag="v9.9.9",
                 ),
-                "publish_release": "true",
+                "publish_release": "false",
             },
             run.dispatch_inputs,
         )
-        self.assertEqual("true", run.dispatch_inputs["publish_release"])
-        self.assertIs(True, run.report["dispatch"]["inputs"]["publish_release"])
+        self.assertEqual("false", run.dispatch_inputs["publish_release"])
+        self.assertIs(False, run.report["dispatch"]["inputs"]["publish_release"])
+        self.assertIs(True, run.report["approval"]["inputs"]["publish_release"])
         self.assertEqual("candidate", run.report["status"])
-        self.assertEqual("dispatch", run.report["decision"])
+        self.assertEqual("prepare", run.report["decision"])
         self.assertEqual("candidate", run.outputs["status"])
-        self.assertEqual("dispatch", run.outputs["decision"])
+        self.assertEqual("prepare", run.outputs["decision"])
 
     def test_existing_native_release_dispatches_nothing(self) -> None:
         run = self.run_orchestration(native_release_exists=True)
@@ -619,7 +638,7 @@ class AutoReleaseDispatchWorkflowTests(unittest.TestCase):
                 run = self.run_orchestration(**parameters)
                 self.assertEqual(expected_returncode, run.process.returncode)
                 self.assertEqual([], run.dispatches)
-                self.assertEqual("dispatch", run.report["decision"])
+                self.assertEqual("prepare", run.report["decision"])
 
     def test_api_failure_cannot_expose_seeded_stale_evidence(self) -> None:
         run = self.run_orchestration(
@@ -648,8 +667,9 @@ class AutoReleaseDispatchWorkflowTests(unittest.TestCase):
             second.dispatch_inputs["correlation_id"],
         )
 
-    def test_dispatch_never_publishes_or_mutates_the_repository(self) -> None:
+    def test_schedule_can_only_prepare_and_owner_dispatch_is_required_to_publish(self) -> None:
         workflow = AUTO_WORKFLOW.read_text()
+        release_workflow = RELEASE_WORKFLOW.read_text()
         for forbidden in (
             "gh release",
             "git push",
@@ -663,6 +683,12 @@ class AutoReleaseDispatchWorkflowTests(unittest.TestCase):
             self.assertNotIn(forbidden, workflow)
         self.assertEqual(1, workflow.count("actions: write"))
         self.assertEqual(1, workflow.count("gh workflow run"))
+        self.assertIn('inputs["publish_release"] != "false"', workflow)
+        self.assertIn("validate-publication-approval", release_workflow)
+        self.assertIn("APPROVAL_ACTOR: ${{ github.actor }}", release_workflow)
+        self.assertIn("APPROVAL_TRIGGERING_ACTOR: ${{ github.triggering_actor }}", release_workflow)
+        self.assertIn("APPROVAL_RUN_ATTEMPT: ${{ github.run_attempt }}", release_workflow)
+        self.assertNotIn("schedule:", release_workflow)
 
     def test_in_flight_query_counts_every_unsettled_native_release_run(self) -> None:
         if shutil.which("jq") is None:
@@ -750,8 +776,8 @@ class AutoReleaseDispatchWorkflowTests(unittest.TestCase):
         self.assertNotEqual(0, run.process.returncode)
         self.assertEqual(1, len(run.dispatches))
         self.assertEqual("candidate", run.report["status"])
-        self.assertEqual("dispatch", run.report["decision"])
-        self.assertEqual("true", run.dispatch_inputs["publish_release"])
+        self.assertEqual("prepare", run.report["decision"])
+        self.assertEqual("false", run.dispatch_inputs["publish_release"])
 
 
 if __name__ == "__main__":

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Plan the automatic exact native release dispatch for stable upstream releases."""
+"""Plan automatic preparation and owner approval for stable native candidates."""
 
 from __future__ import annotations
 
@@ -23,7 +23,8 @@ CORRELATION_NAMESPACE = "auto-stable"
 MAX_CORRELATION_LENGTH = 128
 DISPATCH_WORKFLOW = "native_release.yml"
 SMOKE_POLICY = "required"
-PUBLISH_RELEASE = True
+PREPARATION_PUBLISH_RELEASE = False
+APPROVAL_PUBLISH_RELEASE = True
 # An `incompatible` upstream ref is reported verbatim without passing the tag
 # grammar, so its shape is constrained here before it reaches step outputs.
 UPSTREAM_REF_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
@@ -59,6 +60,7 @@ def _plan(
     in_flight_native_runs: int,
     reason: str,
     dispatch: dict[str, Any] | None,
+    approval: dict[str, Any] | None,
 ) -> dict[str, Any]:
     return {
         "schema_version": 1,
@@ -67,6 +69,7 @@ def _plan(
         "in_flight_native_runs": in_flight_native_runs,
         "reason": reason,
         "dispatch": dispatch,
+        "approval": approval,
     }
 
 
@@ -94,12 +97,29 @@ def workflow_dispatch_inputs(dispatch_plan: Mapping[str, Any]) -> dict[str, str]
     return rendered
 
 
+def _publication_approval(contract: Mapping[str, str]) -> dict[str, Any]:
+    return {
+        "workflow": DISPATCH_WORKFLOW,
+        "required_actor": "repository-owner",
+        "inputs": {
+            "llama_cpp_tag": contract["llama_cpp_ref"],
+            "llama_cpp_commit": contract["llama_cpp_commit"],
+            "native_source_sha": contract["native_source_sha"],
+            "native_release_tag": contract["native_release_tag"],
+            "smoke_policy": SMOKE_POLICY,
+            "correlation_id": contract["correlation_id"],
+            "publish_release": APPROVAL_PUBLISH_RELEASE,
+        },
+    }
+
+
 def build_dispatch_plan(
     *,
     status: str,
     upstream_ref: str,
     upstream_commit: str,
     in_flight_native_runs: int,
+    native_head_commit: str,
     policy_error: str = "",
 ) -> dict[str, Any]:
     """Decide whether discovery state authorizes exactly one native release dispatch."""
@@ -128,21 +148,36 @@ def build_dispatch_plan(
                 f"release policy: {detail}"
             ),
             dispatch=None,
+            approval=None,
         )
 
-    contract = validate_dispatch(
+    correlation_id = deterministic_correlation_id(
         upstream_ref=upstream_ref,
         upstream_commit=upstream_commit,
         native_release_tag=native_release_tag,
-        smoke_policy=SMOKE_POLICY,
-        correlation_id=deterministic_correlation_id(
-            upstream_ref=upstream_ref,
-            upstream_commit=upstream_commit,
-            native_release_tag=native_release_tag,
-        ),
-        publish_release=PUBLISH_RELEASE,
     )
-    if contract["upstream_channel"] != "stable" or contract["release_kind"] != "upstream":
+    preparation_contract = validate_dispatch(
+        upstream_ref=upstream_ref,
+        upstream_commit=upstream_commit,
+        native_source_sha=native_head_commit,
+        native_release_tag=native_release_tag,
+        smoke_policy=SMOKE_POLICY,
+        correlation_id=correlation_id,
+        publish_release=PREPARATION_PUBLISH_RELEASE,
+    )
+    approval_contract = validate_dispatch(
+        upstream_ref=upstream_ref,
+        upstream_commit=upstream_commit,
+        native_source_sha=native_head_commit,
+        native_release_tag=native_release_tag,
+        smoke_policy=SMOKE_POLICY,
+        correlation_id=correlation_id,
+        publish_release=APPROVAL_PUBLISH_RELEASE,
+    )
+    if (
+        preparation_contract["upstream_channel"] != "stable"
+        or preparation_contract["release_kind"] != "upstream"
+    ):
         raise ContractError(
             "automatic dispatch is limited to exact upstream-aligned stable releases"
         )
@@ -157,6 +192,7 @@ def build_dispatch_plan(
                 "publication, or submodule mutation was attempted."
             ),
             dispatch=None,
+            approval=None,
         )
 
     if in_flight_native_runs > 0:
@@ -170,28 +206,32 @@ def build_dispatch_plan(
                 "in progress; no duplicate dispatch was issued."
             ),
             dispatch=None,
+            approval=_publication_approval(approval_contract),
         )
 
     return _plan(
         status=status,
-        decision="dispatch",
+        decision="prepare",
         in_flight_native_runs=in_flight_native_runs,
         reason=(
             f"Unbuilt stable upstream release {upstream_ref} detected; the exact native "
-            f"release dispatch for {native_release_tag} is authorized under correlation "
-            f"{contract['correlation_id']}."
+            f"non-publishing preparation for {native_release_tag} is authorized under "
+            f"correlation {preparation_contract['correlation_id']}; publication still "
+            "requires one explicit repository-owner workflow dispatch."
         ),
         dispatch={
             "workflow": DISPATCH_WORKFLOW,
             "inputs": {
-                "llama_cpp_tag": contract["llama_cpp_ref"],
-                "llama_cpp_commit": contract["llama_cpp_commit"],
-                "native_release_tag": contract["native_release_tag"],
+                "llama_cpp_tag": preparation_contract["llama_cpp_ref"],
+                "llama_cpp_commit": preparation_contract["llama_cpp_commit"],
+                "native_source_sha": preparation_contract["native_source_sha"],
+                "native_release_tag": preparation_contract["native_release_tag"],
                 "smoke_policy": SMOKE_POLICY,
-                "correlation_id": contract["correlation_id"],
-                "publish_release": PUBLISH_RELEASE,
+                "correlation_id": preparation_contract["correlation_id"],
+                "publish_release": PREPARATION_PUBLISH_RELEASE,
             },
         },
+        approval=_publication_approval(approval_contract),
     )
 
 
@@ -251,6 +291,7 @@ def main() -> int:
             status=args.status,
             upstream_ref=args.upstream_ref,
             upstream_commit=args.upstream_commit,
+            native_head_commit=args.native_head_commit,
             in_flight_native_runs=args.in_flight_native_runs,
             policy_error=args.policy_error,
         )
@@ -266,6 +307,7 @@ def main() -> int:
         report["decision"] = dispatch_plan["decision"]
         report["in_flight_native_runs"] = dispatch_plan["in_flight_native_runs"]
         report["dispatch"] = dispatch_plan["dispatch"]
+        report["approval"] = dispatch_plan["approval"]
 
         _write_json(report, args.report_output)
         _write_json(dispatch_plan, args.plan_output)
@@ -287,6 +329,8 @@ def main() -> int:
         "correlation_id": (
             dispatch_plan["dispatch"]["inputs"]["correlation_id"]
             if dispatch_plan["dispatch"] is not None
+            else dispatch_plan["approval"]["inputs"]["correlation_id"]
+            if dispatch_plan["approval"] is not None
             else ""
         ),
     }

@@ -1,4 +1,4 @@
-name: Auto Stable Native Release
+name: Detect and Prepare Stable Native Candidate
 
 on:
   schedule:
@@ -13,7 +13,7 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  detect-and-dispatch:
+  detect-and-prepare:
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -108,7 +108,7 @@ jobs:
             --dispatch-inputs-output native-dispatch-inputs.json \
             >> "$GITHUB_OUTPUT"
 
-      - name: Report exact discovery and dispatch decision
+      - name: Report exact discovery, preparation, and approval boundary
         if: ${{ always() && hashFiles('native-discovery-report.json') != '' }}
         run: |
           python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
@@ -117,6 +117,7 @@ jobs:
 
           report = json.loads(Path("native-discovery-report.json").read_text())
           dispatch = report.get("dispatch")
+          approval = report.get("approval")
           print("## Native release discovery")
           print()
           print(f"- Status: `{report['status']}`")
@@ -127,15 +128,19 @@ jobs:
           print(f"- Detector workflow head: `{report['native_head_commit']}`")
           print(f"- In-flight native release runs: `{report['in_flight_native_runs']}`")
           if dispatch is not None:
-              print(f"- Authorized workflow: `{dispatch['workflow']}`")
+              print(f"- Non-publishing preparation workflow: `{dispatch['workflow']}`")
               print(f"- Correlation: `{dispatch['inputs']['correlation_id']}`")
+          if approval is not None:
+              print("- Publication approval: `Actions > Native Build & Release > Run workflow`")
+              print(f"- Approved native source SHA: `{approval['inputs']['native_source_sha']}`")
           print(f"- Machine-readable report: `native-discovery-report-{report['workflow_run']['id']}`")
           print()
           print(report["message"])
           print()
           print(
-              "This workflow may only dispatch native_release.yml for an exact unbuilt "
-              "stable upstream release; it never publishes assets or mutates this repository."
+              "This workflow may only dispatch publish_release=false preparation for an "
+              "exact unbuilt stable release. Publication requires one new owner dispatch "
+              "of Native Build & Release with the exact approval inputs in this report."
           )
           PY
 
@@ -150,8 +155,8 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      - name: Dispatch exact native release
-        if: ${{ success() && steps.detect.outputs.decision == 'dispatch' }}
+      - name: Dispatch exact non-publishing preparation
+        if: ${{ success() && steps.detect.outputs.decision == 'prepare' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -159,6 +164,7 @@ jobs:
 
           planned_identity="$(python3 - <<'PY'
           import json
+          import os
           from pathlib import Path
 
           plan = json.loads(Path("native-dispatch-plan.json").read_text())
@@ -166,6 +172,7 @@ jobs:
           required = {
               "llama_cpp_tag",
               "llama_cpp_commit",
+              "native_source_sha",
               "native_release_tag",
               "smoke_policy",
               "correlation_id",
@@ -177,12 +184,12 @@ jobs:
               raise SystemExit("dispatch input transport must be an exact string map")
           dispatch = plan.get("dispatch")
           if (
-              plan.get("decision") != "dispatch"
+              plan.get("decision") != "prepare"
               or not isinstance(dispatch, dict)
               or dispatch.get("workflow") != "native_release.yml"
               or not isinstance(dispatch.get("inputs"), dict)
           ):
-              raise SystemExit("dispatch plan does not authorize native_release.yml")
+              raise SystemExit("preparation plan does not authorize native_release.yml")
           expected = {
               key: (
                   "true"
@@ -197,8 +204,10 @@ jobs:
               raise SystemExit("dispatch input transport does not match uploaded evidence")
           if inputs["llama_cpp_tag"] != inputs["native_release_tag"]:
               raise SystemExit("automatic native tag must exactly match the upstream ref")
-          if inputs["smoke_policy"] != "required" or inputs["publish_release"] != "true":
-              raise SystemExit("automatic dispatch requires smoke and publication confirmation")
+          if inputs["smoke_policy"] != "required" or inputs["publish_release"] != "false":
+              raise SystemExit("automatic preparation must require smoke and forbid publication")
+          if inputs["native_source_sha"] != os.environ["GITHUB_SHA"]:
+              raise SystemExit("automatic preparation must bind the detector workflow head")
           print(f'{inputs["llama_cpp_tag"]}\t{inputs["llama_cpp_commit"]}')
           PY
           )"
@@ -249,7 +258,7 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --ref "$GITHUB_REF_NAME" \
             --json < native-dispatch-inputs.json
-          echo "Dispatched the authorized exact native release."
+          echo "Dispatched the authorized exact non-publishing preparation."
 
       - name: Fail closed for incompatible upstream metadata
         if: ${{ always() && steps.detect.outputs.decision == 'fail' }}

@@ -15,30 +15,31 @@ The Dart API/runtime stays in the main `llamadart` repository.
 ## Workflow
 
 - `Native Build & Release` (`.github/workflows/native_release.yml`)
-  - Exact dispatch, manual or automatic for an upstream-aligned stable
-    candidate, with an exact upstream ref/40-hex commit, exact native tag, smoke
-    policy, and caller correlation identifier.
+  - Exact non-publishing preparation dispatch, or an explicit repository-owner
+    publication approval, with an exact upstream ref/40-hex commit, exact native
+    source SHA/tag, smoke policy, and caller correlation identifier.
   - Builds one full backend set per platform/arch target.
   - Fails when any enabled backend in that target fails.
   - Publishes per-target native assets (Apple consolidated, others split core/backend libs).
   - Generates `assets.json` and `SHA256SUMS`.
   - Pins every build to one resolved `llama.cpp` commit and publishes a source
     tag whose submodule entry identifies that exact commit.
-- `Auto Stable Native Release` (`.github/workflows/auto_native_release.yml`)
+- `Detect and Prepare Stable Native Candidate` (`.github/workflows/auto_native_release.yml`)
   - Daily schedule plus an optional manual detection run.
   - Resolves the latest stable upstream `ggml-org/llama.cpp`
     `vMAJOR.MINOR.PATCH` release tag and fails closed on any other shape.
-  - Dispatches `Native Build & Release` only for an exact unbuilt stable
+  - Dispatches `Native Build & Release` preparation only for an exact unbuilt stable
     upstream release, with the exact upstream ref/40-hex commit, the exact
-    upstream-aligned native tag, `smoke_policy=required`, `publish_release=true`,
+    upstream-aligned native tag, `smoke_policy=required`, `publish_release=false`,
     and a deterministic `auto-stable/<tag>/<digest>` correlation identifier that
     is stable across retries.
   - Checks for queued or in-progress native release runs both while planning and
     immediately before dispatch, suppressing the dispatch when one is
-    observable. It never publishes assets or mutates this repository itself.
+    observable. A schedule can never publish, tag, or mutate the submodule.
   - Uploads `native-discovery-report-<run-id>` with a machine-readable
-    `candidate`, `noop`, or `incompatible` status, the `dispatch`/`skip`/`fail`
-    decision, and the exact upstream tag and commit before any dispatch.
+    `candidate`, `noop`, or `incompatible` status, the `prepare`/`skip`/`fail`
+    decision, exact upstream/native identities, and the exact owner approval
+    inputs before any preparation dispatch.
 
 ## Native Version Management
 
@@ -54,21 +55,29 @@ suffix and is always explicit.
 
 When changing the upstream `llama.cpp` version:
 
-1. `Auto Stable Native Release` detects a new stable upstream tag daily and
-   dispatches `Native Build & Release` for it automatically. Run it manually to
-   pick the change up sooner.
-2. For a policy-compliant nightly `bNNNN` ref or wrapper-only rebuild tag,
-   dispatch `Native Build & Release` manually with an independently resolved
-   exact `llama_cpp_tag`/`llama_cpp_commit`, an exact `native_release_tag`,
-   `smoke_policy=required`, and a stable `correlation_id`. Reuse or republication
+1. `Detect and Prepare Stable Native Candidate` detects a new stable upstream
+   tag daily and dispatches only a `publish_release=false` full-matrix
+   preparation. Run the detector manually to pick the change up sooner.
+2. Review its report and successful preparation result, then approve publication
+   at **Actions > Native Build & Release > Run workflow**. Select the default
+   branch, copy the exact candidate inputs including `native_source_sha`, and
+   explicitly set `publish_release=true`. Only the repository owner can cross
+   this boundary; the workflow revalidates the owner, current default-branch
+   head, required smoke, collisions, and immutable state before mutation.
+3. For a policy-compliant nightly `bNNNN` ref or wrapper-only rebuild tag, use
+   the same manual workflow and exact-input approval path. Reuse or republication
    of an existing tag is rejected.
-3. Verify the release contains per-platform native archives,
+4. Verify the release contains per-platform native archives,
    `llamadart-native-apple-xcframework-<tag>.zip`, `assets.json`, and
    `SHA256SUMS`.
 
 Native publication does not require dependency-pin PRs in companion
 repositories. Any downstream code, asset, or pin change remains an independent
 change with its own validation and approval boundary.
+
+Issue #60 tracks a separate protected-environment hardening layer. This workflow
+does not add or assume an unconfigured environment; only the final publication
+and post-publication submodule jobs retain narrow write permissions.
 
 When rebuilding the wrapper without changing the upstream `llama.cpp` ref,
 dispatch `Native Build & Release` with the same `llama_cpp_tag` and a new
@@ -176,8 +185,8 @@ Assets are suffixed with platform/arch, for example:
 - `tools/package_apple_xcframework.py`: packages Apple `libllamadart` slices as
   an SPM-compatible XCFramework zip.
 - `scripts/generate_assets_manifest.sh`: builds `assets.json` + checksums.
-- `scripts/auto_release_dispatch.py`: decides whether daily discovery authorizes
-  one exact native release dispatch and emits its immutable inputs.
+- `scripts/auto_release_dispatch.py`: emits one exact non-publishing preparation
+  plan plus the distinct repository-owner publication approval inputs.
 - `scripts/verify_release_provenance.py`: verifies exact-source checkout, source
   tag, and manifest provenance contracts.
 - `docs/platform_backend_strategy.md`: platform/backend matrix.

@@ -20,6 +20,7 @@ from release_contract import (  # noqa: E402
     build_discovery_report,
     build_release_result,
     validate_dispatch,
+    validate_publication_approval,
 )
 from release_publication import (  # noqa: E402
     RUNTIME_BUNDLES as PUBLICATION_RUNTIME_BUNDLES,
@@ -38,6 +39,7 @@ class DispatchContractTests(unittest.TestCase):
         contract = validate_dispatch(
             upstream_ref="v0.2.0",
             upstream_commit=COMMIT.upper(),
+            native_source_sha=NATIVE_COMMIT.upper(),
             native_release_tag="v0.2.0-1",
             smoke_policy="required",
             correlation_id="llamadart/400/run-123",
@@ -58,6 +60,7 @@ class DispatchContractTests(unittest.TestCase):
         base = {
             "upstream_ref": "v0.2.0",
             "upstream_commit": COMMIT,
+            "native_source_sha": NATIVE_COMMIT,
             "native_release_tag": "v0.2.0",
             "smoke_policy": "required",
             "correlation_id": "central-123",
@@ -71,12 +74,61 @@ class DispatchContractTests(unittest.TestCase):
         contract = validate_dispatch(
             upstream_ref="b10545",
             upstream_commit=COMMIT,
+            native_source_sha=NATIVE_COMMIT,
             native_release_tag="b10545-1",
             smoke_policy="skip",
             correlation_id="preparation-1",
             publish_release=False,
         )
         self.assertEqual("nightly", contract["upstream_channel"])
+
+
+class PublicationApprovalTests(unittest.TestCase):
+    def approval(self, **updates: str | bool) -> None:
+        values: dict[str, str | bool] = {
+            "publish_release": True,
+            "event_name": "workflow_dispatch",
+            "actor": "leehack",
+            "triggering_actor": "leehack",
+            "repository_owner": "leehack",
+            "run_attempt": "1",
+            "workflow_ref": "refs/heads/main",
+            "workflow_sha": NATIVE_COMMIT,
+            "native_source_sha": NATIVE_COMMIT,
+            "default_branch": "main",
+            "default_branch_head": NATIVE_COMMIT,
+        }
+        validate_publication_approval(**(values | updates))  # type: ignore[arg-type]
+
+    def test_exact_owner_default_branch_dispatch_is_approved(self) -> None:
+        self.approval()
+
+    def test_owner_may_resume_the_same_approved_transaction_after_main_moves(self) -> None:
+        self.approval(run_attempt="2", default_branch_head=HEAD_COMMIT)
+
+    def test_non_publishing_preparation_does_not_require_owner(self) -> None:
+        self.approval(
+            publish_release=False,
+            actor="github-actions[bot]",
+            triggering_actor="github-actions[bot]",
+            workflow_ref="refs/heads/feature",
+            default_branch_head=HEAD_COMMIT,
+        )
+
+    def test_publication_rejects_automatic_stale_or_replayed_requests(self) -> None:
+        cases = (
+            {"event_name": "schedule"},
+            {"actor": "github-actions[bot]"},
+            {"triggering_actor": "github-actions[bot]"},
+            {"run_attempt": "0"},
+            {"workflow_ref": "refs/heads/feature"},
+            {"workflow_sha": HEAD_COMMIT},
+            {"native_source_sha": HEAD_COMMIT},
+            {"default_branch_head": HEAD_COMMIT},
+        )
+        for update in cases:
+            with self.subTest(update=update), self.assertRaises(ContractError):
+                self.approval(**update)
 
 
 class DiscoveryContractTests(unittest.TestCase):

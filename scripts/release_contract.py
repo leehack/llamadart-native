@@ -149,6 +149,7 @@ def validate_dispatch(
     *,
     upstream_ref: str,
     upstream_commit: str,
+    native_source_sha: str,
     native_release_tag: str,
     smoke_policy: str,
     correlation_id: str,
@@ -160,6 +161,7 @@ def validate_dispatch(
     except PolicyError as error:
         raise ContractError(str(error)) from error
     commit = _full_commit(upstream_commit, "upstream commit")
+    native_source = _full_commit(native_source_sha, "native source SHA")
     if smoke_policy not in SMOKE_POLICIES:
         raise ContractError(f"smoke policy must be one of {SMOKE_POLICIES}")
     if publish_release and smoke_policy != "required":
@@ -167,6 +169,7 @@ def validate_dispatch(
     return {
         "llama_cpp_ref": upstream.tag,
         "llama_cpp_commit": commit,
+        "native_source_sha": native_source,
         "native_release_tag": native.tag,
         "tag": native.tag,
         "upstream_channel": upstream.channel,
@@ -174,7 +177,47 @@ def validate_dispatch(
         "github_prerelease": "true" if native.github_prerelease else "false",
         "smoke_policy": smoke_policy,
         "correlation_id": _correlation(correlation_id),
+        "publish_release": "true" if publish_release else "false",
     }
+
+
+def validate_publication_approval(
+    *,
+    publish_release: bool,
+    event_name: str,
+    actor: str,
+    triggering_actor: str,
+    repository_owner: str,
+    run_attempt: str,
+    workflow_ref: str,
+    workflow_sha: str,
+    native_source_sha: str,
+    default_branch: str,
+    default_branch_head: str,
+) -> None:
+    """Require one owner action for an exact current-default-branch publication."""
+    if event_name != "workflow_dispatch":
+        raise ContractError("native release preparation/publication requires workflow_dispatch")
+    workflow_commit = _full_commit(workflow_sha, "workflow head SHA")
+    native_source = _full_commit(native_source_sha, "native source SHA")
+    if workflow_commit != native_source:
+        raise ContractError("native source SHA must equal the workflow head SHA")
+    if not publish_release:
+        return
+    if not repository_owner or actor != repository_owner or triggering_actor != repository_owner:
+        raise ContractError(
+            "publication requires both actor and triggering actor to be the repository owner"
+        )
+    if not run_attempt.isdigit() or run_attempt.startswith("0"):
+        raise ContractError("publication run_attempt must be a positive integer")
+    if not default_branch or workflow_ref != f"refs/heads/{default_branch}":
+        raise ContractError("publication must run from the repository default branch")
+    if run_attempt == "1" and _full_commit(
+        default_branch_head, "default branch head"
+    ) != native_source:
+        raise ContractError(
+            "native source SHA must equal the current repository default branch head"
+        )
 
 
 def build_discovery_report(
@@ -312,6 +355,7 @@ def build_release_result(
     contract = validate_dispatch(
         upstream_ref=upstream_ref,
         upstream_commit=upstream_commit,
+        native_source_sha=native_commit,
         native_release_tag=native_release_tag,
         smoke_policy=smoke_policy,
         correlation_id=correlation_id,
@@ -535,10 +579,24 @@ def main() -> int:
     dispatch = subparsers.add_parser("validate-dispatch")
     dispatch.add_argument("--upstream-ref", required=True)
     dispatch.add_argument("--upstream-commit", required=True)
+    dispatch.add_argument("--native-source-sha", required=True)
     dispatch.add_argument("--native-release-tag", required=True)
     dispatch.add_argument("--smoke-policy", required=True, choices=SMOKE_POLICIES)
     dispatch.add_argument("--correlation-id", required=True)
     dispatch.add_argument("--publish-release", required=True, choices=("true", "false"))
+
+    approval = subparsers.add_parser("validate-publication-approval")
+    approval.add_argument("--publish-release", required=True, choices=("true", "false"))
+    approval.add_argument("--event-name", required=True)
+    approval.add_argument("--actor", required=True)
+    approval.add_argument("--triggering-actor", required=True)
+    approval.add_argument("--repository-owner", required=True)
+    approval.add_argument("--run-attempt", required=True)
+    approval.add_argument("--workflow-ref", required=True)
+    approval.add_argument("--workflow-sha", required=True)
+    approval.add_argument("--native-source-sha", required=True)
+    approval.add_argument("--default-branch", required=True)
+    approval.add_argument("--default-branch-head", required=True)
 
     discovery = subparsers.add_parser("discovery-report")
     discovery.add_argument("--status", required=True, choices=DISCOVERY_STATUSES)
@@ -577,6 +635,7 @@ def main() -> int:
             payload = validate_dispatch(
                 upstream_ref=args.upstream_ref,
                 upstream_commit=args.upstream_commit,
+                native_source_sha=args.native_source_sha,
                 native_release_tag=args.native_release_tag,
                 smoke_policy=args.smoke_policy,
                 correlation_id=args.correlation_id,
@@ -584,6 +643,20 @@ def main() -> int:
             )
             for key, value in payload.items():
                 print(f"{key}={value}")
+        elif args.command == "validate-publication-approval":
+            validate_publication_approval(
+                publish_release=args.publish_release == "true",
+                event_name=args.event_name,
+                actor=args.actor,
+                triggering_actor=args.triggering_actor,
+                repository_owner=args.repository_owner,
+                run_attempt=args.run_attempt,
+                workflow_ref=args.workflow_ref,
+                workflow_sha=args.workflow_sha,
+                native_source_sha=args.native_source_sha,
+                default_branch=args.default_branch,
+                default_branch_head=args.default_branch_head,
+            )
         elif args.command == "discovery-report":
             _write_json(
                 build_discovery_report(

@@ -67,15 +67,17 @@ newer upstream stable release instead of inventing a different suffix.
   dispatch the native release workflow, and only for an exact upstream-aligned
   stable `vMAJOR.MINOR.PATCH` release that has no corresponding native release.
   Every other discovery result stops without a dispatch.
-- The automatic dispatch always supplies the exact upstream ref, its full 40-hex
-  upstream commit, the identical native release tag, `smoke_policy=required`,
-  and `publish_release=true`. It cannot select a nightly ref, a wrapper rebuild
-  tag, or a skipped smoke.
+- The automatic dispatch is preparation-only. It always supplies the exact
+  upstream ref and 40-hex commit, the current detector/native source SHA, the
+  identical native release tag, `smoke_policy=required`, and
+  `publish_release=false`. It cannot select a nightly ref, wrapper rebuild,
+  skipped smoke, or publishing mode.
 - The automatic caller correlation identifier is
   `auto-stable/<native-tag>/<sha256-prefix>`, derived only from the upstream
   ref, upstream commit, and native tag. It is therefore identical on a retried
-  dispatch and on every later scheduled run for the same release, so all
-  attempts at one release correlate to a single central operation. The
+  preparation and on every later scheduled run for the same release, so all
+  preparation and owner-approved publication attempts correlate to a single
+  central operation. The
   publication transaction itself stays bound to its own workflow run, so a new
   dispatch still cannot take over a previous run's partial state.
 - Automation queries for unsettled `native_release.yml` runs while planning and
@@ -87,17 +89,29 @@ newer upstream stable release instead of inventing a different suffix.
   dispatch/listing race.
 - Each detection uploads `native-discovery-report-<run-id>` containing a
   machine-readable `candidate`, `noop`, or `incompatible` status, the
-  `dispatch`/`skip`/`fail` decision, the exact upstream ref/commit, the detector
-  workflow head, the in-flight native release run count, and run metadata.
+  `prepare`/`skip`/`fail` decision, the exact upstream ref/commit, detector/native
+  source SHA, the in-flight native release run count, owner approval inputs, and
+  run metadata.
   Detection holds `contents: read` plus `actions: write` for the dispatch alone;
   it cannot push, publish, or move the submodule. The report and plan upload
-  completes before any authorized dispatch is attempted.
+  completes before any non-publishing preparation dispatch is attempted.
+- Publication has one explicit owner-visible boundary: **Actions > Native Build
+  & Release > Run workflow** on the repository default branch. The owner copies
+  the exact candidate evidence, including `native_source_sha`, and explicitly
+  sets `publish_release=true`. The workflow requires both actor identities to
+  equal the repository owner and requires the native source SHA to equal both
+  the workflow head and current default-branch head. Scheduled or bot dispatches
+  therefore fail closed before publication even if their input is tampered.
+  An owner rerun may resume the same already-approved transaction after the
+  default branch moves; its workflow head, inputs, correlation, and immutable
+  partial-state checks remain unchanged.
 - Nightly refs and wrapper-only rebuilds remain manual dispatches. Reuse or
   republication of an existing tag is rejected. Central `llamadart`
   orchestration coordinates native, Dart, and Web preparation for valid manual
   change sets.
 - The explicit dispatch contract requires an exact `llama_cpp_tag`, its full
-  40-hex `llama_cpp_commit`, an exact `native_release_tag`, `smoke_policy`, and
+  40-hex `llama_cpp_commit`, exact `native_source_sha` and
+  `native_release_tag`, `smoke_policy`, and
   stable caller `correlation_id`. Publication requires
   `smoke_policy=required`; explicit `skip` is allowed only for a non-publishing
   preparation run. Moving `latest` and `submodule` inputs are rejected.
@@ -119,10 +133,11 @@ The historical `tag` field remains as a compatibility alias for
 valid. New manifests and release notes also bind the caller correlation ID,
 smoke policy/conclusion, exact workflow run, and workflow head SHA.
 
-Do not mutate, republish, or reuse a tag. For a wrapper-only fix, keep the same
+Do not mutate, republish, or reuse a tag. Existing `v0.3.0` is immutable and is
+not repaired or republished by this process. For a wrapper-only fix, keep the same
 `llama_cpp_tag`, choose the next policy-compliant native rebuild tag, and run the
 full build matrix. Publication, downstream pin updates, and downstream releases
-remain separate actions; only the exact stable upstream dispatch is automatic.
+remain separate actions; only exact stable detection and preparation are automatic.
 
 ## Publication and recovery
 
@@ -131,6 +146,10 @@ not persist checkout credentials. Only the final publication job receives
 `contents: write`; the later stable-submodule update is a separate narrowly
 scoped write job and runs only after a successful upstream-aligned stable
 publication.
+
+Repository environment protection is coordinated separately in issue #60. The
+workflow does not claim or depend on that unconfigured defense-in-depth layer;
+adding the environment and its rules remains a repository-settings approval.
 
 Publication is an immutable, draft-first transaction:
 

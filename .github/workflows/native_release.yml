@@ -1,5 +1,7 @@
 name: Native Build & Release
 
+run-name: native-${{ inputs.publish_release && 'publication-approval' || 'preparation' }} ${{ inputs.correlation_id }} source:${{ inputs.native_source_sha }} upstream:${{ inputs.llama_cpp_tag }} tag:${{ inputs.native_release_tag }}
+
 on:
   workflow_dispatch:
     inputs:
@@ -8,6 +10,9 @@ on:
         required: true
       llama_cpp_commit:
         description: 'Expected exact 40-hex llama.cpp commit for the selected ref'
+        required: true
+      native_source_sha:
+        description: 'Exact current default-branch native commit from candidate evidence'
         required: true
       native_release_tag:
         description: 'Exact native tag (upstream-aligned or compact -N wrapper rebuild)'
@@ -24,9 +29,9 @@ on:
         description: 'Stable caller correlation identifier (1-128 safe characters)'
         required: true
       publish_release:
-        description: 'Publish GitHub release'
+        description: 'Explicit repository-owner publication approval; false is preparation-only'
         required: true
-        default: true
+        default: false
         type: boolean
 
 permissions:
@@ -58,6 +63,8 @@ jobs:
       github_prerelease: ${{ steps.contract.outputs.github_prerelease }}
       smoke_policy: ${{ steps.contract.outputs.smoke_policy }}
       correlation_id: ${{ steps.contract.outputs.correlation_id }}
+      native_source_sha: ${{ steps.contract.outputs.native_source_sha }}
+      publish_release: ${{ steps.contract.outputs.publish_release }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -71,10 +78,18 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           INPUT_LLAMA_CPP_TAG: ${{ github.event.inputs.llama_cpp_tag }}
           INPUT_LLAMA_CPP_COMMIT: ${{ github.event.inputs.llama_cpp_commit }}
+          INPUT_NATIVE_SOURCE_SHA: ${{ github.event.inputs.native_source_sha }}
           INPUT_NATIVE_RELEASE_TAG: ${{ github.event.inputs.native_release_tag }}
           INPUT_SMOKE_POLICY: ${{ github.event.inputs.smoke_policy }}
           INPUT_CORRELATION_ID: ${{ github.event.inputs.correlation_id }}
           INPUT_PUBLISH_RELEASE: ${{ github.event.inputs.publish_release }}
+          APPROVAL_EVENT_NAME: ${{ github.event_name }}
+          APPROVAL_ACTOR: ${{ github.actor }}
+          APPROVAL_TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+          APPROVAL_REPOSITORY_OWNER: ${{ github.repository_owner }}
+          APPROVAL_RUN_ATTEMPT: ${{ github.run_attempt }}
+          APPROVAL_WORKFLOW_REF: ${{ github.ref }}
+          APPROVAL_WORKFLOW_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
 
@@ -85,11 +100,32 @@ jobs:
           python3 scripts/release_contract.py validate-dispatch \
             --upstream-ref "$TAG" \
             --upstream-commit "$EXPECTED_COMMIT" \
+            --native-source-sha "$INPUT_NATIVE_SOURCE_SHA" \
             --native-release-tag "$RELEASE_TAG" \
             --smoke-policy "$INPUT_SMOKE_POLICY" \
             --correlation-id "$INPUT_CORRELATION_ID" \
             --publish-release "$INPUT_PUBLISH_RELEASE" \
             >> "$GITHUB_OUTPUT"
+
+          default_branch=""
+          default_branch_head="$INPUT_NATIVE_SOURCE_SHA"
+          if [ "$INPUT_PUBLISH_RELEASE" = "true" ]; then
+            default_branch="$(gh api "repos/${GITHUB_REPOSITORY}" --jq '.default_branch')"
+            default_branch_head="$(gh api \
+              "repos/${GITHUB_REPOSITORY}/commits/${default_branch}" --jq '.sha')"
+          fi
+          python3 scripts/release_contract.py validate-publication-approval \
+            --publish-release "$INPUT_PUBLISH_RELEASE" \
+            --event-name "$APPROVAL_EVENT_NAME" \
+            --actor "$APPROVAL_ACTOR" \
+            --triggering-actor "$APPROVAL_TRIGGERING_ACTOR" \
+            --repository-owner "$APPROVAL_REPOSITORY_OWNER" \
+            --run-attempt "$APPROVAL_RUN_ATTEMPT" \
+            --workflow-ref "$APPROVAL_WORKFLOW_REF" \
+            --workflow-sha "$APPROVAL_WORKFLOW_SHA" \
+            --native-source-sha "$INPUT_NATIVE_SOURCE_SHA" \
+            --default-branch "$default_branch" \
+            --default-branch-head "$default_branch_head"
 
           policy_args=(
             --upstream-ref "$TAG"
@@ -1267,7 +1303,7 @@ jobs:
 
   publish-release:
     needs: [resolve-tag, smoke-release-contract, package-and-release]
-    if: ${{ github.event.inputs.publish_release == 'true' && needs.package-and-release.result == 'success' }}
+    if: ${{ needs.resolve-tag.outputs.publish_release == 'true' && needs.package-and-release.result == 'success' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -1328,7 +1364,7 @@ jobs:
 
   update-llama-submodule:
     needs: [resolve-tag, publish-release]
-    if: ${{ github.event.inputs.publish_release == 'true' && needs.publish-release.result == 'success' && needs.resolve-tag.outputs.upstream_channel == 'stable' && needs.resolve-tag.outputs.release_kind == 'upstream' }}
+    if: ${{ needs.resolve-tag.outputs.publish_release == 'true' && needs.publish-release.result == 'success' && needs.resolve-tag.outputs.upstream_channel == 'stable' && needs.resolve-tag.outputs.release_kind == 'upstream' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -1376,7 +1412,7 @@ jobs:
 
   emit-release-result:
     needs: [resolve-tag, smoke-release-contract, package-and-release, publish-release, update-llama-submodule]
-    if: ${{ always() && needs.smoke-release-contract.result == 'success' && needs.package-and-release.result == 'success' && (github.event.inputs.publish_release != 'true' || needs.publish-release.result == 'success') && (needs.update-llama-submodule.result == 'success' || needs.update-llama-submodule.result == 'skipped') }}
+    if: ${{ always() && needs.smoke-release-contract.result == 'success' && needs.package-and-release.result == 'success' && (needs.resolve-tag.outputs.publish_release != 'true' || needs.publish-release.result == 'success') && (needs.update-llama-submodule.result == 'success' || needs.update-llama-submodule.result == 'skipped') }}
     runs-on: ubuntu-latest
     outputs:
       native_release_tag: ${{ needs.resolve-tag.outputs.native_release_tag }}
@@ -1406,7 +1442,7 @@ jobs:
           path: prepared
       - name: Read exact published release metadata
         id: release
-        if: ${{ github.event.inputs.publish_release == 'true' }}
+        if: ${{ needs.resolve-tag.outputs.publish_release == 'true' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -1415,7 +1451,7 @@ jobs:
       - name: Generate exact machine-readable release result
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          INPUT_PUBLISH_RELEASE: ${{ github.event.inputs.publish_release }}
+          INPUT_PUBLISH_RELEASE: ${{ needs.resolve-tag.outputs.publish_release }}
         run: |
           release_args=()
           if [ "$INPUT_PUBLISH_RELEASE" = "true" ]; then

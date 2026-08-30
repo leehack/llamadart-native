@@ -157,17 +157,23 @@ def verify_workflow_contract(errors: list[str]) -> None:
             for contract in (
                 'INPUT_LLAMA_CPP_TAG: ${{ github.event.inputs.llama_cpp_tag }}',
                 'INPUT_LLAMA_CPP_COMMIT: ${{ github.event.inputs.llama_cpp_commit }}',
+                'INPUT_NATIVE_SOURCE_SHA: ${{ github.event.inputs.native_source_sha }}',
                 'INPUT_NATIVE_RELEASE_TAG: ${{ github.event.inputs.native_release_tag }}',
                 'INPUT_SMOKE_POLICY: ${{ github.event.inputs.smoke_policy }}',
                 'INPUT_CORRELATION_ID: ${{ github.event.inputs.correlation_id }}',
                 'INPUT_PUBLISH_RELEASE: ${{ github.event.inputs.publish_release }}',
                 'TAG="$INPUT_LLAMA_CPP_TAG"',
                 'EXPECTED_COMMIT="$INPUT_LLAMA_CPP_COMMIT"',
+                '--native-source-sha "$INPUT_NATIVE_SOURCE_SHA"',
                 'RELEASE_TAG="$INPUT_NATIVE_RELEASE_TAG"',
                 '--smoke-policy "$INPUT_SMOKE_POLICY"',
                 '--correlation-id "$INPUT_CORRELATION_ID"',
                 '--publish-release "$INPUT_PUBLISH_RELEASE"',
                 '[ "$INPUT_PUBLISH_RELEASE" = "true" ]',
+                "scripts/release_contract.py validate-publication-approval",
+                'APPROVAL_ACTOR: ${{ github.actor }}',
+                'APPROVAL_TRIGGERING_ACTOR: ${{ github.triggering_actor }}',
+                'APPROVAL_RUN_ATTEMPT: ${{ github.run_attempt }}',
             )
         ),
         "every dispatch input must use the documented quoted step-env transport",
@@ -284,6 +290,17 @@ def verify_workflow_contract(errors: list[str]) -> None:
         and "persist-credentials: true" in publish_job
         and "scripts/release_publication.py" in publish_job,
         "only the final publication job may retain credentials needed to create the release",
+        errors,
+    )
+    require(
+        "schedule:" not in workflow
+        and "default: false" in workflow[: workflow.find("permissions:")]
+        and "needs.resolve-tag.outputs.publish_release == 'true'" in publish_job
+        and "needs.resolve-tag.outputs.publish_release == 'true'" in update_job
+        and "native source SHA must equal the current repository default branch head"
+        in contract_script,
+        "only the validated owner dispatch for the exact current default-branch "
+        "candidate may reach publication or the post-publication submodule update",
         errors,
     )
     require(
@@ -460,8 +477,8 @@ def verify_workflow_contract(errors: list[str]) -> None:
         and re.search(r"^permissions:\n  contents: read$", auto_workflow, re.MULTILINE)
         is not None
         and auto_workflow.count("actions: write") == 1
-        and "may only dispatch native_release.yml for an exact unbuilt" in auto_workflow,
-        "scheduled automation may only dispatch the native release workflow; it must "
+        and "publish_release=false preparation" in auto_workflow,
+        "scheduled automation may only dispatch non-publishing preparation; it must "
         "never publish assets or mutate this repository",
         errors,
     )
@@ -471,7 +488,7 @@ def verify_workflow_contract(errors: list[str]) -> None:
         and '--repo "$GITHUB_REPOSITORY"' in auto_workflow
         and '--ref "$GITHUB_REF_NAME"' in auto_workflow
         and "--json < native-dispatch-inputs.json" in auto_workflow
-        and "steps.detect.outputs.decision == 'dispatch'" in auto_workflow
+        and "steps.detect.outputs.decision == 'prepare'" in auto_workflow
         and "steps.detect.outputs.decision == 'fail'" in auto_workflow
         and auto_workflow.count("actions/workflows/native_release.yml/runs") == 2
         and auto_workflow.count("gh api --paginate --slurp") == 2
@@ -479,7 +496,7 @@ def verify_workflow_contract(errors: list[str]) -> None:
         and "--slurp --jq" not in auto_workflow
         and 'select(.status != "completed")' in auto_workflow
         and "--in-flight-native-runs" in auto_workflow,
-        "automatic dispatch must be a single plan-driven call that fails closed and is "
+        "automatic preparation must be a single plan-driven call that fails closed and is "
         "suppressed when either planning or final revalidation observes another native "
         "release run",
         errors,
@@ -489,14 +506,16 @@ def verify_workflow_contract(errors: list[str]) -> None:
         and "build_discovery_report(" in dispatch_script
         and "validate_dispatch(" in dispatch_script
         and 'SMOKE_POLICY = "required"' in dispatch_script
-        and "PUBLISH_RELEASE = True" in dispatch_script
+        and "PREPARATION_PUBLISH_RELEASE = False" in dispatch_script
+        and "APPROVAL_PUBLISH_RELEASE = True" in dispatch_script
         and "def deterministic_correlation_id(" in dispatch_script
-        and '"llama_cpp_commit": contract["llama_cpp_commit"]' in dispatch_script
-        and '"publish_release": PUBLISH_RELEASE' in dispatch_script
-        and 'contract["upstream_channel"] != "stable"' in dispatch_script
-        and 'contract["release_kind"] != "upstream"' in dispatch_script,
-        "the dispatch planner must reuse the exact publication contract and restrict "
-        "automation to upstream-aligned stable releases with required smoke",
+        and '"native_source_sha": preparation_contract["native_source_sha"]' in dispatch_script
+        and '"publish_release": PREPARATION_PUBLISH_RELEASE' in dispatch_script
+        and '"publish_release": APPROVAL_PUBLISH_RELEASE' in dispatch_script
+        and 'preparation_contract["upstream_channel"] != "stable"' in dispatch_script
+        and 'preparation_contract["release_kind"] != "upstream"' in dispatch_script,
+        "the planner must reuse the exact contract while separating automatic stable "
+        "preparation from explicit owner publication approval",
         errors,
     )
     require(
@@ -505,9 +524,9 @@ def verify_workflow_contract(errors: list[str]) -> None:
         and "dispatch input transport must be an exact string map" in auto_workflow
         and "dispatch input transport does not match uploaded evidence" in auto_workflow
         and 'dispatch.get("workflow") != "native_release.yml"' in auto_workflow
-        and 'inputs["publish_release"] != "true"' in auto_workflow
+        and 'inputs["publish_release"] != "false"' in auto_workflow
         and 'inputs["smoke_policy"] != "required"' in auto_workflow,
-        "the typed plan must preserve boolean publication intent while gh workflow run "
+        "the typed plan must force automatic publication false while gh workflow run "
         "receives its required string-valued JSON input map",
         errors,
     )
@@ -522,13 +541,14 @@ def verify_workflow_contract(errors: list[str]) -> None:
     )
     report_step = auto_workflow.find("- name: Report exact discovery")
     upload_step = auto_workflow.find("- name: Upload machine-readable discovery report")
-    dispatch_step = auto_workflow.find("- name: Dispatch exact native release")
+    dispatch_step = auto_workflow.find("- name: Dispatch exact non-publishing preparation")
     fail_step = auto_workflow.find("- name: Fail closed for incompatible upstream metadata")
     require(
         -1 not in (report_step, upload_step, dispatch_step, fail_step)
         and report_step < upload_step < dispatch_step < fail_step
-        and "Authorized workflow:" in auto_workflow,
-        "automatic discovery evidence must be reported and uploaded before dispatch, "
+        and "Publication approval:" in auto_workflow,
+        "automatic discovery evidence and the owner approval location must be reported "
+        "and uploaded before preparation dispatch, "
         "without claiming that an authorized but failed dispatch succeeded",
         errors,
     )
