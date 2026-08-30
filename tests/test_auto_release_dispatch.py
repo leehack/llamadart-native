@@ -70,7 +70,10 @@ if argv[:1] == ["api"]:
         else:
             print(os.environ["FAKE_UPSTREAM_COMMIT"])
         raise SystemExit(0)
-    if target.startswith("repos/leehack/llamadart-native/commits/"):
+    if target == "repos/leehack/llamadart-native/commits":
+        if "--method" not in argv or "GET" not in argv or "-f" not in argv:
+            print("native head lookup must use an encoded GET query", file=sys.stderr)
+            raise SystemExit(1)
         if os.environ.get("FAKE_NATIVE_HEAD_LOOKUP_ERROR"):
             print(os.environ["FAKE_NATIVE_HEAD_LOOKUP_ERROR"], file=sys.stderr)
             raise SystemExit(1)
@@ -443,9 +446,9 @@ class AutoReleaseDispatchWorkflowTests(unittest.TestCase):
         runs_lookup_error: str = "",
         runs_lookup_error_after_plan: str = "",
         dispatch_error: str = "",
+        native_branch: str = "main",
         seed_stale_outputs: bool = False,
         mutate_dispatch_input: tuple[str, str] | None = None,
-        native_ref_name: str = "main",
     ) -> OrchestrationRun:
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
@@ -507,7 +510,7 @@ class AutoReleaseDispatchWorkflowTests(unittest.TestCase):
                 "GITHUB_SERVER_URL": "https://github.com",
                 "GITHUB_RUN_ID": "424242",
                 "GITHUB_SHA": NATIVE_HEAD_COMMIT,
-                "GITHUB_REF_NAME": native_ref_name,
+                "GITHUB_REF_NAME": native_branch,
                 "GITHUB_OUTPUT": str(output),
                 "RUNNER_TEMP": str(root),
             }
@@ -596,27 +599,21 @@ class AutoReleaseDispatchWorkflowTests(unittest.TestCase):
         self.assertEqual("candidate", run.outputs["status"])
         self.assertEqual("prepare", run.outputs["decision"])
 
-    def test_branch_ref_with_slash_is_url_encoded_before_revalidation(self) -> None:
-        run = self.run_orchestration(native_ref_name="release/native")
+    def test_candidate_branch_with_slash_uses_encoded_head_query(self) -> None:
+        run = self.run_orchestration(native_branch="release/stable")
         self.assertEqual(0, run.process.returncode, run.process.stderr)
-        self.assertEqual(1, len(run.dispatches), run.gh_calls)
-        self.assertIn("--ref", run.dispatches[0]["argv"])
-        self.assertIn("release/native", run.dispatches[0]["argv"])
-        api_targets = [
-            value
+        native_head_calls = [
+            call["argv"]
             for call in run.gh_calls
-            if call["argv"][:1] == ["api"]
-            for value in call["argv"]
-            if value.startswith("repos/leehack/llamadart-native/commits/")
+            if "repos/leehack/llamadart-native/commits" in call["argv"]
         ]
-        self.assertIn(
-            "repos/leehack/llamadart-native/commits/release%2Fnative",
-            api_targets,
-        )
+        self.assertEqual(1, len(native_head_calls), run.gh_calls)
+        self.assertIn("sha=release/stable", native_head_calls[0])
         self.assertNotIn(
-            "repos/leehack/llamadart-native/commits/release/native",
-            api_targets,
+            "repos/leehack/llamadart-native/commits/release/stable",
+            native_head_calls[0],
         )
+        self.assertEqual("release/stable", run.dispatches[0]["argv"][6])
 
     def test_existing_native_release_dispatches_nothing(self) -> None:
         run = self.run_orchestration(native_release_exists=True)

@@ -231,9 +231,11 @@ jobs:
           # Evidence is uploaded before this step. Recheck mutable API state so
           # an intervening branch advance, publication, native run, or moved
           # upstream ref cannot turn a formerly valid plan into a stale dispatch.
-          current_native_head="$(gh api \
-            "repos/${GITHUB_REPOSITORY}/commits/$(api_path_segment "$GITHUB_REF_NAME")" \
-            --jq '.sha')"
+          current_native_head="$(gh api --method GET \
+            "repos/${GITHUB_REPOSITORY}/commits" \
+            -f sha="$GITHUB_REF_NAME" \
+            -f per_page=1 \
+            --jq '.[0].sha')"
           if ! [[ "$current_native_head" =~ ^[0-9a-f]{40}$ ]]; then
             echo "Unable to revalidate the detector branch head" >&2
             exit 1

@@ -134,18 +134,20 @@ jobs:
                     self.assertNotEqual(0, result.returncode)
                 self.assertFalse(marker.exists(), result.stderr)
 
-    def test_default_branch_lookup_url_encodes_ref_names(self) -> None:
+    def test_default_branch_lookup_uses_encoded_query_parameter(self) -> None:
         workflow = WORKFLOW.read_text()
         validation_block = next(
             block
             for block in workflow_run_blocks(workflow)
             if "release_contract.py validate-dispatch" in block
         )
-        self.assertIn("urllib.parse.quote", validation_block)
+        self.assertIn("gh api --method GET", validation_block)
         self.assertIn(
-            'commits/$(api_path_segment "$default_branch")',
+            '"repos/${GITHUB_REPOSITORY}/commits"',
             validation_block,
         )
+        self.assertIn('-f sha="$default_branch"', validation_block)
+        self.assertNotIn('commits/${default_branch}', validation_block)
 
 
 if __name__ == "__main__":

@@ -174,6 +174,10 @@ def verify_workflow_contract(errors: list[str]) -> None:
                 'APPROVAL_ACTOR: ${{ github.actor }}',
                 'APPROVAL_TRIGGERING_ACTOR: ${{ github.triggering_actor }}',
                 'APPROVAL_RUN_ATTEMPT: ${{ github.run_attempt }}',
+                "gh api --method GET",
+                '"repos/${GITHUB_REPOSITORY}/commits"',
+                '-f sha="$default_branch"',
+                "--jq '.[0].sha'",
             )
         ),
         "every dispatch input must use the documented quoted step-env transport",
@@ -572,7 +576,10 @@ def verify_workflow_contract(errors: list[str]) -> None:
     )
     require(
         'commits/$(api_path_segment "$planned_ref")' in auto_workflow
-        and 'commits/$(api_path_segment "$GITHUB_REF_NAME")' in auto_workflow
+        and "gh api --method GET" in auto_workflow
+        and '"repos/${GITHUB_REPOSITORY}/commits"' in auto_workflow
+        and '-f sha="$GITHUB_REF_NAME"' in auto_workflow
+        and "--jq '.[0].sha'" in auto_workflow
         and auto_workflow.count("releases/tags/$(api_path_segment") == 2
         and 'current_commit" != "$planned_commit"' in auto_workflow
         and 'current_native_head" != "$GITHUB_SHA"' in auto_workflow
