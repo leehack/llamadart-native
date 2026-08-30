@@ -122,7 +122,7 @@ def build_dispatch_plan(
     native_head_commit: str,
     policy_error: str = "",
 ) -> dict[str, Any]:
-    """Decide whether discovery state authorizes exactly one native release dispatch."""
+    """Decide whether discovery may prepare a candidate and expose owner approval."""
     if status not in DISCOVERY_STATUSES:
         raise ContractError(f"discovery status must be one of {DISCOVERY_STATUSES}")
     if UPSTREAM_REF_RE.fullmatch(upstream_ref) is None:
