@@ -45,12 +45,18 @@ jobs:
             native-dispatch-plan.json \
             native-dispatch-inputs.json
 
+          api_path_segment() {
+            python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$1"
+          }
+
           upstream_ref="$(gh api repos/ggml-org/llama.cpp/releases/latest --jq '.tag_name')"
           if [ -z "$upstream_ref" ]; then
             echo "Failed to resolve latest llama.cpp tag" >&2
             exit 1
           fi
-          upstream_commit="$(gh api "repos/ggml-org/llama.cpp/commits/${upstream_ref}" --jq '.sha')"
+          upstream_commit="$(gh api \
+            "repos/ggml-org/llama.cpp/commits/$(api_path_segment "$upstream_ref")" \
+            --jq '.sha')"
           if ! [[ "$upstream_commit" =~ ^[0-9a-f]{40}$ ]]; then
             echo "Failed to resolve exact llama.cpp commit for $upstream_ref" >&2
             exit 1
@@ -66,7 +72,9 @@ jobs:
           else
             policy_error=""
             set +e
-            release_error="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${upstream_ref}" --silent 2>&1)"
+            release_error="$(gh api \
+              "repos/${GITHUB_REPOSITORY}/releases/tags/$(api_path_segment "$upstream_ref")" \
+              --silent 2>&1)"
             release_status=$?
             set -e
             if [ "$release_status" -eq 0 ]; then
@@ -216,12 +224,16 @@ jobs:
             echo "Unable to recover the exact planned release identity" >&2
             exit 1
           fi
+          api_path_segment() {
+            python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$1"
+          }
 
           # Evidence is uploaded before this step. Recheck mutable API state so
           # an intervening branch advance, publication, native run, or moved
           # upstream ref cannot turn a formerly valid plan into a stale dispatch.
           current_native_head="$(gh api \
-            "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_REF_NAME}" --jq '.sha')"
+            "repos/${GITHUB_REPOSITORY}/commits/$(api_path_segment "$GITHUB_REF_NAME")" \
+            --jq '.sha')"
           if ! [[ "$current_native_head" =~ ^[0-9a-f]{40}$ ]]; then
             echo "Unable to revalidate the detector branch head" >&2
             exit 1
@@ -232,7 +244,8 @@ jobs:
           fi
 
           current_commit="$(gh api \
-            "repos/ggml-org/llama.cpp/commits/${planned_ref}" --jq '.sha')"
+            "repos/ggml-org/llama.cpp/commits/$(api_path_segment "$planned_ref")" \
+            --jq '.sha')"
           if ! [[ "$current_commit" =~ ^[0-9a-f]{40}$ ]] || \
               [ "$current_commit" != "$planned_commit" ]; then
             echo "Upstream ref no longer resolves to the planned exact commit" >&2
@@ -241,7 +254,7 @@ jobs:
 
           set +e
           release_error="$(gh api \
-            "repos/${GITHUB_REPOSITORY}/releases/tags/${planned_ref}" \
+            "repos/${GITHUB_REPOSITORY}/releases/tags/$(api_path_segment "$planned_ref")" \
             --silent 2>&1)"
           release_status=$?
           set -e

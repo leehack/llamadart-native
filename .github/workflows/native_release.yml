@@ -96,6 +96,9 @@ jobs:
           TAG="$INPUT_LLAMA_CPP_TAG"
           EXPECTED_COMMIT="$INPUT_LLAMA_CPP_COMMIT"
           RELEASE_TAG="$INPUT_NATIVE_RELEASE_TAG"
+          api_path_segment() {
+            python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$1"
+          }
 
           python3 scripts/release_contract.py validate-dispatch \
             --upstream-ref "$TAG" \
@@ -112,7 +115,8 @@ jobs:
           if [ "$INPUT_PUBLISH_RELEASE" = "true" ]; then
             default_branch="$(gh api "repos/${GITHUB_REPOSITORY}" --jq '.default_branch')"
             default_branch_head="$(gh api \
-              "repos/${GITHUB_REPOSITORY}/commits/${default_branch}" --jq '.sha')"
+              "repos/${GITHUB_REPOSITORY}/commits/$(api_path_segment "$default_branch")" \
+              --jq '.sha')"
           fi
           python3 scripts/release_contract.py validate-publication-approval \
             --publish-release "$INPUT_PUBLISH_RELEASE" \

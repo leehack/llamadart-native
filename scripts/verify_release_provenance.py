@@ -535,7 +535,7 @@ def verify_workflow_contract(errors: list[str]) -> None:
         and 'status="candidate"' in auto_workflow
         and 'status="noop"' in auto_workflow
         and 'status="incompatible"' in auto_workflow
-        and 'commits/${upstream_ref}' in auto_workflow,
+        and 'commits/$(api_path_segment "$upstream_ref")' in auto_workflow,
         "scheduled discovery must emit exact candidate/noop/incompatible machine-readable evidence",
         errors,
     )
@@ -571,9 +571,9 @@ def verify_workflow_contract(errors: list[str]) -> None:
         errors,
     )
     require(
-        'commits/${planned_ref}' in auto_workflow
-        and 'commits/${GITHUB_REF_NAME}' in auto_workflow
-        and auto_workflow.count("releases/tags/${") == 2
+        'commits/$(api_path_segment "$planned_ref")' in auto_workflow
+        and 'commits/$(api_path_segment "$GITHUB_REF_NAME")' in auto_workflow
+        and auto_workflow.count("releases/tags/$(api_path_segment") == 2
         and 'current_commit" != "$planned_commit"' in auto_workflow
         and 'current_native_head" != "$GITHUB_SHA"' in auto_workflow
         and "Detector branch advanced; stale preparation dispatch suppressed."

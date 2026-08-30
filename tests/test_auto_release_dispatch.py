@@ -445,6 +445,7 @@ class AutoReleaseDispatchWorkflowTests(unittest.TestCase):
         dispatch_error: str = "",
         seed_stale_outputs: bool = False,
         mutate_dispatch_input: tuple[str, str] | None = None,
+        native_ref_name: str = "main",
     ) -> OrchestrationRun:
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
@@ -506,7 +507,7 @@ class AutoReleaseDispatchWorkflowTests(unittest.TestCase):
                 "GITHUB_SERVER_URL": "https://github.com",
                 "GITHUB_RUN_ID": "424242",
                 "GITHUB_SHA": NATIVE_HEAD_COMMIT,
-                "GITHUB_REF_NAME": "main",
+                "GITHUB_REF_NAME": native_ref_name,
                 "GITHUB_OUTPUT": str(output),
                 "RUNNER_TEMP": str(root),
             }
@@ -594,6 +595,28 @@ class AutoReleaseDispatchWorkflowTests(unittest.TestCase):
         self.assertEqual("prepare", run.report["decision"])
         self.assertEqual("candidate", run.outputs["status"])
         self.assertEqual("prepare", run.outputs["decision"])
+
+    def test_branch_ref_with_slash_is_url_encoded_before_revalidation(self) -> None:
+        run = self.run_orchestration(native_ref_name="release/native")
+        self.assertEqual(0, run.process.returncode, run.process.stderr)
+        self.assertEqual(1, len(run.dispatches), run.gh_calls)
+        self.assertIn("--ref", run.dispatches[0]["argv"])
+        self.assertIn("release/native", run.dispatches[0]["argv"])
+        api_targets = [
+            value
+            for call in run.gh_calls
+            if call["argv"][:1] == ["api"]
+            for value in call["argv"]
+            if value.startswith("repos/leehack/llamadart-native/commits/")
+        ]
+        self.assertIn(
+            "repos/leehack/llamadart-native/commits/release%2Fnative",
+            api_targets,
+        )
+        self.assertNotIn(
+            "repos/leehack/llamadart-native/commits/release/native",
+            api_targets,
+        )
 
     def test_existing_native_release_dispatches_nothing(self) -> None:
         run = self.run_orchestration(native_release_exists=True)

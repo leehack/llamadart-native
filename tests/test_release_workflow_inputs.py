@@ -134,6 +134,19 @@ jobs:
                     self.assertNotEqual(0, result.returncode)
                 self.assertFalse(marker.exists(), result.stderr)
 
+    def test_default_branch_lookup_url_encodes_ref_names(self) -> None:
+        workflow = WORKFLOW.read_text()
+        validation_block = next(
+            block
+            for block in workflow_run_blocks(workflow)
+            if "release_contract.py validate-dispatch" in block
+        )
+        self.assertIn("urllib.parse.quote", validation_block)
+        self.assertIn(
+            'commits/$(api_path_segment "$default_branch")',
+            validation_block,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
