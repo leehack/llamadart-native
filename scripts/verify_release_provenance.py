@@ -572,12 +572,16 @@ def verify_workflow_contract(errors: list[str]) -> None:
     )
     require(
         'commits/${planned_ref}' in auto_workflow
+        and 'commits/${GITHUB_REF_NAME}' in auto_workflow
         and auto_workflow.count("releases/tags/${") == 2
         and 'current_commit" != "$planned_commit"' in auto_workflow
+        and 'current_native_head" != "$GITHUB_SHA"' in auto_workflow
+        and "Detector branch advanced; stale preparation dispatch suppressed."
+        in auto_workflow
         and "Native release ${planned_ref} now exists; dispatch suppressed." in auto_workflow
         and "A native release run is now in flight; dispatch suppressed." in auto_workflow,
-        "the final dispatch step must revalidate exact upstream identity, release absence, "
-        "and unsettled native runs after evidence upload",
+        "the final dispatch step must revalidate the detector/native head, exact upstream "
+        "identity, release absence, and unsettled native runs after evidence upload",
         errors,
     )
     require(

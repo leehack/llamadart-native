@@ -218,8 +218,19 @@ jobs:
           fi
 
           # Evidence is uploaded before this step. Recheck mutable API state so
-          # an intervening publication, native run, or moved upstream ref cannot
-          # turn a formerly valid plan into a stale dispatch.
+          # an intervening branch advance, publication, native run, or moved
+          # upstream ref cannot turn a formerly valid plan into a stale dispatch.
+          current_native_head="$(gh api \
+            "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_REF_NAME}" --jq '.sha')"
+          if ! [[ "$current_native_head" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Unable to revalidate the detector branch head" >&2
+            exit 1
+          fi
+          if [ "$current_native_head" != "$GITHUB_SHA" ]; then
+            echo "Detector branch advanced; stale preparation dispatch suppressed."
+            exit 0
+          fi
+
           current_commit="$(gh api \
             "repos/ggml-org/llama.cpp/commits/${planned_ref}" --jq '.sha')"
           if ! [[ "$current_commit" =~ ^[0-9a-f]{40}$ ]] || \

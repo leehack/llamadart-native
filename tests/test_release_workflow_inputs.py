@@ -93,6 +93,13 @@ jobs:
             "INPUT_SMOKE_POLICY",
             "INPUT_CORRELATION_ID",
             "INPUT_PUBLISH_RELEASE",
+            "APPROVAL_EVENT_NAME",
+            "APPROVAL_ACTOR",
+            "APPROVAL_TRIGGERING_ACTOR",
+            "APPROVAL_REPOSITORY_OWNER",
+            "APPROVAL_RUN_ATTEMPT",
+            "APPROVAL_WORKFLOW_REF",
+            "APPROVAL_WORKFLOW_SHA",
         ):
             with self.subTest(variable=variable), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
@@ -113,7 +120,18 @@ jobs:
                     timeout=10,
                     check=False,
                 )
-                self.assertNotEqual(0, result.returncode)
+                # Preparation intentionally ignores actor/default-branch-only
+                # publication fields after safely transporting them as quoted
+                # arguments. They may therefore validate successfully here;
+                # the injection invariant is that none becomes shell source.
+                if variable not in {
+                    "APPROVAL_ACTOR",
+                    "APPROVAL_TRIGGERING_ACTOR",
+                    "APPROVAL_REPOSITORY_OWNER",
+                    "APPROVAL_RUN_ATTEMPT",
+                    "APPROVAL_WORKFLOW_REF",
+                }:
+                    self.assertNotEqual(0, result.returncode)
                 self.assertFalse(marker.exists(), result.stderr)
 
 

@@ -70,6 +70,12 @@ if argv[:1] == ["api"]:
         else:
             print(os.environ["FAKE_UPSTREAM_COMMIT"])
         raise SystemExit(0)
+    if target.startswith("repos/leehack/llamadart-native/commits/"):
+        if os.environ.get("FAKE_NATIVE_HEAD_LOOKUP_ERROR"):
+            print(os.environ["FAKE_NATIVE_HEAD_LOOKUP_ERROR"], file=sys.stderr)
+            raise SystemExit(1)
+        print(os.environ.get("FAKE_NATIVE_HEAD_AFTER_PLAN") or os.environ["GITHUB_SHA"])
+        raise SystemExit(0)
     if "/releases/tags/" in target:
         prior = sum(
             call["argv"][:1] == ["api"]
@@ -427,6 +433,8 @@ class AutoReleaseDispatchWorkflowTests(unittest.TestCase):
         native_run_statuses: tuple[str, ...] = (),
         native_run_statuses_after_plan: tuple[str, ...] | None = None,
         upstream_commit_after_plan: str = "",
+        native_head_after_plan: str = "",
+        native_head_lookup_error: str = "",
         latest_release_error: str = "",
         commit_lookup_error: str = "",
         commit_lookup_error_after_plan: str = "",
@@ -483,6 +491,8 @@ class AutoReleaseDispatchWorkflowTests(unittest.TestCase):
                     else json.dumps(native_run_statuses_after_plan)
                 ),
                 "FAKE_UPSTREAM_COMMIT_AFTER_PLAN": upstream_commit_after_plan,
+                "FAKE_NATIVE_HEAD_AFTER_PLAN": native_head_after_plan,
+                "FAKE_NATIVE_HEAD_LOOKUP_ERROR": native_head_lookup_error,
                 "FAKE_LATEST_RELEASE_ERROR": latest_release_error,
                 "FAKE_COMMIT_LOOKUP_ERROR": commit_lookup_error,
                 "FAKE_COMMIT_LOOKUP_ERROR_AFTER_PLAN": commit_lookup_error_after_plan,
@@ -616,6 +626,11 @@ class AutoReleaseDispatchWorkflowTests(unittest.TestCase):
             {"native_run_statuses_after_plan": ("queued",), "returncode": 0},
             {"native_run_statuses_after_plan": ("in_progress",), "returncode": 0},
             {"upstream_commit_after_plan": "c" * 40, "returncode": 1},
+            {"native_head_after_plan": "c" * 40, "returncode": 0},
+            {
+                "native_head_lookup_error": "gh: API unavailable (HTTP 503)",
+                "returncode": 1,
+            },
             {
                 "commit_lookup_error_after_plan": "gh: API unavailable (HTTP 503)",
                 "returncode": 1,

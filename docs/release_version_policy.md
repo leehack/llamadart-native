@@ -82,11 +82,11 @@ newer upstream stable release instead of inventing a different suffix.
   dispatch still cannot take over a previous run's partial state.
 - Automation queries for unsettled `native_release.yml` runs while planning and
   again immediately before dispatch. The final check also reconfirms the exact
-  upstream commit and release absence; any changed or ambiguous state fails or
-  suppresses the dispatch. The workflow's own concurrency group serializes
-  detection, while the native workflow's concurrency group and immutable
-  publication checks remain the fail-closed backstop for a final API
-  dispatch/listing race.
+  detector/native branch head, upstream commit, and release absence; any changed
+  or ambiguous state fails or suppresses the dispatch. The workflow's own
+  concurrency group serializes detection, while the native workflow's
+  concurrency group and immutable publication checks remain the fail-closed
+  backstop for a final API dispatch/listing race.
 - Each detection uploads `native-discovery-report-<run-id>` containing a
   machine-readable `candidate`, `noop`, or `incompatible` status, the
   `prepare`/`skip`/`fail` decision, the exact upstream ref/commit, detector/native
