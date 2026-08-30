@@ -12,7 +12,7 @@ on:
         description: 'Expected exact 40-hex llama.cpp commit for the selected ref'
         required: true
       native_source_sha:
-        description: 'Exact current default-branch native commit from candidate evidence'
+        description: 'Exact workflow-head SHA; first publication attempt must also be current default-branch head'
         required: true
       native_release_tag:
         description: 'Exact native tag (upstream-aligned or compact -N wrapper rebuild)'

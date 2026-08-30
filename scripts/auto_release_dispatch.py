@@ -179,7 +179,7 @@ def build_dispatch_plan(
         or preparation_contract["release_kind"] != "upstream"
     ):
         raise ContractError(
-            "automatic dispatch is limited to exact upstream-aligned stable releases"
+            "automatic preparation is limited to exact upstream-aligned stable releases"
         )
 
     if status == "noop":
