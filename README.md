@@ -114,11 +114,12 @@ prerelease classification, legacy compatibility, and the downstream contract.
 
 ## Backend Policy (Worthy Sets)
 
-Each target builds all worthy backends together in one build:
+Release CI builds backend lanes separately where needed and merges them into
+the following per-target bundles:
 
 - Android: arm64 = Vulkan + OpenCL + CPU variants (Kleidi-enabled where safe); x86_64 = Vulkan + OpenCL + CPU
 - iOS/macOS: Metal + CPU (consolidated into `libllamadart`, BLAS/Kleidi disabled)
-- Linux x64: Vulkan + CUDA + BLAS + ZenDNN + CPU
+- Linux x64: Vulkan + CUDA + BLAS + CPU (HIP/ROCm built in a separate release job)
 - Linux arm64: Vulkan + BLAS + Kleidi + CPU
 - Windows x64: Vulkan + CUDA + BLAS + CPU
 - Windows arm64: Vulkan + BLAS + Kleidi + CPU
@@ -198,11 +199,14 @@ Examples:
 # macOS arm64 (Metal + CPU)
 python3 tools/build.py apple --target macos-arm64
 
-# Linux x64 (Vulkan + CUDA + BLAS + ZenDNN + CPU)
+# Linux x64 (Vulkan + CUDA + BLAS + CPU)
 python3 tools/build.py linux --arch x64
 
 # Linux x64 CPU-only artifact validation build
 python3 tools/build.py linux --arch x64 --backend cpu
+
+# Linux x64 HIP/ROCm build
+python3 tools/build.py linux --arch x64 --backend hip
 
 # Android both ABIs (arm64: Vulkan + OpenCL + CPU variants; x86_64: Vulkan + OpenCL + CPU)
 python3 tools/build.py android --abi all

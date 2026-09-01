@@ -181,52 +181,6 @@ def ensure_vulkan_header_submodules() -> None:
     )
 
 
-def patch_llama_zendnn_install_target() -> bool:
-    """Patch ZenDNN ExternalProject install target for current llama.cpp revision.
-
-    Some pinned llama.cpp revisions configure ZenDNN without a top-level "install"
-    target, so "--target install" fails. The "zendnnl" target already performs
-    dependency install + library staging and is safe for the install step.
-    """
-
-    cmake_file = THIRD_PARTY_DIR / "llama.cpp/ggml/src/ggml-zendnn/CMakeLists.txt"
-    ensure_submodule(
-        cmake_file,
-        "Missing ggml-zendnn CMake file in llama.cpp submodule. Run: git submodule update --init --recursive",
-    )
-
-    old = "INSTALL_COMMAND ${CMAKE_COMMAND} --build ${ZENDNN_BUILD_DIR} --target install"
-    new = "INSTALL_COMMAND ${CMAKE_COMMAND} --build ${ZENDNN_BUILD_DIR} --target zendnnl"
-
-    text = cmake_file.read_text(encoding="utf-8")
-    if new in text:
-        return False
-    if old not in text:
-        fail(
-            "Could not apply ZenDNN install target patch: expected install command not found in "
-            f"{cmake_file}"
-        )
-
-    cmake_file.write_text(text.replace(old, new), encoding="utf-8")
-    print("Patched llama.cpp ggml-zendnn install target to zendnnl")
-    return True
-
-
-def restore_llama_zendnn_install_target() -> None:
-    cmake_file = THIRD_PARTY_DIR / "llama.cpp/ggml/src/ggml-zendnn/CMakeLists.txt"
-    old = "INSTALL_COMMAND ${CMAKE_COMMAND} --build ${ZENDNN_BUILD_DIR} --target install"
-    new = "INSTALL_COMMAND ${CMAKE_COMMAND} --build ${ZENDNN_BUILD_DIR} --target zendnnl"
-
-    if not cmake_file.is_file():
-        return
-
-    text = cmake_file.read_text(encoding="utf-8")
-    if new not in text:
-        return
-
-    cmake_file.write_text(text.replace(new, old), encoding="utf-8")
-    print("Restored llama.cpp ggml-zendnn install target to install")
-
 
 def clean_build_dir(preset: str, clean: bool) -> Path:
     build_dir = resolve_build_dir_for_preset(preset)
@@ -304,7 +258,7 @@ def linux_backend_cache_vars(arch: str, backend: str) -> dict[str, str]:
 
     if backend in ("full", "vulkan"):
         cache_vars["GGML_VULKAN"] = "ON"
-    if backend in ("full", "cuda"):
+    if (backend == "full" and arch == "x64") or backend == "cuda":
         cache_vars["GGML_CUDA"] = "ON"
     if backend == "hip":
         cache_vars["GGML_HIP"] = "ON"
@@ -1023,16 +977,8 @@ def build_linux(args: argparse.Namespace) -> None:
     if cache_vars["GGML_HIP"] == "ON" and not shutil.which("hipcc"):
         fail("Linux HIP backend build requires HIP (hipcc not found in PATH)")
 
-    zendnn_patch_applied = False
-    if arch == "x64" and cache_vars["GGML_ZENDNN"] == "ON":
-        zendnn_patch_applied = patch_llama_zendnn_install_target()
-
-    try:
-        build_dir = configure_and_build(preset, jobs=args.jobs, extra_cmake_args=extra_args)
-        copy_runtime_libraries(build_dir, BIN_DIR / f"linux/{arch}")
-    finally:
-        if zendnn_patch_applied:
-            restore_llama_zendnn_install_target()
+    build_dir = configure_and_build(preset, jobs=args.jobs, extra_cmake_args=extra_args)
+    copy_runtime_libraries(build_dir, BIN_DIR / f"linux/{arch}")
 
 
 def write_android_host_toolchain(path: Path) -> None:

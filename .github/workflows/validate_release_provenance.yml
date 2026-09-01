@@ -8,8 +8,10 @@ on:
       - '.github/workflows/native_release.yml'
       - '.github/workflows/validate_release_provenance.yml'
       - '.github/workflows/validate_wrapper.yml'
+      - 'CMakePresets.json'
       - 'CONTRIBUTING.md'
       - 'README.md'
+      - 'docs/platform_backend_strategy.md'
       - 'docs/release_version_policy.md'
       - 'scripts/auto_release_dispatch.py'
       - 'scripts/generate_assets_manifest.sh'
@@ -30,6 +32,8 @@ on:
       - 'tests/test_release_publication.py'
       - 'tests/test_release_version_policy.py'
       - 'tests/test_release_workflow_inputs.py'
+      - 'tests/test_linux_backends.py'
+      - 'tools/build.py'
   push:
     branches:
       - main
@@ -39,8 +43,10 @@ on:
       - '.github/workflows/native_release.yml'
       - '.github/workflows/validate_release_provenance.yml'
       - '.github/workflows/validate_wrapper.yml'
+      - 'CMakePresets.json'
       - 'CONTRIBUTING.md'
       - 'README.md'
+      - 'docs/platform_backend_strategy.md'
       - 'docs/release_version_policy.md'
       - 'scripts/auto_release_dispatch.py'
       - 'scripts/generate_assets_manifest.sh'
@@ -61,6 +67,8 @@ on:
       - 'tests/test_release_publication.py'
       - 'tests/test_release_version_policy.py'
       - 'tests/test_release_workflow_inputs.py'
+      - 'tests/test_linux_backends.py'
+      - 'tools/build.py'
 
 permissions:
   contents: read
