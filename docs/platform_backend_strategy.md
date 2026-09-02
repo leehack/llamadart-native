@@ -1,6 +1,6 @@
 # Platform Backend Strategy
 
-## Worthy Backend Sets (Built Together)
+## Worthy Backend Sets (Shipped Per Target)
 
 | Platform | Built backends |
 |---|---|
@@ -8,14 +8,16 @@
 | Android x64 | Vulkan + OpenCL + CPU |
 | iOS | Metal + CPU |
 | macOS | Metal + CPU |
-| Linux x64 | Vulkan + CUDA + BLAS + ZenDNN + CPU |
+| Linux x64 | Vulkan + CUDA + BLAS + CPU (HIP/ROCm built in a separate release job) |
 | Linux arm64 | Vulkan + BLAS + Kleidi + CPU |
 | Windows x64 | Vulkan + CUDA + BLAS + CPU |
 | Windows arm64 | Vulkan + BLAS + Kleidi + CPU |
 
 ## Build Model
 
-- Build one preset per platform/arch target.
+- Release CI builds non-Apple backend lanes separately and merges them into
+  per-platform/arch bundles. Local `full` builds use one preset for the listed
+  non-HIP backends.
 - Apple (iOS/macOS): consolidate Metal+CPU into a single `libllamadart`.
 - Apple defaults keep BLAS and Kleidi disabled for a simpler compatibility path.
 - Kleidi is enabled on Linux arm64 and Windows arm64 in this pipeline.
@@ -34,6 +36,7 @@
 ## Constraints
 
 - CUDA lanes require `nvcc` availability.
+- HIP/ROCm lanes require `hipcc`, `rocblas-dev`, and `hipblas-dev` (Linux x64 only, built in a separate release job).
 - Android Vulkan lanes require NDK-provided `libvulkan.so`.
 - Vulkan lanes use vendored `third_party/SPIRV-Headers` for SPIR-V registry headers required by upstream `llama.cpp`.
 - Android OpenCL lanes require `CL/cl.h` and `libOpenCL.so` from one of:
@@ -41,7 +44,6 @@
   - `third_party/opencl-stubs/`
   - auto-built OpenCL ICD loader from `third_party/OpenCL-ICD-Loader` + `third_party/OpenCL-Headers`
 - Linux arm64 builds on x64 runners require `aarch64-linux-gnu-gcc/g++`, `libopenblas-dev:arm64`, and `libvulkan-dev:arm64`.
-- ZenDNN currently targets Linux x64 in this pipeline.
 - Windows MSVC builds disable IPO/LTCG for `llama-common` and `mtmd` by default.
   Current MSVC `link.exe` can access-violate when linking the large
   `llama-common` utility DLL with `/LTCG`. CMake's automatic Windows export
