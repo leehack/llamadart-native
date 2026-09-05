@@ -78,11 +78,22 @@ jobs:
           fi
 
   wrapper-contract:
+    name: ${{ matrix.upstream == 'pinned' && 'wrapper-contract' || 'wrapper-contract (v0.4.0)' }}
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        upstream: [pinned, v0.4.0]
     steps:
       - uses: actions/checkout@v7
         with:
           submodules: recursive
+          persist-credentials: false
+      - name: Select the candidate upstream release
+        if: matrix.upstream == 'v0.4.0'
+        run: |
+          git -C third_party/llama.cpp fetch --depth=1 origin tag v0.4.0
+          git -C third_party/llama.cpp checkout --detach 5266f24da75dc449bd56cbed7addb9c8e4a6a73e
       - name: Configure wrapper contract tests
         run: >-
           cmake -S . -B build/wrapper-contract -G Ninja
@@ -96,6 +107,7 @@ jobs:
           cmake --build build/wrapper-contract --target
           llamadart_speculative_api_test
           llamadart_tts_api_test
+          llamadart_mtmd_compat_test
           llamadart_tts_smoke
       - name: Run wrapper contract tests
         run: ctest --test-dir build/wrapper-contract --output-on-failure
