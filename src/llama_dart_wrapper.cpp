@@ -1,5 +1,6 @@
 #include "llama_dart_wrapper.h"
 #include "llama_dart_mtp_internal.h"
+#include "llama_dart_mtmd_compat.h"
 #include "llama_dart_speculative_compat.h"
 
 #include "common.h"
@@ -837,8 +838,8 @@ LLAMADART_API enum llama_dart_tts_status llama_dart_tts_start(
   llama_memory_seq_rm(llama_get_memory(tts->llama), tts->sequence_id, 0, -1);
   tts->owns_sequence = true;
   if (request->speaker_audio_length > 0) {
-    mtmd_helper_bitmap_wrapper wrapper = mtmd_helper_bitmap_init_from_buf(
-        tts->mtmd, request->speaker_audio, request->speaker_audio_length, false);
+    mtmd_helper_bitmap_wrapper wrapper = llama_dart_bitmap_from_buffer(
+        tts->mtmd, request->speaker_audio, request->speaker_audio_length);
     if (wrapper.bitmap == nullptr || !mtmd_bitmap_is_audio(wrapper.bitmap)) {
       if (wrapper.bitmap != nullptr) {
         mtmd_bitmap_free(wrapper.bitmap);

@@ -138,6 +138,21 @@ if (APPLE)
 endif()
 
 add_subdirectory(third_party/llama.cpp)
+
+# Probe declarations without calling upstream symbols or running target code.
+# Recheck after switching upstream revisions in an existing build.
+include(CheckCXXSourceCompiles)
+include(CMakePushCheckState)
+cmake_push_check_state(RESET)
+set(CMAKE_REQUIRED_INCLUDES
+    "${CMAKE_CURRENT_SOURCE_DIR}/third_party/llama.cpp/include"
+    "${CMAKE_CURRENT_SOURCE_DIR}/third_party/llama.cpp/ggml/include"
+    "${CMAKE_CURRENT_SOURCE_DIR}/third_party/llama.cpp/tools/mtmd")
+unset(LLAMADART_MTMD_HELPER_HAS_OPTIONS CACHE)
+check_cxx_source_compiles("#include <mtmd-helper.h>
+int main() { return sizeof(decltype(mtmd_helper_init_opt_default())) == 0; }"
+    LLAMADART_MTMD_HELPER_HAS_OPTIONS)
+cmake_pop_check_state()
 if (TARGET ggml-vulkan AND LLAMADART_SPIRV_HEADERS_INCLUDE)
     target_include_directories(ggml-vulkan SYSTEM PRIVATE "${LLAMADART_SPIRV_HEADERS_INCLUDE}")
 endif()
@@ -158,6 +173,8 @@ endif()
 llamadart_attach_android_cpu_backend_score(ggml-cpu)
 
 add_library(llamadart_lib SHARED "src/llama_dart_wrapper.cpp")
+target_compile_definitions(llamadart_lib PRIVATE
+    LLAMADART_MTMD_HELPER_HAS_OPTIONS=$<BOOL:${LLAMADART_MTMD_HELPER_HAS_OPTIONS}>)
 
 if (MINGW)
     target_link_options(llamadart_lib PRIVATE -Wl,--export-all-symbols)
@@ -203,6 +220,14 @@ if (LLAMADART_BUILD_TESTS)
     target_link_libraries(llamadart_tts_api_test PRIVATE llamadart_lib)
     target_include_directories(llamadart_tts_api_test PRIVATE src)
     add_test(NAME llamadart_tts_api_test COMMAND llamadart_tts_api_test)
+
+    add_executable(llamadart_mtmd_compat_test tests/mtmd_compat_test.cpp)
+    target_compile_features(llamadart_mtmd_compat_test PRIVATE cxx_std_17)
+    target_include_directories(llamadart_mtmd_compat_test PRIVATE src)
+    target_compile_definitions(llamadart_mtmd_compat_test PRIVATE
+        LLAMADART_MTMD_HELPER_HAS_OPTIONS=$<BOOL:${LLAMADART_MTMD_HELPER_HAS_OPTIONS}>)
+    target_link_libraries(llamadart_mtmd_compat_test PRIVATE mtmd)
+    add_test(NAME llamadart_mtmd_compat_test COMMAND llamadart_mtmd_compat_test)
 endif()
 
 if (LLAMADART_BUILD_TTS_SMOKE)
