@@ -243,14 +243,13 @@ jobs:
 
             ARMV82_LIB="$OUT_DIR/libggml-cpu-android_armv8.2_2.so"
             test -f "$ARMV82_LIB" || { echo "Missing $ARMV82_LIB"; exit 1; }
-            ARMV82_DISASM="$(mktemp)"
             SCORE_SYMS_FILE="$(mktemp)"
-            trap 'rm -f "${DISASM_FILE:-}" "${ARMV82_DISASM:-}" "${SCORE_SYMS_FILE:-}"' EXIT
-            "$OBJDUMP" -d --no-show-raw-insn "$ARMV82_LIB" > "$ARMV82_DISASM"
-            if grep -Eq '\b(addvl|ptrue|cntw|rdvl|ld1b|st1b)\b' "$ARMV82_DISASM"; then
-              echo "Found unexpected SVE instructions in $ARMV82_LIB" >&2
-              exit 1
-            fi
+            trap 'rm -f "${DISASM_FILE:-}" "${SCORE_SYMS_FILE:-}"' EXIT
+            python3 tools/validate_android_cpu_isa.py \
+              --objdump "$OBJDUMP" --readelf "$READELF" \
+              --llama-source third_party/llama.cpp \
+              --kleidiai-source "build/android-arm64-v8a-${{ matrix.backend }}-android_armv8.2_2/_deps/kleidiai-src" \
+              "$ARMV82_LIB"
 
             if [ "${{ matrix.include_core }}" = "true" ]; then
               expected_cpu_variants=(

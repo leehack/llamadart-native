@@ -40,6 +40,11 @@ Optional Linux container build:
 
 ## Release Workflows
 
+For ARM64 upstream upgrades, run the candidate Windows/Android and compiled
+dispatch gates in `validate_wrapper.yml` before merging. See
+`docs/platform_backend_strategy.md` for the ISA audit contract. Never refresh
+audited source fingerprints merely to silence a failed check.
+
 - `.github/workflows/native_release.yml`
   - Exact native build + release workflow, used by manual dispatch and the
     automated stable dispatcher.

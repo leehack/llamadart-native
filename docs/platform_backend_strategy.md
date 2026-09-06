@@ -23,8 +23,33 @@
 - Kleidi is enabled on Linux arm64 and Windows arm64 in this pipeline.
 - Android arm64 keeps Kleidi on by building each CPU variant in its own
   isolated configuration so higher-tier ISA flags do not leak into lower-tier
-  variant binaries.
+  ggml code. With llama.cpp v0.4.0, standalone KleidiAI also contains kernels
+  selected by runtime CPU features. The Android ISA audit permits scalable
+  instructions only inside exact reviewed ELF function ranges and binds that
+  exception to the complete audited ggml/Kleidi source fingerprints. Unknown
+  ranges or changed source fail closed; legacy artifacts without scalable code
+  continue through the strict path. Never refresh fingerprints without reviewing
+  feature detection, kernel tables and callers, and passing compiled dispatch
+  tests and non-SVE compute qualification.
+- Windows ARM64 retains ClangCL and all Kleidi kernels. Source-local Visual
+  Studio metadata selects the native ARMASM preprocessing dialect and suppresses
+  incompatible line markers. The owning CMake integration also restores the
+  exact ClangCL-compatible C kernels referenced by ggml but omitted from
+  KleidiAI's MSVC source list, preserving their upstream per-source ISA flags
+  without raising the baseline ISA for other code.
 - Non-Apple: keep backends as separate dynamic libraries (`GGML_BACKEND_DL=ON`).
+
+## ARM64 upgrade qualification
+
+`Validate Wrapper` checks pinned and candidate v0.4.0 Windows ARM64 builds,
+the actual Android ARMv8.2 artifact, and compiled Kleidi selectors plus quantized
+matrix computation under non-SVE QEMU profiles. QEMU is deterministic CPU
+compatibility evidence, not physical-device or GPU-performance evidence.
+Wrapper contract assertions stay active in Release builds; Windows CTest resolves
+both wrapper and upstream DLL directories and bounds each test to 120 seconds.
+Use `-DLLAMADART_BUILD_KLEIDIAI_TESTS=ON` with standalone-Kleidi upstream to
+build `llamadart_kleidiai_dispatch_test`; it links the actual CPU module.
+The Android artifact check is `tools/validate_android_cpu_isa.py --help`.
 
 ## Runtime Packaging Model
 

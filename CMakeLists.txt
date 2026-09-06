@@ -5,6 +5,7 @@ find_package(Threads REQUIRED)
 
 option(LLAMADART_BUILD_TESTS "Build libllamadart wrapper tests" OFF)
 option(LLAMADART_BUILD_TTS_SMOKE "Build the local Qwen3-TTS smoke tool" OFF)
+option(LLAMADART_BUILD_KLEIDIAI_TESTS "Build standalone KleidiAI dispatch and compute qualification" OFF)
 
 # Keep all targets PIC-safe for shared linking.
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
@@ -138,6 +139,8 @@ if (APPLE)
 endif()
 
 add_subdirectory(third_party/llama.cpp)
+include(cmake/kleidiai_windows.cmake)
+llamadart_configure_kleidiai_windows_assembly()
 
 # Probe declarations without calling upstream symbols or running target code.
 # Recheck after switching upstream revisions in an existing build.
@@ -228,6 +231,36 @@ if (LLAMADART_BUILD_TESTS)
         LLAMADART_MTMD_HELPER_HAS_OPTIONS=$<BOOL:${LLAMADART_MTMD_HELPER_HAS_OPTIONS}>)
     target_link_libraries(llamadart_mtmd_compat_test PRIVATE mtmd)
     add_test(NAME llamadart_mtmd_compat_test COMMAND llamadart_mtmd_compat_test)
+
+    # Contract assertions must execute against optimized Release libraries too.
+    foreach(test_target llamadart_speculative_api_test llamadart_tts_api_test)
+        if (MSVC)
+            target_compile_options(${test_target} PRIVATE /UNDEBUG)
+        else()
+            target_compile_options(${test_target} PRIVATE -UNDEBUG)
+        endif()
+    endforeach()
+endif()
+
+if (LLAMADART_BUILD_KLEIDIAI_TESTS)
+    if (NOT TARGET kleidiai OR NOT TARGET ggml-cpu)
+        message(FATAL_ERROR "KleidiAI qualification requires upstream standalone kleidiai and ggml-cpu targets")
+    endif()
+    enable_testing()
+    add_executable(llamadart_kleidiai_dispatch_test tests/kleidiai_dispatch_test.cpp)
+    target_compile_features(llamadart_kleidiai_dispatch_test PRIVATE cxx_std_17)
+    target_include_directories(llamadart_kleidiai_dispatch_test PRIVATE
+        third_party/llama.cpp/ggml/include
+        third_party/llama.cpp/ggml/src
+        third_party/llama.cpp/ggml/src/ggml-cpu/kleidiai)
+    set_target_properties(llamadart_kleidiai_dispatch_test PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+    # ggml-cpu is a loadable MODULE on Android. Link its actual file to test
+    # the shipped selectors, not a second test-only copy of their source.
+    target_link_libraries(llamadart_kleidiai_dispatch_test PRIVATE
+        "$<TARGET_FILE:ggml-cpu>" ggml ggml-base)
+    add_dependencies(llamadart_kleidiai_dispatch_test ggml-cpu)
+    add_test(NAME llamadart_kleidiai_dispatch_test COMMAND llamadart_kleidiai_dispatch_test)
 endif()
 
 if (LLAMADART_BUILD_TTS_SMOKE)

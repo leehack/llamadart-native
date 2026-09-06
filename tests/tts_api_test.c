@@ -1,3 +1,7 @@
+#ifdef NDEBUG
+#error "Wrapper contract tests require active assertions in every configuration"
+#endif
+
 #include "llama_dart_wrapper.h"
 
 #include <assert.h>
