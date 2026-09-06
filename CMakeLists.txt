@@ -138,6 +138,8 @@ if (APPLE)
 endif()
 
 add_subdirectory(third_party/llama.cpp)
+include(cmake/kleidiai_windows.cmake)
+llamadart_configure_kleidiai_windows_assembly()
 
 # Probe declarations without calling upstream symbols or running target code.
 # Recheck after switching upstream revisions in an existing build.

@@ -6,6 +6,7 @@ on:
       - '.github/workflows/validate_wrapper.yml'
       - '.github/workflows/native_release.yml'
       - 'CMakeLists.txt'
+      - 'cmake/**'
       - 'src/**'
       - 'tests/**'
       - 'tools/tts_smoke.cpp'
@@ -22,6 +23,7 @@ on:
       - '.github/workflows/validate_wrapper.yml'
       - '.github/workflows/native_release.yml'
       - 'CMakeLists.txt'
+      - 'cmake/**'
       - 'src/**'
       - 'tests/**'
       - 'tools/tts_smoke.cpp'
@@ -36,6 +38,41 @@ permissions:
   contents: read
 
 jobs:
+  windows-arm64-kleidiai:
+    runs-on: windows-11-arm
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        upstream: [pinned, v0.4.0]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          submodules: recursive
+      - name: Setup ARM64 MSVC environment
+        uses: TheMrMilchmann/setup-msvc-dev@v4.1.0
+        with:
+          arch: arm64
+      - name: Select candidate upstream
+        if: matrix.upstream == 'v0.4.0'
+        shell: bash
+        run: |
+          git -C third_party/llama.cpp fetch --depth=1 origin tag v0.4.0
+          git -C third_party/llama.cpp checkout --detach 5266f24da75dc449bd56cbed7addb9c8e4a6a73e
+      - name: Verify assembly policy regressions
+        run: python -m unittest discover -s tests -p test_kleidiai_windows.py
+      - name: Configure release compiler and optimized CPU
+        run: >-
+          cmake --preset windows-arm64-full
+          -DGGML_BLAS=OFF -DGGML_VULKAN=OFF -DGGML_CUDA=OFF
+          -DGGML_OPENCL=OFF -DGGML_OPENMP=OFF -DGGML_CCACHE=OFF
+          -DGGML_CPU_KLEIDIAI=ON -DLLAMADART_BUILD_TESTS=ON
+      - name: Build wrapper and CPU contracts
+        run: cmake --build --preset windows-arm64-full --parallel 4
+      - name: Run native wrapper contracts
+        run: ctest --test-dir build/wa64 -C Release --output-on-failure
+
   linux-artifact-contract:
     runs-on: ubuntu-latest
     strategy:
