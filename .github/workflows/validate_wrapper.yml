@@ -11,6 +11,7 @@ on:
       - 'tests/**'
       - 'tools/tts_smoke.cpp'
       - 'tools/build.py'
+      - 'tools/validate_android_cpu_isa.py'
       - 'tools/linux_dlopen_smoke.c'
       - 'tools/package_linux_artifact.py'
       - 'tools/validate_linux_artifact.py'
@@ -28,6 +29,7 @@ on:
       - 'tests/**'
       - 'tools/tts_smoke.cpp'
       - 'tools/build.py'
+      - 'tools/validate_android_cpu_isa.py'
       - 'tools/linux_dlopen_smoke.c'
       - 'tools/package_linux_artifact.py'
       - 'tools/validate_linux_artifact.py'
@@ -38,6 +40,81 @@ permissions:
   contents: read
 
 jobs:
+  android-arm64-isa:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          submodules: recursive
+      - name: Select candidate upstream
+        run: |
+          git -C third_party/llama.cpp fetch --depth=1 origin tag v0.4.0
+          git -C third_party/llama.cpp checkout --detach 5266f24da75dc449bd56cbed7addb9c8e4a6a73e
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v4
+        with:
+          packages: platform-tools ndk;28.2.13676358
+      - name: Install build dependencies
+        run: sudo apt-get update && sudo apt-get install -y ninja-build
+      - name: Build and audit the release ARMv8.2 CPU variant
+        run: |
+          export ANDROID_NDK_HOME="${ANDROID_SDK_ROOT}/ndk/28.2.13676358"
+          python3 - <<'PY'
+          import os, sys
+          from pathlib import Path
+          sys.path.insert(0, 'tools')
+          import build
+          name, arch, features = build.ANDROID_ARM64_CPU_VARIANTS[2]
+          build.build_android_arm64_cpu_variant(
+              name, arch, features, build_dir=Path('build/android-isa').resolve(),
+              ndk=Path(os.environ['ANDROID_NDK_HOME']), env=dict(os.environ), jobs=4)
+          PY
+          LLVM="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          python3 tools/validate_android_cpu_isa.py \
+            --objdump "$LLVM/llvm-objdump" --readelf "$LLVM/llvm-readelf" \
+            --llama-source third_party/llama.cpp \
+            --kleidiai-source build/android-isa/_deps/kleidiai-src \
+            build/android-isa/bin/libggml-cpu.so
+
+  kleidiai-dispatch-emulated:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          submodules: recursive
+      - name: Select candidate upstream
+        run: |
+          git -C third_party/llama.cpp fetch --depth=1 origin tag v0.4.0
+          git -C third_party/llama.cpp checkout --detach 5266f24da75dc449bd56cbed7addb9c8e4a6a73e
+      - name: Install cross compiler and CPU emulator
+        run: sudo apt-get update && sudo apt-get install -y ninja-build gcc-aarch64-linux-gnu g++-aarch64-linux-gnu qemu-user
+      - name: Build the real baseline CPU and dispatch test
+        run: >-
+          cmake -S . -B build/kleidiai-dispatch -G Ninja
+          -DCMAKE_SYSTEM_NAME=Linux -DCMAKE_SYSTEM_PROCESSOR=aarch64
+          -DCMAKE_C_COMPILER=aarch64-linux-gnu-gcc
+          -DCMAKE_CXX_COMPILER=aarch64-linux-gnu-g++
+          -DCMAKE_BUILD_TYPE=Release -DGGML_CPU_ARM_ARCH=armv8-a
+          -DGGML_CPU_KLEIDIAI=ON -DGGML_OPENMP=OFF
+          -DGGML_VULKAN=OFF -DGGML_BLAS=OFF -DGGML_CCACHE=OFF
+          -DLLAMADART_BUILD_KLEIDIAI_TESTS=ON
+      - name: Compile dispatch and quantized compute qualification
+        run: cmake --build build/kleidiai-dispatch --target llamadart_kleidiai_dispatch_test --parallel 4
+      - name: Run without SVE on baseline and optimized CPU profiles
+        run: |
+          for CPU in cortex-a53 max,sve=off,sme=off; do
+            qemu-aarch64 -cpu "$CPU" -L /usr/aarch64-linux-gnu \
+              -E LD_LIBRARY_PATH="$PWD/build/kleidiai-dispatch/bin" \
+              build/kleidiai-dispatch/bin/llamadart_kleidiai_dispatch_test
+          done
+
   windows-arm64-kleidiai:
     runs-on: windows-11-arm
     timeout-minutes: 30

@@ -13,6 +13,41 @@ ROOT = Path(__file__).resolve().parents[1]
 @unittest.skipUnless(shutil.which("cmake"), "CMake is required")
 class KleidiAIWindowsAssemblyTest(unittest.TestCase):
     @unittest.skipUnless(shutil.which("clang-cl"), "ClangCL is required")
+    def test_marmasm_preprocessing_selects_native_assembly_dialect(self) -> None:
+        # Mirror the two upstream assembly dialect conditions that caused A2034.
+        source = """
+#if defined(_MSC_VER) && !defined(__clang__)
+AREA code, CODE, READONLY
+END
+#elif defined(_MSC_VER) && defined(__clang__)
+.text
+.globl kernel
+#else
+#error unexpected target
+#endif
+"""
+        outputs = {}
+        for undefine in (False, True):
+            result = subprocess.run(
+                [
+                    "clang-cl", "--target=aarch64-pc-windows-msvc",
+                    "/nologo", "/TC", "/EP",
+                    *(["/U__clang__"] if undefine else []), "-",
+                ],
+                input=source,
+                text=True,
+                capture_output=True,
+                check=True,
+            )
+            outputs[undefine] = result.stdout
+        self.assertIn(".text", outputs[False])
+        self.assertIn("AREA code, CODE, READONLY", outputs[True])
+        self.assertIn("END", outputs[True])
+        self.assertNotIn(".text", outputs[True])
+        self.assertNotIn(".globl", outputs[True])
+        self.assertNotIn("#", outputs[True])
+
+    @unittest.skipUnless(shutil.which("clang-cl"), "ClangCL is required")
     def test_suppression_removes_clang_linemarkers_without_changing_tokens(self) -> None:
         outputs = {}
         for option in ("/E", "/EP"):

@@ -26,6 +26,8 @@ if (TARGET kleidiai)
         set(expected "ExistingMetadata=retained")
         if (CASE STREQUAL "enabled" AND source STREQUAL "kernel.S")
             list(APPEND expected "PreprocessSuppressLineNumbers=true")
+            list(APPEND expected
+                "UndefinePreprocessorDefinitions=__clang__\;%(UndefinePreprocessorDefinitions)")
         endif()
         if (NOT settings STREQUAL expected)
             message(FATAL_ERROR "${source}: expected '${expected}', got '${settings}'")

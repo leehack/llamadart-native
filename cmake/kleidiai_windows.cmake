@@ -1,6 +1,8 @@
 # ClangCL's preprocessor emits GNU-style line markers, which armasm64 rejects
-# with A2230. Ask the Visual Studio MARMASM preprocessing task to omit them;
-# do not change the compiler, kernel sources, or assembly instruction set.
+# with A2230. Some kernels also select GNU assembly syntax when __clang__ is
+# defined, even though MSBuild invokes armasm64, not Clang's assembler. Configure
+# only the MARMASM preprocessing task: omit line markers and select upstream's
+# existing MSVC assembly dialect. C/C++ compilation remains unchanged.
 function(llamadart_configure_kleidiai_windows_assembly)
     if (NOT MSVC OR NOT CMAKE_C_COMPILER_ID STREQUAL "Clang" OR
         NOT CMAKE_GENERATOR MATCHES "^Visual Studio" OR NOT TARGET kleidiai)
@@ -22,7 +24,8 @@ function(llamadart_configure_kleidiai_windows_assembly)
             TARGET_DIRECTORY kleidiai LANGUAGE)
         if (language STREQUAL "ASM_MARMASM")
             set_property(SOURCE "${source}" TARGET_DIRECTORY kleidiai APPEND
-                PROPERTY VS_SETTINGS "PreprocessSuppressLineNumbers=true")
+                PROPERTY VS_SETTINGS "PreprocessSuppressLineNumbers=true"
+                "UndefinePreprocessorDefinitions=__clang__\;%(UndefinePreprocessorDefinitions)")
         endif()
     endforeach()
 endfunction()
