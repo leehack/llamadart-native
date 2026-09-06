@@ -33,7 +33,11 @@
   tests and non-SVE compute qualification.
 - Windows ARM64 retains ClangCL and all Kleidi kernels. Source-local Visual
   Studio metadata selects the native ARMASM preprocessing dialect and suppresses
-  incompatible line markers; C/C++ compiler behavior is unchanged.
+  incompatible line markers. The owning CMake integration also restores the
+  exact ClangCL-compatible C kernels referenced by ggml but omitted from
+  KleidiAI's MSVC source list, preserving their upstream per-source ISA flags
+  without raising the baseline ISA for other code.
+- Non-Apple: keep backends as separate dynamic libraries (`GGML_BACKEND_DL=ON`).
 
 ## ARM64 upgrade qualification
 
@@ -44,7 +48,6 @@ compatibility evidence, not physical-device or GPU-performance evidence.
 Use `-DLLAMADART_BUILD_KLEIDIAI_TESTS=ON` with standalone-Kleidi upstream to
 build `llamadart_kleidiai_dispatch_test`; it links the actual CPU module.
 The Android artifact check is `tools/validate_android_cpu_isa.py --help`.
-- Non-Apple: keep backends as separate dynamic libraries (`GGML_BACKEND_DL=ON`).
 
 ## Runtime Packaging Model
 
