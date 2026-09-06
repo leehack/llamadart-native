@@ -45,6 +45,8 @@
 the actual Android ARMv8.2 artifact, and compiled Kleidi selectors plus quantized
 matrix computation under non-SVE QEMU profiles. QEMU is deterministic CPU
 compatibility evidence, not physical-device or GPU-performance evidence.
+Wrapper contract assertions stay active in Release builds; Windows CTest resolves
+both wrapper and upstream DLL directories and bounds each test to 120 seconds.
 Use `-DLLAMADART_BUILD_KLEIDIAI_TESTS=ON` with standalone-Kleidi upstream to
 build `llamadart_kleidiai_dispatch_test`; it links the actual CPU module.
 The Android artifact check is `tools/validate_android_cpu_isa.py --help`.

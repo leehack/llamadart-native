@@ -148,7 +148,11 @@ jobs:
       - name: Build wrapper and CPU contracts
         run: cmake --build --preset windows-arm64-full --parallel 4
       - name: Run native wrapper contracts
-        run: ctest --test-dir build/wa64 -C Release --output-on-failure
+        run: |
+          $wrapperDir = (Resolve-Path build/wa64/Release).Path
+          $upstreamDir = (Resolve-Path build/wa64/bin/Release).Path
+          $env:PATH = "$wrapperDir;$upstreamDir;$env:PATH"
+          ctest --test-dir build/wa64 -C Release --timeout 120 --verbose --output-on-failure
 
   linux-artifact-contract:
     runs-on: ubuntu-latest

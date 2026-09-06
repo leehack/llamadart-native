@@ -231,6 +231,15 @@ if (LLAMADART_BUILD_TESTS)
         LLAMADART_MTMD_HELPER_HAS_OPTIONS=$<BOOL:${LLAMADART_MTMD_HELPER_HAS_OPTIONS}>)
     target_link_libraries(llamadart_mtmd_compat_test PRIVATE mtmd)
     add_test(NAME llamadart_mtmd_compat_test COMMAND llamadart_mtmd_compat_test)
+
+    # Contract assertions must execute against optimized Release libraries too.
+    foreach(test_target llamadart_speculative_api_test llamadart_tts_api_test)
+        if (MSVC)
+            target_compile_options(${test_target} PRIVATE /UNDEBUG)
+        else()
+            target_compile_options(${test_target} PRIVATE -UNDEBUG)
+        endif()
+    endforeach()
 endif()
 
 if (LLAMADART_BUILD_KLEIDIAI_TESTS)
