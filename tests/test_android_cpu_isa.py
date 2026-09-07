@@ -99,6 +99,45 @@ class AndroidCpuIsaTest(unittest.TestCase):
             (root / "probe.cpp").write_text("guarded")
             self.assertNotEqual(original, audit.tree_digest(root))
 
+    def test_exact_reviewed_source_pairs_are_required(self):
+        self.assertEqual(len(audit.SOURCE_PAIRS), 2)
+        for ggml, kai in audit.SOURCE_PAIRS:
+            with self.subTest(ggml=ggml):
+                with mock.patch.object(audit, "tree_digest", side_effect=[ggml, kai]):
+                    audit.validate_sources(Path("llama"), Path("kleidiai"))
+                for actual in (("changed-ggml", kai), (ggml, "changed-kai")):
+                    with mock.patch.object(audit, "tree_digest", side_effect=actual):
+                        with self.assertRaisesRegex(ValueError, "Unaudited"):
+                            audit.validate_sources(Path("llama"), Path("kleidiai"))
+
+    def test_individually_known_but_unreviewed_pair_is_rejected(self):
+        with mock.patch.object(audit, "SOURCE_PAIRS", frozenset({("g1", "k1"), ("g2", "k2")})), \
+                mock.patch.object(audit, "tree_digest", side_effect=["g1", "k2"]):
+            with self.assertRaisesRegex(ValueError, "Unaudited"):
+                audit.validate_sources(Path("llama"), Path("kleidiai"))
+
+    def test_added_caller_or_mutated_kernel_invalidates_approved_pair(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            ggml = base / "llama" / "ggml" / "src"
+            kai = base / "kleidiai" / "kai"
+            ggml.mkdir(parents=True)
+            kai.mkdir(parents=True)
+            (ggml / "selector.cpp").write_text("guarded")
+            kernel = kai / "kernel.c"
+            kernel.write_text("audited")
+            pairs = frozenset({(audit.tree_digest(ggml), audit.tree_digest(kai))})
+            with mock.patch.object(audit, "SOURCE_PAIRS", pairs):
+                audit.validate_sources(base / "llama", base / "kleidiai")
+                caller = ggml / "new_caller.cpp"
+                caller.write_text("unguarded")
+                with self.assertRaisesRegex(ValueError, "Unaudited"):
+                    audit.validate_sources(base / "llama", base / "kleidiai")
+                caller.unlink()
+                kernel.write_text("mutated")
+                with self.assertRaisesRegex(ValueError, "Unaudited"):
+                    audit.validate_sources(base / "llama", base / "kleidiai")
+
     def test_missing_source_tree_fails_closed(self):
         with tempfile.TemporaryDirectory() as directory:
             with self.assertRaisesRegex(ValueError, "empty"):

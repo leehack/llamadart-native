@@ -17,12 +17,19 @@ import subprocess
 import sys
 
 
-# llama.cpp v0.4.0 / KleidiAI v1.24.0. Bind the complete source subtrees, not
-# merely a selector fragment: a new caller can invalidate a dispatch audit.
-SOURCE_TREES = {
-    "ggml/src": "c4dc92a7d95ebfad7f5f55e75be2ae773b7d95faf72a9581c9479c42bc41bca0",
-    "kai": "64189fc613c1c4c3aaeeb6bb12b38d85dd6728cafd2261a5a88f1b77b10fe59c",
-}
+# Bind complete source subtree pairs, not independent hash sets: a new caller
+# or a different KleidiAI combination invalidates the dispatch audit.
+# Candidate audit evidence: docs/post_v040_qualification.md.
+SOURCE_PAIRS = frozenset({
+    (  # llama.cpp v0.4.0 / KleidiAI v1.24.0
+        "c4dc92a7d95ebfad7f5f55e75be2ae773b7d95faf72a9581c9479c42bc41bca0",
+        "64189fc613c1c4c3aaeeb6bb12b38d85dd6728cafd2261a5a88f1b77b10fe59c",
+    ),
+    (  # Exact upstream 73ab7599b553c03f6f5d2db24a18ad76f2eb36a3, same KleidiAI
+        "dcb0f04ebb9654b1fe5ac7cc45737c79e62b116a2063ceda81a7ec1ddb1b20e2",
+        "64189fc613c1c4c3aaeeb6bb12b38d85dd6728cafd2261a5a88f1b77b10fe59c",
+    ),
+})
 
 # Exact ELF STT_FUNC ranges; never allow by kai_* prefix or disassembly label.
 # Assembly kernels have nested local labels, which are NOT function boundaries.
@@ -78,10 +85,12 @@ def tree_digest(root):
 
 
 def validate_sources(llama_source, kleidiai_source):
-    for base, subtree in ((llama_source, "ggml/src"), (kleidiai_source, "kai")):
-        actual = tree_digest(Path(base) / subtree)
-        if actual != SOURCE_TREES[subtree]:
-            raise ValueError(f"Unaudited {subtree} source fingerprint {actual}; review dispatch before updating policy")
+    actual = (tree_digest(Path(llama_source) / "ggml/src"),
+              tree_digest(Path(kleidiai_source) / "kai"))
+    if actual not in SOURCE_PAIRS:
+        raise ValueError(
+            f"Unaudited ggml/src + kai source fingerprint pair {actual}; "
+            "review dispatch before updating policy")
 
 
 def function_ranges(symbol_text):
