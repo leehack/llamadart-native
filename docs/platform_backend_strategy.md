@@ -41,7 +41,7 @@
 
 ## ARM64 upgrade qualification
 
-`Validate Wrapper` checks pinned and candidate v0.4.0 Windows ARM64 builds,
+`Validate Wrapper` checks pinned and exact post-v0.4.0 Windows ARM64 builds,
 the actual Android ARMv8.2 artifact, and compiled Kleidi selectors plus quantized
 matrix computation under non-SVE QEMU profiles. QEMU is deterministic CPU
 compatibility evidence, not physical-device or GPU-performance evidence.

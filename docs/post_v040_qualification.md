@@ -30,3 +30,24 @@ remain unavailable/unverified; emulation is not a physical-device result.
 This qualification does not invent a release identity: later upstream source
 must not be called a v0.4.0 wrapper rebuild. Adoption requires a containing
 upstream stable release or a separately authorized development-channel decision.
+
+## Android ISA source audit
+
+The first candidate build succeeded but correctly failed the pre-existing source
+fingerprint gate. A separate audit compared v0.4.0 against the exact candidate:
+`ggml/src/ggml-cpu`, CPU feature detection, KleidiAI selectors/tables/callers,
+`ggml/include`, and ggml build configuration are byte-unchanged. Of 37 changed
+files under `ggml/src`, 36 concern accelerator backends. The shared
+`ggml-backend.cpp` delta changes two log levels and removes a capacity-induced
+scheduler split; it introduces no optimized-kernel call or feature-mask bypass.
+The candidate's compiled selector/quantized-compute test passed under non-SVE
+QEMU. Independent Astra source-delta review confirmed this evidence.
+
+After explicit maintainer approval, the containment policy retains the existing
+v0.4.0/KleidiAI pair and adds only candidate ggml SHA-256
+`dcb0f04ebb9654b1fe5ac7cc45737c79e62b116a2063ceda81a7ec1ddb1b20e2`
+paired with unchanged Kai SHA-256
+`64189fc613c1c4c3aaeeb6bb12b38d85dd6728cafd2261a5a88f1b77b10fe59c`.
+Unknown or cross-combined pairs fail closed. Exact ELF function-range allowlists
+and scalable-instruction checks are unchanged. Replacement hosted Android
+disassembly remains required; accepting source identity alone is not a pass.
