@@ -16,6 +16,7 @@ on:
       - 'tools/package_linux_artifact.py'
       - 'tools/validate_linux_artifact.py'
       - 'tools/validate_exports.py'
+      - 'tools/validate_grammar_boundary.py'
       - 'third_party/llama.cpp'
   push:
     branches:
@@ -34,10 +35,15 @@ on:
       - 'tools/package_linux_artifact.py'
       - 'tools/validate_linux_artifact.py'
       - 'tools/validate_exports.py'
+      - 'tools/validate_grammar_boundary.py'
       - 'third_party/llama.cpp'
 
 permissions:
   contents: read
+
+env:
+  # Qualification only: never moves the production submodule or release channel.
+  LLAMADART_QUALIFICATION_SHA: 73ab7599b553c03f6f5d2db24a18ad76f2eb36a3
 
 jobs:
   android-arm64-isa:
@@ -50,8 +56,9 @@ jobs:
           submodules: recursive
       - name: Select candidate upstream
         run: |
-          git -C third_party/llama.cpp fetch --depth=1 origin tag v0.4.0
-          git -C third_party/llama.cpp checkout --detach 5266f24da75dc449bd56cbed7addb9c8e4a6a73e
+          git -C third_party/llama.cpp fetch --depth=1 origin "$LLAMADART_QUALIFICATION_SHA"
+          git -C third_party/llama.cpp checkout --detach "$LLAMADART_QUALIFICATION_SHA"
+          test "$(git -C third_party/llama.cpp rev-parse HEAD)" = "$LLAMADART_QUALIFICATION_SHA"
       - uses: actions/setup-java@v5
         with:
           distribution: temurin
@@ -91,8 +98,9 @@ jobs:
           submodules: recursive
       - name: Select candidate upstream
         run: |
-          git -C third_party/llama.cpp fetch --depth=1 origin tag v0.4.0
-          git -C third_party/llama.cpp checkout --detach 5266f24da75dc449bd56cbed7addb9c8e4a6a73e
+          git -C third_party/llama.cpp fetch --depth=1 origin "$LLAMADART_QUALIFICATION_SHA"
+          git -C third_party/llama.cpp checkout --detach "$LLAMADART_QUALIFICATION_SHA"
+          test "$(git -C third_party/llama.cpp rev-parse HEAD)" = "$LLAMADART_QUALIFICATION_SHA"
       - name: Install cross compiler and CPU emulator
         run: sudo apt-get update && sudo apt-get install -y ninja-build gcc-aarch64-linux-gnu g++-aarch64-linux-gnu qemu-user
       - name: Build the real baseline CPU and dispatch test
@@ -121,7 +129,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        upstream: [pinned, v0.4.0]
+        upstream: [pinned, post-v0.4.0]
     steps:
       - uses: actions/checkout@v7
         with:
@@ -132,11 +140,12 @@ jobs:
         with:
           arch: arm64
       - name: Select candidate upstream
-        if: matrix.upstream == 'v0.4.0'
+        if: matrix.upstream == 'post-v0.4.0'
         shell: bash
         run: |
-          git -C third_party/llama.cpp fetch --depth=1 origin tag v0.4.0
-          git -C third_party/llama.cpp checkout --detach 5266f24da75dc449bd56cbed7addb9c8e4a6a73e
+          git -C third_party/llama.cpp fetch --depth=1 origin "$LLAMADART_QUALIFICATION_SHA"
+          git -C third_party/llama.cpp checkout --detach "$LLAMADART_QUALIFICATION_SHA"
+          test "$(git -C third_party/llama.cpp rev-parse HEAD)" = "$LLAMADART_QUALIFICATION_SHA"
       - name: Verify assembly policy regressions
         run: python -m unittest discover -s tests -p test_kleidiai_windows.py
       - name: Configure release compiler and optimized CPU
@@ -155,16 +164,25 @@ jobs:
           ctest --test-dir build/wa64 -C Release --timeout 120 --verbose --output-on-failure
 
   linux-artifact-contract:
+    name: ${{ matrix.upstream == 'pinned' && format('linux-artifact-contract ({0})', matrix.arch) || format('linux-artifact-contract ({0}, post-v0.4.0)', matrix.arch) }}
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
         arch: [x64, arm64]
+        upstream: [pinned, post-v0.4.0]
     steps:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
           submodules: recursive
+      - name: Select candidate upstream
+        if: matrix.upstream == 'post-v0.4.0'
+        run: |
+          git -C third_party/llama.cpp fetch --depth=1 origin "$LLAMADART_QUALIFICATION_SHA"
+          git -C third_party/llama.cpp checkout --detach "$LLAMADART_QUALIFICATION_SHA"
+          test "$(git -C third_party/llama.cpp rev-parse HEAD)" = "$LLAMADART_QUALIFICATION_SHA"
       - name: Install Linux build and emulation dependencies
         run: |
           sudo apt-get update
@@ -196,22 +214,24 @@ jobs:
           fi
 
   wrapper-contract:
-    name: ${{ matrix.upstream == 'pinned' && 'wrapper-contract' || 'wrapper-contract (v0.4.0)' }}
+    name: ${{ matrix.upstream == 'pinned' && 'wrapper-contract' || 'wrapper-contract (post-v0.4.0)' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
-        upstream: [pinned, v0.4.0]
+        upstream: [pinned, post-v0.4.0]
     steps:
       - uses: actions/checkout@v7
         with:
           submodules: recursive
           persist-credentials: false
       - name: Select the candidate upstream release
-        if: matrix.upstream == 'v0.4.0'
+        if: matrix.upstream == 'post-v0.4.0'
         run: |
-          git -C third_party/llama.cpp fetch --depth=1 origin tag v0.4.0
-          git -C third_party/llama.cpp checkout --detach 5266f24da75dc449bd56cbed7addb9c8e4a6a73e
+          git -C third_party/llama.cpp fetch --depth=1 origin "$LLAMADART_QUALIFICATION_SHA"
+          git -C third_party/llama.cpp checkout --detach "$LLAMADART_QUALIFICATION_SHA"
+          test "$(git -C third_party/llama.cpp rev-parse HEAD)" = "$LLAMADART_QUALIFICATION_SHA"
       - name: Configure wrapper contract tests
         run: >-
           cmake -S . -B build/wrapper-contract -G Ninja
@@ -229,6 +249,9 @@ jobs:
           llamadart_tts_smoke
       - name: Run wrapper contract tests
         run: ctest --test-dir build/wrapper-contract --output-on-failure
+      - name: Validate candidate public grammar sampler boundary
+        if: matrix.upstream == 'post-v0.4.0'
+        run: python3 tools/validate_grammar_boundary.py build/wrapper-contract/libllamadart.so
       - name: Validate wrapper exports
         run: >-
           python3 tools/validate_exports.py
@@ -237,12 +260,25 @@ jobs:
           build/wrapper-contract/libllamadart.so
 
   msvc-mtmd-link-contract:
+    name: ${{ matrix.upstream == 'pinned' && 'msvc-mtmd-link-contract' || 'msvc-mtmd-link-contract (post-v0.4.0)' }}
     runs-on: windows-latest
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        upstream: [pinned, post-v0.4.0]
     steps:
       - uses: actions/checkout@v7
         with:
           submodules: recursive
+          persist-credentials: false
+      - name: Select candidate upstream
+        if: matrix.upstream == 'post-v0.4.0'
+        shell: bash
+        run: |
+          git -C third_party/llama.cpp fetch --depth=1 origin "$LLAMADART_QUALIFICATION_SHA"
+          git -C third_party/llama.cpp checkout --detach "$LLAMADART_QUALIFICATION_SHA"
+          test "$(git -C third_party/llama.cpp rev-parse HEAD)" = "$LLAMADART_QUALIFICATION_SHA"
       - name: Setup MSVC
         uses: TheMrMilchmann/setup-msvc-dev@v4.1.0
         with:
