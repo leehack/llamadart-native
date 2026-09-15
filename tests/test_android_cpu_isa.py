@@ -100,8 +100,14 @@ class AndroidCpuIsaTest(unittest.TestCase):
             self.assertNotEqual(original, audit.tree_digest(root))
 
     def test_exact_reviewed_source_pairs_are_required(self):
-        self.assertEqual(len(audit.SOURCE_PAIRS), 2)
-        for ggml, kai in audit.SOURCE_PAIRS:
+        expected = frozenset((ggml, "64189fc613c1c4c3aaeeb6bb12b38d85dd6728cafd2261a5a88f1b77b10fe59c")
+                             for ggml in (
+                                 "c4dc92a7d95ebfad7f5f55e75be2ae773b7d95faf72a9581c9479c42bc41bca0",
+                                 "dcb0f04ebb9654b1fe5ac7cc45737c79e62b116a2063ceda81a7ec1ddb1b20e2",
+                                 "bf7ae6d2ea861ce6cd4b56afce154a45461df79b46c02e340d1adfe0075467b5",
+                             ))
+        self.assertEqual(audit.SOURCE_PAIRS, expected)
+        for ggml, kai in expected:
             with self.subTest(ggml=ggml):
                 with mock.patch.object(audit, "tree_digest", side_effect=[ggml, kai]):
                     audit.validate_sources(Path("llama"), Path("kleidiai"))

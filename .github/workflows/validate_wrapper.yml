@@ -44,17 +44,24 @@ permissions:
 env:
   # Qualification only: never moves the production submodule or release channel.
   LLAMADART_QUALIFICATION_SHA: 73ab7599b553c03f6f5d2db24a18ad76f2eb36a3
+  LLAMADART_V041_QUALIFICATION_SHA: b29c606e28a01b1bc8c1351026a0fa6e616bf6c4
 
 jobs:
   android-arm64-isa:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        upstream: [post-v0.4.0, v0.4.1]
     steps:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
           submodules: recursive
       - name: Select candidate upstream
+        env:
+          LLAMADART_QUALIFICATION_SHA: ${{ matrix.upstream == 'v0.4.1' && env.LLAMADART_V041_QUALIFICATION_SHA || env.LLAMADART_QUALIFICATION_SHA }}
         run: |
           git -C third_party/llama.cpp fetch --depth=1 origin "$LLAMADART_QUALIFICATION_SHA"
           git -C third_party/llama.cpp checkout --detach "$LLAMADART_QUALIFICATION_SHA"
@@ -91,12 +98,18 @@ jobs:
   kleidiai-dispatch-emulated:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        upstream: [post-v0.4.0, v0.4.1]
     steps:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
           submodules: recursive
       - name: Select candidate upstream
+        env:
+          LLAMADART_QUALIFICATION_SHA: ${{ matrix.upstream == 'v0.4.1' && env.LLAMADART_V041_QUALIFICATION_SHA || env.LLAMADART_QUALIFICATION_SHA }}
         run: |
           git -C third_party/llama.cpp fetch --depth=1 origin "$LLAMADART_QUALIFICATION_SHA"
           git -C third_party/llama.cpp checkout --detach "$LLAMADART_QUALIFICATION_SHA"
@@ -121,6 +134,10 @@ jobs:
             qemu-aarch64 -cpu "$CPU" -L /usr/aarch64-linux-gnu \
               -E LD_LIBRARY_PATH="$PWD/build/kleidiai-dispatch/bin" \
               build/kleidiai-dispatch/bin/llamadart_kleidiai_dispatch_test
+            qemu-aarch64 -cpu "$CPU" -L /usr/aarch64-linux-gnu \
+              -E GGML_KLEIDIAI_SME=1 \
+              -E LD_LIBRARY_PATH="$PWD/build/kleidiai-dispatch/bin" \
+              build/kleidiai-dispatch/bin/llamadart_kleidiai_dispatch_test
           done
 
   windows-arm64-kleidiai:
@@ -129,7 +146,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        upstream: [pinned, post-v0.4.0]
+        upstream: [pinned, post-v0.4.0, v0.4.1]
     steps:
       - uses: actions/checkout@v7
         with:
@@ -140,7 +157,9 @@ jobs:
         with:
           arch: arm64
       - name: Select candidate upstream
-        if: matrix.upstream == 'post-v0.4.0'
+        env:
+          LLAMADART_QUALIFICATION_SHA: ${{ matrix.upstream == 'v0.4.1' && env.LLAMADART_V041_QUALIFICATION_SHA || env.LLAMADART_QUALIFICATION_SHA }}
+        if: matrix.upstream != 'pinned'
         shell: bash
         run: |
           git -C third_party/llama.cpp fetch --depth=1 origin "$LLAMADART_QUALIFICATION_SHA"
