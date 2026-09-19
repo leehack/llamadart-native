@@ -51,3 +51,33 @@ paired with unchanged Kai SHA-256
 Unknown or cross-combined pairs fail closed. Exact ELF function-range allowlists
 and scalable-instruction checks are unchanged. Replacement hosted Android
 disassembly remains required; accepting source identity alone is not a pass.
+
+## CI retention decision (September 2026)
+
+The historical 73ab7599 candidate remains a nonpublishing regression baseline
+for native-impacting PRs and main changes. Its documented ISA fingerprints,
+compiled dispatch and wrapper/artifact contracts are distinct from production
+pin coverage; this batch does not retire that compatibility obligation. Pure
+release-policy tooling and Markdown documentation changes need not compile
+either baseline. Unclassified inputs still run both. There is no new scheduled
+workflow or publication path. Revisit retirement separately when the historical
+contract has an explicit replacement and approved support decision.
+
+The production submodule is now b29c606e (v0.4.1). Windows ARM64's former
+explicit v0.4.1 row was identical to its pinned row and is removed; the pinned
+status name and all its commands remain. Android/dispatch v0.4.1 rows remain
+because those jobs have no separate pinned row. The original v0.4.0 comparison
+and limitations above describe the earlier investigation, not the current pin.
+
+`tools/ci_scope.py` uses a small explicit non-native allowlist. Native tests,
+packaging, common build files, submodules, workflow changes and unknown/new paths
+select all native lanes. Git rename detection is disabled for classification so
+both source deletion and destination addition count; missing diffs fail closed.
+Both validation workflows report on every PR/main push. Release provenance and
+Python suites still run for tooling-only changes. The wrapper aggregate requires
+every selected job to succeed and only accepts skipped lanes when explicitly
+unselected. Obsolete PR runs cancel within their own workflow; main runs use
+unique run IDs and are not cancelled. Drafts use the same rules as other PRs.
+
+Tracking: https://github.com/leehack/llamadart/issues/532. Release candidate
+qualification, immutable artifact gates and production pins are unchanged.

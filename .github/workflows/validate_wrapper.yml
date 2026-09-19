@@ -2,41 +2,12 @@ name: Validate Wrapper
 
 on:
   pull_request:
-    paths:
-      - '.github/workflows/validate_wrapper.yml'
-      - '.github/workflows/native_release.yml'
-      - 'CMakeLists.txt'
-      - 'cmake/**'
-      - 'src/**'
-      - 'tests/**'
-      - 'tools/tts_smoke.cpp'
-      - 'tools/build.py'
-      - 'tools/validate_android_cpu_isa.py'
-      - 'tools/linux_dlopen_smoke.c'
-      - 'tools/package_linux_artifact.py'
-      - 'tools/validate_linux_artifact.py'
-      - 'tools/validate_exports.py'
-      - 'tools/validate_grammar_boundary.py'
-      - 'third_party/llama.cpp'
   push:
-    branches:
-      - main
-    paths:
-      - '.github/workflows/validate_wrapper.yml'
-      - '.github/workflows/native_release.yml'
-      - 'CMakeLists.txt'
-      - 'cmake/**'
-      - 'src/**'
-      - 'tests/**'
-      - 'tools/tts_smoke.cpp'
-      - 'tools/build.py'
-      - 'tools/validate_android_cpu_isa.py'
-      - 'tools/linux_dlopen_smoke.c'
-      - 'tools/package_linux_artifact.py'
-      - 'tools/validate_linux_artifact.py'
-      - 'tools/validate_exports.py'
-      - 'tools/validate_grammar_boundary.py'
-      - 'third_party/llama.cpp'
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -47,7 +18,25 @@ env:
   LLAMADART_V041_QUALIFICATION_SHA: b29c606e28a01b1bc8c1351026a0fa6e616bf6c4
 
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      native: ${{ steps.scope.outputs.native }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Test change selection
+        run: python3 -m unittest discover -s tests -p test_ci_scope.py
+      - id: scope
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: python3 tools/ci_scope.py
+
   android-arm64-isa:
+    needs: changes
+    if: needs.changes.outputs.native == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
@@ -96,6 +85,8 @@ jobs:
             build/android-isa/bin/libggml-cpu.so
 
   kleidiai-dispatch-emulated:
+    needs: changes
+    if: needs.changes.outputs.native == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
@@ -141,12 +132,14 @@ jobs:
           done
 
   windows-arm64-kleidiai:
+    needs: changes
+    if: needs.changes.outputs.native == 'true'
     runs-on: windows-11-arm
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
-        upstream: [pinned, post-v0.4.0, v0.4.1]
+        upstream: [pinned, post-v0.4.0]
     steps:
       - uses: actions/checkout@v7
         with:
@@ -183,6 +176,8 @@ jobs:
           ctest --test-dir build/wa64 -C Release --timeout 120 --verbose --output-on-failure
 
   linux-artifact-contract:
+    needs: changes
+    if: needs.changes.outputs.native == 'true'
     name: ${{ matrix.upstream == 'pinned' && format('linux-artifact-contract ({0})', matrix.arch) || format('linux-artifact-contract ({0}, post-v0.4.0)', matrix.arch) }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -233,6 +228,8 @@ jobs:
           fi
 
   wrapper-contract:
+    needs: changes
+    if: needs.changes.outputs.native == 'true'
     name: ${{ matrix.upstream == 'pinned' && 'wrapper-contract' || 'wrapper-contract (post-v0.4.0)' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -279,6 +276,8 @@ jobs:
           build/wrapper-contract/libllamadart.so
 
   msvc-mtmd-link-contract:
+    needs: changes
+    if: needs.changes.outputs.native == 'true'
     name: ${{ matrix.upstream == 'pinned' && 'msvc-mtmd-link-contract' || 'msvc-mtmd-link-contract (post-v0.4.0)' }}
     runs-on: windows-latest
     timeout-minutes: 30
@@ -322,3 +321,16 @@ jobs:
             --tool dumpbin `
             --symbol mtmd_input_chunk_get_placeholder `
             build/wx64/bin/mtmd.dll
+
+  wrapper-validation:
+    if: always()
+    needs: [changes, android-arm64-isa, kleidiai-dispatch-emulated, windows-arm64-kleidiai, linux-artifact-contract, wrapper-contract, msvc-mtmd-link-contract]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Require every selected native lane to succeed
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: python3 tools/ci_scope.py --check-results
