@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Exercise the candidate runtime's public grammar sampler at its size limit.
+"""Exercise the runtime's public grammar sampler at its size limit.
 
-Qualification only: the production v0.4.0 pin is known to fail the exact 2000
-boundary. No model is needed because these grammars contain only characters;
-the vocabulary is not accessed until token sampling.
+The v0.4.0 pin rejects the exact 2000 boundary. No model is needed because
+these grammars contain only characters; the vocabulary is not accessed until
+token sampling.
 """
 
 import argparse
