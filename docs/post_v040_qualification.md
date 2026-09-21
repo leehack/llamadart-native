@@ -14,10 +14,11 @@ The jobs have read-only repository permissions and do not dispatch, publish,
 tag, ingest attestations, or change any release pin. Candidate failures block
 candidate readiness, not an assertion that currently pinned artifacts regressed.
 
-The candidate Linux wrapper additionally calls the built library's public
-grammar sampler through `tools/validate_grammar_boundary.py`: 1999 and 2000
-repetitions must initialize, 2001 and malformed syntax must fail. The unchanged
-v0.4.0 library fails this test at 2000, so the check runs only on the candidate.
+The Linux wrapper job additionally calls the built library's public grammar
+sampler through `tools/validate_grammar_boundary.py`: 1999 and 2000
+repetitions must initialize, 2001 and malformed syntax must fail. The v0.4.0
+library fails this test at 2000; the pin has contained the upstream fix since
+v0.4.1, so the check runs on both the pinned and the candidate lane.
 Character-only initialization requires no model vocabulary; this is sampler
 initialization evidence, not model inference or token acceptance coverage.
 
