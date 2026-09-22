@@ -1,20 +1,20 @@
 Types: deb
 URIs: http://archive.ubuntu.com/ubuntu
-Suites: noble noble-updates noble-backports
+Suites: @VERSION_CODENAME@ @VERSION_CODENAME@-updates @VERSION_CODENAME@-backports
 Components: main universe restricted multiverse
 Architectures: amd64
 Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
 
 Types: deb
 URIs: http://security.ubuntu.com/ubuntu
-Suites: noble-security
+Suites: @VERSION_CODENAME@-security
 Components: main universe restricted multiverse
 Architectures: amd64
 Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
 
 Types: deb
 URIs: http://ports.ubuntu.com/ubuntu-ports
-Suites: noble noble-updates noble-backports noble-security
+Suites: @VERSION_CODENAME@ @VERSION_CODENAME@-updates @VERSION_CODENAME@-backports @VERSION_CODENAME@-security
 Components: main universe restricted multiverse
 Architectures: arm64
 Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg

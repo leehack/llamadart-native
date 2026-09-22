@@ -4,9 +4,13 @@ FROM nvidia/cuda:${CUDA_VERSION}-devel-ubuntu24.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-COPY ubuntu.sources /etc/apt/sources.list.d/ubuntu.sources
+COPY ubuntu.sources.template /etc/apt/ubuntu.sources.template
 
-RUN dpkg --add-architecture arm64 \
+RUN . /etc/os-release \
+    && sed "s/@VERSION_CODENAME@/${VERSION_CODENAME}/g" /etc/apt/ubuntu.sources.template \
+      > /etc/apt/sources.list.d/ubuntu.sources \
+    && rm /etc/apt/ubuntu.sources.template \
+    && dpkg --add-architecture arm64 \
     && apt-get update \
     && apt-get install -y --no-install-recommends \
       ca-certificates \

@@ -183,33 +183,20 @@ jobs:
           echo "Using pinned Android NDK: $NDK_DIR"
       - name: Install build deps
         run: sudo apt-get update && sudo apt-get install -y ninja-build ccache
-      - name: Restore ccache
-        uses: actions/cache@v6
+      - name: Set up ccache
+        uses: ./.github/actions/setup-ccache
         with:
-          path: ${{ env.CCACHE_DIR }}
-          key: ccache-android-${{ matrix.android_abi }}-${{ matrix.backend }}-${{ github.run_id }}
-          restore-keys: |
-            ccache-android-${{ matrix.android_abi }}-${{ matrix.backend }}-
-            ccache-android-${{ matrix.android_abi }}-
-      - name: Prime ccache
-        run: |
-          mkdir -p "${CCACHE_DIR}"
-          ccache --max-size "${CCACHE_MAXSIZE}"
-          ccache --zero-stats
+          cache-dir: ${{ env.CCACHE_DIR }}
+          max-size: ${{ env.CCACHE_MAXSIZE }}
+          key-prefix: ccache-android-${{ matrix.android_abi }}-${{ matrix.backend }}
+          extra-restore-keys: ccache-android-${{ matrix.android_abi }}-
       - name: Build
         run: python3 tools/build.py android --abi ${{ matrix.android_abi }} --backend ${{ matrix.backend }}
-      - name: ccache stats
+      - name: Report ccache stats
         if: always()
-        run: ccache --show-stats || true
-      - name: Append ccache stats to summary
-        if: always()
-        run: |
-          {
-            echo "### ccache stats (android/${{ matrix.android_abi }}/${{ matrix.backend }})"
-            echo '```'
-            ccache --show-stats || true
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
+        uses: ./.github/actions/ccache-stats
+        with:
+          label: android/${{ matrix.android_abi }}/${{ matrix.backend }}
       - name: Validate Android backend artifacts
         run: |
           set -euo pipefail
@@ -337,18 +324,12 @@ jobs:
         run: |
           brew untap aws/tap 2>/dev/null || true
           brew install ccache
-      - name: Restore ccache
-        uses: actions/cache@v6
+      - name: Set up ccache
+        uses: ./.github/actions/setup-ccache
         with:
-          path: ${{ env.CCACHE_DIR }}
-          key: ccache-apple-${{ matrix.target }}-${{ github.run_id }}
-          restore-keys: |
-            ccache-apple-${{ matrix.target }}-
-      - name: Prime ccache
-        run: |
-          mkdir -p "${CCACHE_DIR}"
-          ccache --max-size "${CCACHE_MAXSIZE}"
-          ccache --zero-stats
+          cache-dir: ${{ env.CCACHE_DIR }}
+          max-size: ${{ env.CCACHE_MAXSIZE }}
+          key-prefix: ccache-apple-${{ matrix.target }}
       - name: Build
         run: python3 tools/build.py apple --target ${{ matrix.target }}
       - name: Validate Apple wrapper exports
@@ -356,18 +337,11 @@ jobs:
           OUT_LIB="bin/${{ matrix.out_dir }}/libllamadart.dylib"
           test -f "$OUT_LIB" || { echo "Missing $OUT_LIB"; exit 1; }
           python3 tools/validate_exports.py --format nm --tool nm "$OUT_LIB"
-      - name: ccache stats
+      - name: Report ccache stats
         if: always()
-        run: ccache --show-stats || true
-      - name: Append ccache stats to summary
-        if: always()
-        run: |
-          {
-            echo "### ccache stats (apple/${{ matrix.target }})"
-            echo '```'
-            ccache --show-stats || true
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
+        uses: ./.github/actions/ccache-stats
+        with:
+          label: apple/${{ matrix.target }}
       - name: Upload
         uses: actions/upload-artifact@v7
         with:
@@ -433,56 +407,13 @@ jobs:
           github_token: ${{ github.token }}
       - name: Install build deps
         run: |
-          apt_get_update() {
-            for attempt in 1 2 3; do
-              if sudo apt-get -o Acquire::Retries=3 update; then
-                return 0
-              fi
-              if [ "$attempt" = "3" ]; then
-                return 1
-              fi
-              sleep $((attempt * 15))
-            done
-          }
-          apt_get_install() {
-            for attempt in 1 2 3; do
-              if sudo apt-get -o Acquire::Retries=3 install -y "$@"; then
-                return 0
-              fi
-              if [ "$attempt" = "3" ]; then
-                return 1
-              fi
-              sleep $((attempt * 15))
-            done
-          }
+          . tools/apt_retry.sh
 
           if [ "${{ matrix.arch }}" = "arm64" ]; then
             sudo dpkg --add-architecture arm64
             source /etc/os-release
-            CODENAME="${VERSION_CODENAME}"
-            {
-              printf '%s\n' \
-                "Types: deb" \
-                "URIs: http://archive.ubuntu.com/ubuntu" \
-                "Suites: ${CODENAME} ${CODENAME}-updates ${CODENAME}-backports" \
-                "Components: main universe restricted multiverse" \
-                "Architectures: amd64" \
-                "Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg" \
-                "" \
-                "Types: deb" \
-                "URIs: http://security.ubuntu.com/ubuntu" \
-                "Suites: ${CODENAME}-security" \
-                "Components: main universe restricted multiverse" \
-                "Architectures: amd64" \
-                "Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg" \
-                "" \
-                "Types: deb" \
-                "URIs: http://ports.ubuntu.com/ubuntu-ports" \
-                "Suites: ${CODENAME} ${CODENAME}-updates ${CODENAME}-backports ${CODENAME}-security" \
-                "Components: main universe restricted multiverse" \
-                "Architectures: arm64" \
-                "Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg"
-            } | sudo tee /etc/apt/sources.list.d/ubuntu.sources >/dev/null
+            sed "s/@VERSION_CODENAME@/${VERSION_CODENAME}/g" tools/docker/ubuntu.sources.template \
+              | sudo tee /etc/apt/sources.list.d/ubuntu.sources >/dev/null
           fi
           apt_get_update
           apt_get_install ccache ninja-build pkg-config make
@@ -526,33 +457,20 @@ jobs:
               exit 1
             }
           fi
-      - name: Restore ccache
-        uses: actions/cache@v6
+      - name: Set up ccache
+        uses: ./.github/actions/setup-ccache
         with:
-          path: ${{ env.CCACHE_DIR }}
-          key: ccache-linux-${{ matrix.arch }}-${{ matrix.backend }}-${{ github.run_id }}
-          restore-keys: |
-            ccache-linux-${{ matrix.arch }}-${{ matrix.backend }}-
-            ccache-linux-${{ matrix.arch }}-
-      - name: Prime ccache
-        run: |
-          mkdir -p "${CCACHE_DIR}"
-          ccache --max-size "${CCACHE_MAXSIZE}"
-          ccache --zero-stats
+          cache-dir: ${{ env.CCACHE_DIR }}
+          max-size: ${{ env.CCACHE_MAXSIZE }}
+          key-prefix: ccache-linux-${{ matrix.arch }}-${{ matrix.backend }}
+          extra-restore-keys: ccache-linux-${{ matrix.arch }}-
       - name: Build
         run: python3 tools/build.py linux --arch "${{ matrix.arch }}" --backend "${{ matrix.backend }}"
-      - name: ccache stats
+      - name: Report ccache stats
         if: always()
-        run: ccache --show-stats || true
-      - name: Append ccache stats to summary
-        if: always()
-        run: |
-          {
-            echo "### ccache stats (linux/${{ matrix.arch }}/${{ matrix.backend }})"
-            echo '```'
-            ccache --show-stats || true
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
+        uses: ./.github/actions/ccache-stats
+        with:
+          label: linux/${{ matrix.arch }}/${{ matrix.backend }}
       - name: Validate Linux backend artifacts
         run: |
           OUT_DIR="bin/linux/${{ matrix.arch }}"
@@ -694,47 +612,26 @@ jobs:
           expected_commit: ${{ needs.resolve-tag.outputs.llama_cpp_commit }}
           github_token: ${{ github.token }}
       - name: Install build deps
+        env:
+          DEBIAN_FRONTEND: noninteractive
         run: |
-          apt_get_install() {
-            for attempt in 1 2 3; do
-              if DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=3 install -y "$@"; then
-                return 0
-              fi
-              if [ "$attempt" = "3" ]; then
-                return 1
-              fi
-              sleep $((attempt * 15))
-            done
-          }
+          . tools/apt_retry.sh
           apt_get_install build-essential binutils ccache ninja-build pkg-config python3 python3-pip rocblas-dev hipblas-dev
           python3 -m pip install --upgrade cmake
           cmake --version
-      - name: Restore ccache
-        uses: actions/cache@v6
+      - name: Set up ccache
+        uses: ./.github/actions/setup-ccache
         with:
-          path: ${{ env.CCACHE_DIR }}
-          key: ccache-linux-x64-hip-${{ github.run_id }}
-          restore-keys: |
-            ccache-linux-x64-hip-
-      - name: Prime ccache
-        run: |
-          mkdir -p "${CCACHE_DIR}"
-          ccache --max-size "${CCACHE_MAXSIZE}"
-          ccache --zero-stats
+          cache-dir: ${{ env.CCACHE_DIR }}
+          max-size: ${{ env.CCACHE_MAXSIZE }}
+          key-prefix: ccache-linux-x64-hip
       - name: Build
         run: python3 tools/build.py linux --arch x64 --backend hip
-      - name: ccache stats
+      - name: Report ccache stats
         if: always()
-        run: ccache --show-stats || true
-      - name: Append ccache stats to summary
-        if: always()
-        run: |
-          {
-            echo "### ccache stats (linux/x64/hip)"
-            echo '```'
-            ccache --show-stats || true
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
+        uses: ./.github/actions/ccache-stats
+        with:
+          label: linux/x64/hip
       - name: Validate Linux HIP artifacts
         run: |
           OUT_DIR="bin/linux/x64"

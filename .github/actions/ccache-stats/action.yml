@@ -1,0 +1,23 @@
+name: Report ccache stats
+description: Print ccache statistics and append them to the job summary.
+inputs:
+  label:
+    description: Lane name shown in the job summary heading
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: ccache stats
+      shell: bash
+      run: ccache --show-stats || true
+    - name: Append ccache stats to summary
+      shell: bash
+      env:
+        CCACHE_STATS_LABEL: ${{ inputs.label }}
+      run: |
+        {
+          echo "### ccache stats (${CCACHE_STATS_LABEL})"
+          echo '```'
+          ccache --show-stats || true
+          echo '```'
+        } >> "$GITHUB_STEP_SUMMARY"

@@ -17,6 +17,49 @@ from ci_scope import native_required  # noqa: E402
 WORKFLOW = ROOT / ".github/workflows/native_release.yml"
 BUILD_PY = ROOT / "tools/build.py"
 THIS_TEST = "tests/test_native_release_dedup.py"
+SETUP_CCACHE = ROOT / ".github/actions/setup-ccache/action.yml"
+CCACHE_STATS = ROOT / ".github/actions/ccache-stats/action.yml"
+APT_RETRY = ROOT / "tools/apt_retry.sh"
+SOURCES_TEMPLATE = ROOT / "tools/docker/ubuntu.sources.template"
+DOCKERFILE = ROOT / "tools/docker/linux-builder.Dockerfile"
+
+CODENAME_PLACEHOLDER = "@VERSION_CODENAME@"
+SED_RENDER = f's/{CODENAME_PLACEHOLDER}/${{VERSION_CODENAME}}/g'
+
+CCACHE_LANES = {
+    "android": {
+        "key-prefix": "ccache-android-${{ matrix.android_abi }}-${{ matrix.backend }}",
+        "extra-restore-keys": "ccache-android-${{ matrix.android_abi }}-",
+        "label": "android/${{ matrix.android_abi }}/${{ matrix.backend }}",
+    },
+    "apple": {
+        "key-prefix": "ccache-apple-${{ matrix.target }}",
+        "extra-restore-keys": None,
+        "label": "apple/${{ matrix.target }}",
+    },
+    "linux": {
+        "key-prefix": "ccache-linux-${{ matrix.arch }}-${{ matrix.backend }}",
+        "extra-restore-keys": "ccache-linux-${{ matrix.arch }}-",
+        "label": "linux/${{ matrix.arch }}/${{ matrix.backend }}",
+    },
+    "linux-hip": {
+        "key-prefix": "ccache-linux-x64-hip",
+        "extra-restore-keys": None,
+        "label": "linux/x64/hip",
+    },
+}
+
+
+def workflow_steps(text: str, name: str) -> list[str]:
+    found = []
+    marker = f"      - name: {name}\n"
+    start = text.find(marker)
+    while start != -1:
+        body = text[start + 1 :]
+        end = body.find("\n      - ")
+        found.append(body if end == -1 else body[: end + 1])
+        start = text.find(marker, start + 1)
+    return found
 
 LIST_COMMAND = "python3 tools/build.py list --android-arm64-cpu-variant-libs"
 
@@ -131,6 +174,162 @@ class NativeReleaseWorkflowTests(unittest.TestCase):
         self.assertIn(
             'Join-Path $env:ProgramFiles "NVIDIA GPU Computing Toolkit\\CUDA\\v$cudaMajorMinor"',
             self.workflow,
+        )
+
+
+class CcacheCompositeActionTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.workflow = WORKFLOW.read_text()
+        self.setup_action = SETUP_CCACHE.read_text()
+        self.stats_action = CCACHE_STATS.read_text()
+
+    def test_cache_key_and_restore_keys_derive_from_the_key_prefix(self) -> None:
+        self.assertIn("path: ${{ inputs.cache-dir }}", self.setup_action)
+        self.assertIn("key: ${{ inputs.key-prefix }}-${{ github.run_id }}", self.setup_action)
+        self.assertIn(
+            "restore-keys: |\n"
+            "          ${{ inputs.key-prefix }}-\n"
+            "          ${{ inputs.extra-restore-keys }}\n",
+            self.setup_action,
+        )
+
+    def test_priming_still_sizes_and_zeroes_the_cache(self) -> None:
+        self.assertIn("CCACHE_DIR: ${{ inputs.cache-dir }}", self.setup_action)
+        self.assertIn("CCACHE_MAXSIZE: ${{ inputs.max-size }}", self.setup_action)
+        self.assertIn(
+            'mkdir -p "${CCACHE_DIR}"\n'
+            '        ccache --max-size "${CCACHE_MAXSIZE}"\n'
+            "        ccache --zero-stats\n",
+            self.setup_action,
+        )
+
+    def test_summary_heading_comes_from_the_label_input(self) -> None:
+        self.assertIn("CCACHE_STATS_LABEL: ${{ inputs.label }}", self.stats_action)
+        self.assertIn('echo "### ccache stats (${CCACHE_STATS_LABEL})"', self.stats_action)
+        self.assertEqual(2, self.stats_action.count("ccache --show-stats || true"))
+
+    def test_every_lane_passes_the_cache_key_it_used_before(self) -> None:
+        setups = workflow_steps(self.workflow, "Set up ccache")
+        self.assertEqual(len(CCACHE_LANES), len(setups))
+        for step in setups:
+            self.assertIn("uses: ./.github/actions/setup-ccache", step)
+            self.assertIn("cache-dir: ${{ env.CCACHE_DIR }}", step)
+            self.assertIn("max-size: ${{ env.CCACHE_MAXSIZE }}", step)
+        prefixes = {lane["key-prefix"] for lane in CCACHE_LANES.values()}
+        self.assertEqual(
+            prefixes,
+            {re.search(r"key-prefix: (.+)\n", step).group(1) for step in setups},
+        )
+        extras = {lane["extra-restore-keys"] for lane in CCACHE_LANES.values()}
+        found_extras = set()
+        for step in setups:
+            match = re.search(r"extra-restore-keys: (.+)\n", step)
+            found_extras.add(match.group(1) if match else None)
+        self.assertEqual(extras, found_extras)
+
+    def test_every_lane_reports_stats_under_its_old_heading(self) -> None:
+        reports = workflow_steps(self.workflow, "Report ccache stats")
+        self.assertEqual(len(CCACHE_LANES), len(reports))
+        for step in reports:
+            self.assertIn("if: always()", step)
+            self.assertIn("uses: ./.github/actions/ccache-stats", step)
+        self.assertEqual(
+            {lane["label"] for lane in CCACHE_LANES.values()},
+            {re.search(r"label: (.+)\n", step).group(1) for step in reports},
+        )
+
+    def test_no_lane_keeps_its_own_copy_of_the_scaffolding(self) -> None:
+        self.assertNotIn("ccache --zero-stats", self.workflow)
+        self.assertNotIn("ccache --show-stats", self.workflow)
+        self.assertNotIn("actions/cache@v6", self.workflow)
+        self.assertNotIn("CCACHE_MAXSIZE}", self.workflow)
+
+    def test_windows_keeps_its_own_sccache_setup(self) -> None:
+        self.assertIn("uses: mozilla-actions/sccache-action@v0.0.11", self.workflow)
+        self.assertIn("SCCACHE_GHA_ENABLED=true", self.workflow)
+        self.assertNotIn("sccache", self.setup_action)
+
+
+class AptRetryScriptTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.workflow = WORKFLOW.read_text()
+        self.script = APT_RETRY.read_text()
+
+    def test_script_keeps_the_retry_ladder_and_apt_options(self) -> None:
+        self.assertIn("apt-get -o Acquire::Retries=3 \"$@\"", self.script)
+        self.assertIn("for attempt in 1 2 3; do", self.script)
+        self.assertIn("sleep $((attempt * 15))", self.script)
+        self.assertIn("_apt_get_retry update", self.script)
+        self.assertIn('_apt_get_retry install -y "$@"', self.script)
+
+    def test_script_uses_sudo_only_when_not_root(self) -> None:
+        self.assertIn('if [ "$(id -u)" -eq 0 ]; then', self.script)
+        self.assertIn("sudo apt-get -o Acquire::Retries=3", self.script)
+
+    def test_post_checkout_steps_source_the_script(self) -> None:
+        self.assertEqual(2, self.workflow.count(". tools/apt_retry.sh"))
+
+    def test_only_the_pre_checkout_step_still_declares_the_helpers(self) -> None:
+        self.assertEqual(1, self.workflow.count("apt_get_install() {"))
+        self.assertEqual(1, self.workflow.count("apt_get_update() {"))
+        install_git = workflow_steps(self.workflow, "Install Git")
+        self.assertEqual(1, len(install_git))
+        self.assertIn("apt_get_install() {", install_git[0])
+        self.assertLess(
+            self.workflow.index("apt_get_install() {"),
+            self.workflow.index("uses: ./.github/actions/checkout-llama-ref\n", self.workflow.index("build-linux-hip:")),
+        )
+
+    def test_container_step_still_installs_noninteractively(self) -> None:
+        hip_deps = workflow_steps(self.workflow, "Install build deps")[-1]
+        self.assertIn("DEBIAN_FRONTEND: noninteractive", hip_deps)
+        self.assertIn("apt_get_install build-essential binutils ccache", hip_deps)
+
+
+class UbuntuSourcesTemplateTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.workflow = WORKFLOW.read_text()
+        self.template = SOURCES_TEMPLATE.read_text()
+        self.dockerfile = DOCKERFILE.read_text()
+
+    def render(self, codename: str) -> str:
+        return self.template.replace(CODENAME_PLACEHOLDER, codename)
+
+    def test_workflow_and_dockerfile_render_the_same_template(self) -> None:
+        self.assertFalse((ROOT / "tools/docker/ubuntu.sources").exists())
+        self.assertIn(f'sed "{SED_RENDER}" tools/docker/ubuntu.sources.template', self.workflow)
+        self.assertIn(f'sed "{SED_RENDER}" /etc/apt/ubuntu.sources.template', self.dockerfile)
+        self.assertIn(". /etc/os-release", self.dockerfile)
+        self.assertIn("source /etc/os-release", self.workflow)
+        self.assertIn("COPY ubuntu.sources.template /etc/apt/ubuntu.sources.template", self.dockerfile)
+
+    def test_no_codename_is_hardcoded(self) -> None:
+        self.assertNotIn("noble", self.template)
+        self.assertNotIn("noble", self.workflow)
+        self.assertNotIn("Signed-By", self.workflow)
+
+    def test_rendered_list_keeps_all_three_suites(self) -> None:
+        rendered = self.render("plucky")
+        self.assertNotIn("@", rendered)
+        self.assertEqual(
+            [
+                "Suites: plucky plucky-updates plucky-backports",
+                "Suites: plucky-security",
+                "Suites: plucky plucky-updates plucky-backports plucky-security",
+            ],
+            [line for line in rendered.splitlines() if line.startswith("Suites:")],
+        )
+        self.assertEqual(
+            ["Architectures: amd64", "Architectures: amd64", "Architectures: arm64"],
+            [line for line in rendered.splitlines() if line.startswith("Architectures:")],
+        )
+        self.assertEqual(
+            [
+                "URIs: http://archive.ubuntu.com/ubuntu",
+                "URIs: http://security.ubuntu.com/ubuntu",
+                "URIs: http://ports.ubuntu.com/ubuntu-ports",
+            ],
+            [line for line in rendered.splitlines() if line.startswith("URIs:")],
         )
 
 
