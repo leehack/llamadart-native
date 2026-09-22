@@ -184,6 +184,8 @@ Assets are suffixed with platform/arch, for example:
 - `docs/platform_backend_strategy.md`: platform/backend matrix.
 - `docs/release_version_policy.md`: stable/nightly channels, wrapper rebuild
   ordering, provenance, and downstream coordination.
+- `docs/parity_tools.md`: local build recipe and naming convention for upstream
+  `llama-cli` parity checks against a released native tag.
 
 ## Local Build (Preferred)
 
@@ -229,6 +231,11 @@ Initialize submodules after clone:
 ```bash
 git submodule update --init --recursive
 ```
+
+This build produces the shipped runtime libraries only; upstream tools such as
+`llama-cli` are force-disabled here. See
+[Parity Tool Builds](docs/parity_tools.md) for building them from a released
+tag's pinned `llama.cpp` commit in a separate clone.
 
 ## Experimental TTS Wrapper
 
