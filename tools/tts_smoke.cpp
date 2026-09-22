@@ -203,6 +203,7 @@ static bool cancel_during_long_step(llama_dart_tts *tts,
         return false;
     }
     std::atomic<int> running_step{-1};
+    std::atomic<int> running_after_frames{0};
     std::atomic<int64_t> running_since{0};
     std::atomic<int> cancelled_step{-1};
     std::atomic<int64_t> cancelled_at{0};
@@ -216,7 +217,8 @@ static bool cancel_during_long_step(llama_dart_tts *tts,
     std::thread canceller([&] {
         while (!done.load()) {
             const int step = running_step.load();
-            if (step >= 0 && since_origin() - running_since.load() >= cancel_after_ms * 1000.0) {
+            if (step >= 0 && running_after_frames.load() > 0 &&
+                since_origin() - running_since.load() >= cancel_after_ms * 1000.0) {
                 cancelled_at.store(since_origin());
                 cancelled_step.store(step);
                 if (flag != nullptr) {
@@ -234,8 +236,10 @@ static bool cancel_during_long_step(llama_dart_tts *tts,
     int step = 0;
     int64_t returned_at = 0;
     for (;; ++step) {
+        const int frames = progress.frames_generated;
         progress.struct_size = sizeof(progress);
         running_since.store(since_origin());
+        running_after_frames.store(frames);
         running_step.store(step);
         status = llama_dart_tts_step(tts, &progress);
         running_step.store(-1);
@@ -255,7 +259,7 @@ static bool cancel_during_long_step(llama_dart_tts *tts,
         return false;
     }
     if (cancelled_step.load() < 0) {
-        std::fprintf(stderr, "no step ran %.1f ms, so the in-step cancel never fired\n",
+        std::fprintf(stderr, "no step after a frame ran %.1f ms, so the in-step cancel never fired\n",
                      cancel_after_ms);
         return false;
     }
