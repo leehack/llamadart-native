@@ -15,7 +15,7 @@ TOOLING = frozenset({
     'tests/test_assets_manifest.py', 'tests/test_auto_release_dispatch.py',
     'tests/test_historical_release_metadata.py', 'tests/test_release_contract.py',
     'tests/test_release_publication.py', 'tests/test_release_version_policy.py',
-    'tests/test_release_workflow_inputs.py',
+    'tests/test_release_workflow_inputs.py', 'tests/test_native_release_dedup.py',
     'tests/fixtures/historical_release_metadata.json',
 })
 
