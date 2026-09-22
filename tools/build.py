@@ -92,6 +92,12 @@ ANDROID_ARM64_CPU_VARIANTS = (
         ),
     ),
 )
+
+
+def android_arm64_cpu_variant_libs() -> tuple[str, ...]:
+    return tuple(f"libggml-cpu-{variant_name}.so" for variant_name, _arch, _features in ANDROID_ARM64_CPU_VARIANTS)
+
+
 WINDOWS_VCPKG_TRIPLETS = {"x64": "x64-windows", "arm64": "arm64-windows"}
 ANDROID_BACKENDS = ("full", "vulkan", "opencl")
 LINUX_BACKENDS = ("full", "cpu", "vulkan", "cuda", "hip", "blas")
@@ -432,13 +438,15 @@ def build_android_arm64_abi(args: argparse.Namespace, env: dict[str, str]) -> No
     out_dir = BIN_DIR / f"android/{ANDROID_OUT_ARCH[abi]}"
     copy_runtime_libraries(built_dir, out_dir)
 
+    variant_libs = android_arm64_cpu_variant_libs()
+
     baseline_cpu = out_dir / "libggml-cpu.so"
     if not baseline_cpu.is_file():
         fail(f"Missing baseline Android CPU backend after primary build: {baseline_cpu}")
-    copy_output(baseline_cpu, out_dir / f"libggml-cpu-{ANDROID_ARM64_CPU_VARIANTS[0][0]}.so")
+    copy_output(baseline_cpu, out_dir / variant_libs[0])
     baseline_cpu.unlink()
 
-    for variant_name, arm_arch, required_features in ANDROID_ARM64_CPU_VARIANTS[1:]:
+    for (variant_name, arm_arch, required_features), variant_lib in zip(ANDROID_ARM64_CPU_VARIANTS[1:], variant_libs[1:]):
         variant_build_dir = BUILD_ROOT / f"android-{abi}-{backend}-{variant_name}"
         if args.clean and variant_build_dir.exists():
             shutil.rmtree(variant_build_dir)
@@ -451,7 +459,7 @@ def build_android_arm64_abi(args: argparse.Namespace, env: dict[str, str]) -> No
             env=env,
             jobs=args.jobs,
         )
-        copy_output(cpu_lib, out_dir / f"libggml-cpu-{variant_name}.so")
+        copy_output(cpu_lib, out_dir / variant_lib)
 
 
 def windows_backend_cache_vars(arch: str, backend: str) -> dict[str, str]:
@@ -1106,6 +1114,14 @@ def print_presets() -> None:
         print(p)
 
 
+def run_list(args: argparse.Namespace) -> None:
+    if args.android_arm64_cpu_variant_libs:
+        for lib in android_arm64_cpu_variant_libs():
+            print(lib)
+        return
+    print_presets()
+
+
 def add_common_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--clean", action="store_true", help="Delete preset build directory before configure")
     parser.add_argument("--jobs", type=int, default=None, help="Parallel job count passed to cmake --build")
@@ -1116,7 +1132,12 @@ def parse_args() -> argparse.Namespace:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     list_parser = subparsers.add_parser("list", help="List supported platform/target combinations")
-    list_parser.set_defaults(func=lambda _: print_presets())
+    list_parser.add_argument(
+        "--android-arm64-cpu-variant-libs",
+        action="store_true",
+        help="Print the libggml-cpu-<variant>.so filenames produced by an Android arm64-v8a build, one per line",
+    )
+    list_parser.set_defaults(func=run_list)
 
     apple = subparsers.add_parser("apple", help="Build Apple targets")
     apple.add_argument("--target", required=True, choices=sorted(APPLE_TARGETS.keys()))

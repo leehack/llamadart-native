@@ -252,15 +252,12 @@ jobs:
               "$ARMV82_LIB"
 
             if [ "${{ matrix.include_core }}" = "true" ]; then
-              expected_cpu_variants=(
-                "libggml-cpu-android_armv8.0_1.so"
-                "libggml-cpu-android_armv8.2_1.so"
-                "libggml-cpu-android_armv8.2_2.so"
-                "libggml-cpu-android_armv8.6_1.so"
-                "libggml-cpu-android_armv9.0_1.so"
-                "libggml-cpu-android_armv9.2_1.so"
-                "libggml-cpu-android_armv9.2_2.so"
-              )
+              variant_list="$(python3 tools/build.py list --android-arm64-cpu-variant-libs)"
+              if [ -z "$variant_list" ]; then
+                echo "tools/build.py listed no Android arm64 CPU variants" >&2
+                exit 1
+              fi
+              mapfile -t expected_cpu_variants <<< "$variant_list"
               for lib in "${expected_cpu_variants[@]}"; do
                 test -f "$OUT_DIR/$lib" || { echo "Missing $OUT_DIR/$lib"; exit 1; }
                 "$READELF" -Ws "$OUT_DIR/$lib" > "$SCORE_SYMS_FILE"
@@ -523,7 +520,8 @@ jobs:
               echo "LD_LIBRARY_PATH=${cuda_root}/lib64:${cuda_root}/lib64/stubs:${cuda_root}/lib:${cuda_root}/lib/stubs:${LD_LIBRARY_PATH:-}"
             } >> "${GITHUB_ENV}"
             "${cuda_root}/bin/nvcc" --version | tee nvcc-version.txt
-            grep -q 'release 12\.8' nvcc-version.txt || {
+            cuda_major_minor="$(printf '%s' "${CUDA_REDIST_VERSION}" | cut -d. -f1,2)"
+            grep -Eq "release ${cuda_major_minor//./\\.}([^0-9.]|$)" nvcc-version.txt || {
               echo "Expected CUDA ${CUDA_REDIST_VERSION} nvcc" >&2
               exit 1
             }
@@ -850,7 +848,8 @@ jobs:
       - name: Install CUDA Toolkit
         if: ${{ matrix.needs_cuda }}
         run: |
-          $cudaRoot = Join-Path $env:ProgramFiles "NVIDIA GPU Computing Toolkit\CUDA\v12.8"
+          $cudaMajorMinor = (($env:CUDA_REDIST_VERSION -split '\.') | Select-Object -First 2) -join '.'
+          $cudaRoot = Join-Path $env:ProgramFiles "NVIDIA GPU Computing Toolkit\CUDA\v$cudaMajorMinor"
           python tools/install_cuda_redist.py `
             --version "${env:CUDA_REDIST_VERSION}" `
             --platform windows-x86_64 `
@@ -861,7 +860,8 @@ jobs:
           Add-Content $env:GITHUB_ENV "CUDAToolkit_ROOT=$cudaRoot"
           $nvccVersion = & (Join-Path $cudaRoot "bin\nvcc.exe") --version
           $nvccVersion
-          if (($nvccVersion -join "`n") -notmatch 'release 12\.8') {
+          $cudaVersionPattern = 'release ' + [regex]::Escape($cudaMajorMinor) + '([^0-9.]|$)'
+          if (($nvccVersion -join "`n") -notmatch $cudaVersionPattern) {
             throw "Expected CUDA ${env:CUDA_REDIST_VERSION} nvcc"
           }
       - name: Restore vcpkg cache
