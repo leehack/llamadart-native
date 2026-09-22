@@ -11,10 +11,12 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 
 from build import ANDROID_ARM64_CPU_VARIANTS, android_arm64_cpu_variant_libs  # noqa: E402
+from ci_scope import native_required  # noqa: E402
 
 
 WORKFLOW = ROOT / ".github/workflows/native_release.yml"
 BUILD_PY = ROOT / "tools/build.py"
+THIS_TEST = "tests/test_native_release_dedup.py"
 
 LIST_COMMAND = "python3 tools/build.py list --android-arm64-cpu-variant-libs"
 
@@ -22,6 +24,18 @@ SINGLED_OUT_VARIANT_LIBS = frozenset(
     {
         "libggml-cpu-android_armv8.2_2.so",
         "libggml-cpu-android_armv8.0_1.so",
+    }
+)
+
+EXPECTED_VARIANT_LIBS = frozenset(
+    {
+        "libggml-cpu-android_armv8.0_1.so",
+        "libggml-cpu-android_armv8.2_1.so",
+        "libggml-cpu-android_armv8.2_2.so",
+        "libggml-cpu-android_armv8.6_1.so",
+        "libggml-cpu-android_armv9.0_1.so",
+        "libggml-cpu-android_armv9.2_1.so",
+        "libggml-cpu-android_armv9.2_2.so",
     }
 )
 
@@ -41,8 +55,13 @@ class CpuVariantListingTests(unittest.TestCase):
         lines = self._run_list("--android-arm64-cpu-variant-libs").splitlines()
         expected = [f"libggml-cpu-{name}.so" for name, _arch, _features in ANDROID_ARM64_CPU_VARIANTS]
         self.assertEqual(expected, lines)
-        self.assertGreater(len(lines), 1)
         self.assertEqual(len(set(lines)), len(lines))
+
+    def test_listed_libraries_are_the_seven_variants_the_release_ships(self) -> None:
+        lines = self._run_list("--android-arm64-cpu-variant-libs").splitlines()
+        self.assertEqual(EXPECTED_VARIANT_LIBS, set(lines))
+        self.assertEqual(len(EXPECTED_VARIANT_LIBS), len(lines))
+        self.assertLessEqual(SINGLED_OUT_VARIANT_LIBS, EXPECTED_VARIANT_LIBS)
 
     def test_bare_list_still_prints_presets(self) -> None:
         stdout = self._run_list()
@@ -53,6 +72,13 @@ class CpuVariantListingTests(unittest.TestCase):
         body = BUILD_PY.read_text().split("def build_android_arm64_abi(")[1].split("\ndef ")[0]
         self.assertIn("android_arm64_cpu_variant_libs()", body)
         self.assertNotIn("libggml-cpu-", body)
+
+
+class CiScopeTests(unittest.TestCase):
+    def test_editing_this_file_alone_does_not_require_the_native_matrix(self) -> None:
+        self.assertTrue((ROOT / THIS_TEST).is_file())
+        self.assertFalse(native_required([THIS_TEST]))
+        self.assertTrue(native_required([THIS_TEST, "tools/build.py"]))
 
 
 class NativeReleaseWorkflowTests(unittest.TestCase):
