@@ -31,23 +31,35 @@ CCACHE_LANES = {
         "key-prefix": "ccache-android-${{ matrix.android_abi }}-${{ matrix.backend }}",
         "extra-restore-keys": "ccache-android-${{ matrix.android_abi }}-",
         "label": "android/${{ matrix.android_abi }}/${{ matrix.backend }}",
+        "container": None,
+        "runner-default-shell": "bash",
     },
     "build-apple": {
         "key-prefix": "ccache-apple-${{ matrix.target }}",
         "extra-restore-keys": None,
         "label": "apple/${{ matrix.target }}",
+        "container": None,
+        "runner-default-shell": "bash",
     },
     "build-linux": {
         "key-prefix": "ccache-linux-${{ matrix.arch }}-${{ matrix.backend }}",
         "extra-restore-keys": "ccache-linux-${{ matrix.arch }}-",
         "label": "linux/${{ matrix.arch }}/${{ matrix.backend }}",
+        "container": None,
+        "runner-default-shell": "bash",
     },
     "build-linux-hip": {
         "key-prefix": "ccache-linux-x64-hip",
         "extra-restore-keys": None,
         "label": "linux/x64/hip",
+        "container": "rocm/dev-ubuntu-22.04:6.1.2",
+        "runner-default-shell": "sh",
     },
 }
+
+CCACHE_ACTION_SHELL = "bash"
+
+LONE_PIPE = re.compile(r"(?<!\|)\|(?!\|)(?=.)")
 
 HIP_APT_INSTALL = (
     "DEBIAN_FRONTEND=noninteractive apt_get_install build-essential binutils ccache "
@@ -270,6 +282,39 @@ class CcacheCompositeActionTests(unittest.TestCase):
         self.assertIn("uses: mozilla-actions/sccache-action@v0.0.11", self.workflow)
         self.assertIn("SCCACHE_GHA_ENABLED=true", self.workflow)
         self.assertNotIn("sccache", self.setup_action)
+
+
+class CcacheStepShellTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.workflow = WORKFLOW.read_text()
+        self.actions = {
+            "setup-ccache": SETUP_CCACHE.read_text(),
+            "ccache-stats": CCACHE_STATS.read_text(),
+        }
+
+    def test_every_extracted_step_declares_one_shell(self) -> None:
+        for name, text in self.actions.items():
+            shells = re.findall(r"^ *shell: (.+)$", text, re.MULTILINE)
+            runs = len(re.findall(r"^ *run: ", text, re.MULTILINE))
+            self.assertEqual([CCACHE_ACTION_SHELL] * runs, shells, name)
+
+    def test_each_lane_container_is_pinned(self) -> None:
+        jobs = workflow_jobs(self.workflow)
+        for job, lane in CCACHE_LANES.items():
+            match = re.search(r"^    container: (.+)$", jobs[job], re.MULTILINE)
+            self.assertEqual(lane["container"], match.group(1) if match else None, job)
+
+    def test_containerised_lanes_are_the_ones_that_defaulted_to_sh(self) -> None:
+        for job, lane in CCACHE_LANES.items():
+            expected = "sh" if lane["container"] else "bash"
+            self.assertEqual(expected, lane["runner-default-shell"], job)
+
+    def test_no_extracted_script_contains_a_pipeline(self) -> None:
+        for name, text in self.actions.items():
+            for number, line in enumerate(text.splitlines(), 1):
+                self.assertIsNone(
+                    LONE_PIPE.search(line.rstrip()), f"{name}:{number}: {line}"
+                )
 
 
 class AptRetryScriptTests(unittest.TestCase):
