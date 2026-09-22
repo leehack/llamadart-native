@@ -27,27 +27,32 @@ CODENAME_PLACEHOLDER = "@VERSION_CODENAME@"
 SED_RENDER = f's/{CODENAME_PLACEHOLDER}/${{VERSION_CODENAME}}/g'
 
 CCACHE_LANES = {
-    "android": {
+    "build-android": {
         "key-prefix": "ccache-android-${{ matrix.android_abi }}-${{ matrix.backend }}",
         "extra-restore-keys": "ccache-android-${{ matrix.android_abi }}-",
         "label": "android/${{ matrix.android_abi }}/${{ matrix.backend }}",
     },
-    "apple": {
+    "build-apple": {
         "key-prefix": "ccache-apple-${{ matrix.target }}",
         "extra-restore-keys": None,
         "label": "apple/${{ matrix.target }}",
     },
-    "linux": {
+    "build-linux": {
         "key-prefix": "ccache-linux-${{ matrix.arch }}-${{ matrix.backend }}",
         "extra-restore-keys": "ccache-linux-${{ matrix.arch }}-",
         "label": "linux/${{ matrix.arch }}/${{ matrix.backend }}",
     },
-    "linux-hip": {
+    "build-linux-hip": {
         "key-prefix": "ccache-linux-x64-hip",
         "extra-restore-keys": None,
         "label": "linux/x64/hip",
     },
 }
+
+HIP_APT_INSTALL = (
+    "DEBIAN_FRONTEND=noninteractive apt_get_install build-essential binutils ccache "
+    "ninja-build pkg-config python3 python3-pip rocblas-dev hipblas-dev"
+)
 
 
 def workflow_steps(text: str, name: str) -> list[str]:
@@ -60,6 +65,29 @@ def workflow_steps(text: str, name: str) -> list[str]:
         found.append(body if end == -1 else body[: end + 1])
         start = text.find(marker, start + 1)
     return found
+
+
+def workflow_jobs(text: str) -> dict[str, str]:
+    body = text[text.index("\njobs:\n") :]
+    starts = [(m.group(1), m.start()) for m in re.finditer(r"\n  ([a-z][\w-]*):\n", body)]
+    return {
+        name: body[pos : starts[i + 1][1] if i + 1 < len(starts) else len(body)]
+        for i, (name, pos) in enumerate(starts)
+    }
+
+
+def steps_by_job(text: str, name: str) -> dict[str, list[str]]:
+    found = {}
+    for job, block in workflow_jobs(text).items():
+        steps = workflow_steps(block, name)
+        if steps:
+            found[job] = steps
+    return found
+
+
+def step_input(step: str, key: str) -> str | None:
+    match = re.search(rf"^ *{re.escape(key)}: (.+)$", step, re.MULTILINE)
+    return match.group(1) if match else None
 
 LIST_COMMAND = "python3 tools/build.py list --android-arm64-cpu-variant-libs"
 
@@ -209,34 +237,28 @@ class CcacheCompositeActionTests(unittest.TestCase):
         self.assertEqual(2, self.stats_action.count("ccache --show-stats || true"))
 
     def test_every_lane_passes_the_cache_key_it_used_before(self) -> None:
-        setups = workflow_steps(self.workflow, "Set up ccache")
-        self.assertEqual(len(CCACHE_LANES), len(setups))
-        for step in setups:
+        setups = steps_by_job(self.workflow, "Set up ccache")
+        self.assertEqual(set(CCACHE_LANES), set(setups))
+        for job, lane in CCACHE_LANES.items():
+            self.assertEqual(1, len(setups[job]), job)
+            step = setups[job][0]
             self.assertIn("uses: ./.github/actions/setup-ccache", step)
-            self.assertIn("cache-dir: ${{ env.CCACHE_DIR }}", step)
-            self.assertIn("max-size: ${{ env.CCACHE_MAXSIZE }}", step)
-        prefixes = {lane["key-prefix"] for lane in CCACHE_LANES.values()}
-        self.assertEqual(
-            prefixes,
-            {re.search(r"key-prefix: (.+)\n", step).group(1) for step in setups},
-        )
-        extras = {lane["extra-restore-keys"] for lane in CCACHE_LANES.values()}
-        found_extras = set()
-        for step in setups:
-            match = re.search(r"extra-restore-keys: (.+)\n", step)
-            found_extras.add(match.group(1) if match else None)
-        self.assertEqual(extras, found_extras)
+            self.assertEqual("${{ env.CCACHE_DIR }}", step_input(step, "cache-dir"), job)
+            self.assertEqual("${{ env.CCACHE_MAXSIZE }}", step_input(step, "max-size"), job)
+            self.assertEqual(lane["key-prefix"], step_input(step, "key-prefix"), job)
+            self.assertEqual(
+                lane["extra-restore-keys"], step_input(step, "extra-restore-keys"), job
+            )
 
     def test_every_lane_reports_stats_under_its_old_heading(self) -> None:
-        reports = workflow_steps(self.workflow, "Report ccache stats")
-        self.assertEqual(len(CCACHE_LANES), len(reports))
-        for step in reports:
+        reports = steps_by_job(self.workflow, "Report ccache stats")
+        self.assertEqual(set(CCACHE_LANES), set(reports))
+        for job, lane in CCACHE_LANES.items():
+            self.assertEqual(1, len(reports[job]), job)
+            step = reports[job][0]
             self.assertIn("if: always()", step)
             self.assertIn("uses: ./.github/actions/ccache-stats", step)
-        self.assertEqual(
-            {lane["label"] for lane in CCACHE_LANES.values()},
-            {re.search(r"label: (.+)\n", step).group(1) for step in reports},
-        )
+            self.assertEqual(lane["label"], step_input(step, "label"), job)
 
     def test_no_lane_keeps_its_own_copy_of_the_scaffolding(self) -> None:
         self.assertNotIn("ccache --zero-stats", self.workflow)
@@ -280,10 +302,18 @@ class AptRetryScriptTests(unittest.TestCase):
             self.workflow.index("uses: ./.github/actions/checkout-llama-ref\n", self.workflow.index("build-linux-hip:")),
         )
 
-    def test_container_step_still_installs_noninteractively(self) -> None:
-        hip_deps = workflow_steps(self.workflow, "Install build deps")[-1]
-        self.assertIn("DEBIAN_FRONTEND: noninteractive", hip_deps)
-        self.assertIn("apt_get_install build-essential binutils ccache", hip_deps)
+    def test_container_step_installs_noninteractively_without_exporting_it(self) -> None:
+        hip_deps = steps_by_job(self.workflow, "Install build deps")["build-linux-hip"][0]
+        self.assertEqual(
+            [HIP_APT_INSTALL],
+            [line.strip() for line in hip_deps.splitlines() if "DEBIAN_FRONTEND" in line],
+        )
+        self.assertIn("python3 -m pip install --upgrade cmake", hip_deps)
+
+    def test_the_hosted_linux_lane_sets_no_apt_frontend(self) -> None:
+        linux_deps = steps_by_job(self.workflow, "Install build deps")["build-linux"][0]
+        self.assertNotIn("DEBIAN_FRONTEND", linux_deps)
+        self.assertNotIn("DEBIAN_FRONTEND", APT_RETRY.read_text())
 
 
 class UbuntuSourcesTemplateTests(unittest.TestCase):

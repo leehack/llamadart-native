@@ -612,11 +612,9 @@ jobs:
           expected_commit: ${{ needs.resolve-tag.outputs.llama_cpp_commit }}
           github_token: ${{ github.token }}
       - name: Install build deps
-        env:
-          DEBIAN_FRONTEND: noninteractive
         run: |
           . tools/apt_retry.sh
-          apt_get_install build-essential binutils ccache ninja-build pkg-config python3 python3-pip rocblas-dev hipblas-dev
+          DEBIAN_FRONTEND=noninteractive apt_get_install build-essential binutils ccache ninja-build pkg-config python3 python3-pip rocblas-dev hipblas-dev
           python3 -m pip install --upgrade cmake
           cmake --version
       - name: Set up ccache
