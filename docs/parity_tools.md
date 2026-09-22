@@ -37,7 +37,15 @@ v0.4.1 v0.4.1 b29c606e28a01b1bc8c1351026a0fa6e616bf6c4
 When `llama_cpp_commit` is absent the manifest does not pin the upstream source
 at all. `b9873`, the release the
 [leehack/llamadart#274](https://github.com/leehack/llamadart/issues/274) run
-consumed, is one of those:
+consumed, is one of those. The native tag's prefix is the upstream ref by policy
+(`docs/release_version_policy.md`), so resolving that ref at `ggml-org/llama.cpp`
+recovers a commit.
+
+Ask for the peeled ref `refs/tags/<ref>^{}`, not `refs/tags/<ref>`. Upstream
+carries both tag kinds: a build-number tag is lightweight and has no peeled ref,
+so its plain line is already the commit, while a version tag is annotated and
+its plain line is the tag object's SHA, which is not a commit and matches
+nothing in step 5.
 
 ```console
 $ GH_HOST=github.com gh release download b9873 --repo leehack/llamadart-native \
@@ -45,14 +53,19 @@ $ GH_HOST=github.com gh release download b9873 --repo leehack/llamadart-native \
 $ python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d["tag"], d.get("llama_cpp_tag","<absent>"), d.get("llama_cpp_commit","<absent>"))' \
     /tmp/llamadart-native-b9873/assets.json
 b9873 <absent> <absent>
-$ git ls-remote --tags https://github.com/ggml-org/llama.cpp.git refs/tags/b9873
+$ git ls-remote https://github.com/ggml-org/llama.cpp.git 'refs/tags/b9873' 'refs/tags/b9873^{}'
 a4107133a634250c8c9d888bc0bc8520dcfd6105	refs/tags/b9873
+$ git ls-remote https://github.com/ggml-org/llama.cpp.git 'refs/tags/v0.4.1' 'refs/tags/v0.4.1^{}'
+29aaf1c27faa48292357cea2120d94114a545006	refs/tags/v0.4.1
+b29c606e28a01b1bc8c1351026a0fa6e616bf6c4	refs/tags/v0.4.1^{}
 ```
 
-The native tag's prefix is the upstream ref by policy
-(`docs/release_version_policy.md`), so resolving that ref at `ggml-org/llama.cpp`
-recovers a commit. Record that the commit came from a tag lookup rather than
-from the manifest: a tag can be moved, a recorded SHA cannot.
+`b9873` prints one line and it is the commit. `v0.4.1` prints two, and only the
+`^{}` line is the commit; `29aaf1c2` is the tag object. Either way the commit is
+what step 2 checks out, so record the `git rev-parse HEAD` that step 2 prints
+rather than transcribing a line from here. Record also that the commit came from
+a tag lookup rather than from the manifest: a tag can be moved, a recorded SHA
+cannot.
 
 Use the native tag your `llamadart` checkout actually consumes, not the latest
 release.
@@ -99,10 +112,12 @@ something to opt out of.
 
 **Host and network isolation.** Turning the server on exposes two upstream
 options that default to `ON` and put content from outside the pinned commit
-into the binary. `LLAMA_OPENSSL` (upstream `CMakeLists.txt:144`) makes the
-build search for OpenSSL and link it when found, which on macOS means the
-host's Homebrew `libssl`/`libcrypto` by absolute path; this repository's root
-`CMakeLists.txt:86` forces it off for the release build.
+into the binary. A third, `GGML_OPENMP`, is present whether or not the server
+is on and is handled separately below. `LLAMA_OPENSSL` (upstream
+`CMakeLists.txt:144`) makes the build search for OpenSSL and link it when
+found, which on macOS means the host's Homebrew `libssl`/`libcrypto` by
+absolute path; this repository's root `CMakeLists.txt:86` forces it off for the
+release build.
 `LLAMA_USE_PREBUILT_UI` (upstream `CMakeLists.txt:138`) downloads WebUI assets
 from Hugging Face during the build, and a depth-1 clone reports build number 1,
 so the pinned `b1` path misses and the download falls back to `latest`. Set both
@@ -116,6 +131,37 @@ subdirectory, so no combination of `tools/build.py` arguments can produce these
 binaries. Do not copy `tools/build.py`'s cache variables across wholesale; the
 wrapper's overrides exist to shape a shipped runtime library, not a tool.
 
+**Host-discovered OpenMP.** `GGML_OPENMP` defaults `ON` upstream
+(`ggml/CMakeLists.txt:247`) and is then resolved by `find_package(OpenMP)`
+(`ggml/src/CMakeLists.txt:339-348`), so whether `ggml-base` and the CPU backend
+are compiled with `GGML_USE_OPENMP` depends on the machine. Unlike the two flags
+above, do not simply force it `OFF`: the macOS presets do not pin it either
+(only `linux-base` sets `ON` and `android-base` sets `OFF`), so a macOS release
+build resolves it the same host-dependent way, and a forced `OFF` would match
+the release only on hosts that also failed to find OpenMP. For Linux and Android
+pass the preset's value; on macOS leave it at the default and record what the
+configure resolved it to. `GGML_OPENMP_ENABLED` is the resolved answer, and the
+`GGML_OPENMP` cache entry alone is not:
+
+```console
+... (in the step 3 configure output)
+-- Could NOT find OpenMP_C (missing: OpenMP_C_FLAGS OpenMP_C_LIB_NAMES)
+-- Could NOT find OpenMP_CXX (missing: OpenMP_CXX_FLAGS OpenMP_CXX_LIB_NAMES)
+-- Could NOT find OpenMP (missing: OpenMP_C_FOUND OpenMP_CXX_FOUND)
+CMake Warning at ggml/src/CMakeLists.txt:347 (message):
+  OpenMP not found
+...
+$ grep GGML_OPENMP build/llama-tools-v0.4.1-macos-arm64-metal/CMakeCache.txt
+GGML_OPENMP:BOOL=ON
+GGML_OPENMP_FETCH:BOOL=OFF
+GGML_OPENMP_ENABLED:INTERNAL=OFF
+```
+
+On the verified host the search failed and OpenMP was not compiled in. That is
+the usual outcome for AppleClang, which exposes no OpenMP flags unless a runtime
+is configured for it, but it is a property of the host rather than of the pinned
+commit, so state the value alongside any number.
+
 **Compute parity.** Mirror `GGML_NATIVE=OFF`. Release artifacts are built with
 it off (`CMakeLists.txt:87`, and `base` in `CMakePresets.json`), so the shipped
 runtime is never compiled for instructions found by probing the build host.
@@ -124,6 +170,15 @@ unset (upstream `ggml/CMakeLists.txt:105-110`), so a tool left at the default is
 compiled for the host it happens to be built on, and its throughput is not
 comparable. The remaining flags below mirror `macos-arm64-full` and its
 `macos-base` / `apple-base` / `base` ancestors in `CMakePresets.json`.
+
+One of them, `GGML_METAL_USE_BF16=OFF`, is inert: nothing at `b29c606e` declares
+that option, so it lands as a dead cache entry on both sides and switches
+nothing off. It is carried here only because the preset carries it.
+
+```console
+$ grep GGML_METAL_USE_BF16 build/llama-tools-v0.4.1-macos-arm64-metal/CMakeCache.txt
+GGML_METAL_USE_BF16:UNINITIALIZED=OFF
+```
 
 One parity difference the flags do not remove: `apple-base` sets
 `LLAMADART_CONSOLIDATE=ON`, and root `CMakeLists.txt:62-65` then forces
@@ -201,6 +256,13 @@ platform/arch tokens as the release assets (`macos`, `linux`, `windows`,
 `android`, `ios`; `arm64`, `x64`, `x86_64`). The verified build above is
 `build/llama-tools-v0.4.1-macos-arm64-metal`.
 
+`<backend>` is the ggml backend the measurement exercises, spelled as the suffix
+of its `ggml-<backend>` module: `metal`, `cpu`, `vulkan`, `opencl`, `cuda`,
+`blas`, or `hip`. Those are the backends this repository builds;
+`docs/platform_backend_strategy.md` says which of them each target ships. Name
+one, not the set — a bundle usually carries several, and the token is there to
+record which one produced the numbers.
+
 The build tree is where the name has to go, because the tool is not
 relocatable. `llama-cli` resolves `libllama-cli-impl`, `libllama-server-impl`,
 `libllama`, `libllama-common`, `libmtmd`, `libggml`, `libggml-base`,
@@ -219,8 +281,8 @@ Run the tool in place, and keep the build directory for as long as the numbers
 it produced are being cited.
 
 An investigation citing a measurement should record the native release tag, the
-`llama_cpp_commit`, and this directory name together. That is what the
-`llamadart` speculative-decoding work in
+`llama_cpp_commit`, this directory name, and the resolved `GGML_OPENMP_ENABLED`
+together. That is what the `llamadart` speculative-decoding work in
 [leehack/llamadart#274](https://github.com/leehack/llamadart/issues/274) could
 not do, because it had to fall back to a nearby local build from a different
 upstream line.
@@ -236,10 +298,12 @@ For an unverified target, take the backend cache variables from that target's
 preset in `CMakePresets.json` together with everything that preset inherits —
 `base` carries `BUILD_SHARED_LIBS` and `GGML_BACKEND_DL`, which the leaf presets
 do not repeat, and root `CMakeLists.txt:62-70` forces both regardless of the
-preset value. Keep `GGML_NATIVE=OFF` and the gating and isolation flags from
-step 3, and treat the result as a starting point rather than a recipe this
-repository has executed. Cross-compiled targets additionally need a runnable
-host, which is not a concern for the macOS recipe above.
+preset value. `GGML_OPENMP` is one of the variables to take from the preset:
+`linux-base` sets it `ON`, `android-base` sets it `OFF`. Keep `GGML_NATIVE=OFF`
+and the gating and isolation flags from step 3, and treat the result as a
+starting point rather than a recipe this repository has executed.
+Cross-compiled targets additionally need a runnable host, which is not a
+concern for the macOS recipe above.
 
 `llama-server` is not covered here. It is configured by the same step — that is
 what `LLAMA_BUILD_SERVER=ON` turns on — but building and validating it for
