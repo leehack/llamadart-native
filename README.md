@@ -249,8 +249,13 @@ give the TTS task exclusive access to both contexts until the task reaches a
 terminal state or is reset.
 
 The upstream API does not currently expose completed PCM incrementally, so the
-wrapper's step API is cancellable between prompt batches and generation frames
-but is not a real-time audio stream. Public Dart support should remain
+wrapper's step API is not a real-time audio stream. A step sees a cancel when it
+starts and when its frame generation or audio output returns. Qwen3-TTS decodes
+audio in 72-frame windows, inside the step that fills a window and the step that
+ends speech. Install `llama_dart_tts_eval_callback` as the mtmd context's
+`cb_eval` to stop that decode at its next chunk boundary, and attach a
+caller-owned cancel byte with `llama_dart_tts_set_cancel_flag` to cancel from a
+thread that must not touch the task. Public Dart support should remain
 experimental and capability-gated until artifact and platform validation is
 complete.
 
@@ -264,7 +269,7 @@ cmake -S . -B build/tts-smoke -G Ninja \
   -DLLAMADART_BUILD_TTS_SMOKE=ON
 cmake --build build/tts-smoke --target \
   llamadart_speculative_api_test llamadart_tts_api_test \
-  llamadart_mtmd_compat_test llamadart_tts_smoke
+  llamadart_tts_eval_test llamadart_mtmd_compat_test llamadart_tts_smoke
 ctest --test-dir build/tts-smoke --output-on-failure
 build/tts-smoke/llamadart_tts_smoke \
   /path/to/Qwen3-TTS-model.gguf \
@@ -276,6 +281,11 @@ build/tts-smoke/llamadart_tts_smoke \
 
 The smoke checks capability metadata, cancellation/reset, two consecutive
 syntheses, 24 kHz mono PCM metadata, finite/non-silent output, and WAV writing.
+It also checks the eval callback: uncancelled PCM stays byte-identical, frame
+steps stay whole, no chunk of the final decode exceeds a quarter of it, and a
+cancel issued a quarter of the way into a decode step, through
+`llama_dart_tts_cancel` or a cancel flag, makes that step return `CANCELLED`
+within a third of the decode's duration.
 Omit `--gpu` for a CPU-only run. An optional speaker-reference audio path may
 appear before the final `--gpu` flag.
 

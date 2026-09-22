@@ -2,6 +2,7 @@
 #include "llama_dart_mtp_internal.h"
 #include "llama_dart_mtmd_compat.h"
 #include "llama_dart_speculative_compat.h"
+#include "llama_dart_tts_eval_internal.h"
 
 #include "common.h"
 #include "llama-ext.h"
@@ -77,6 +78,7 @@ struct llama_dart_tts {
   llama_sampler *sampler = nullptr;
   mtmd_bitmap *speaker = nullptr;
   std::atomic<bool> cancel_requested{false};
+  const int8_t *cancel_flag = nullptr;
   llama_dart_tts_state state = LLAMA_DART_TTS_STATE_IDLE;
   llama_seq_id sequence_id = 0;
   bool owns_sequence = false;
@@ -93,6 +95,42 @@ struct llama_dart_tts {
 };
 
 static void llama_dart_tts_release_task_resources(llama_dart_tts *tts);
+
+static bool llama_dart_tts_flag_raised(const int8_t *flag) {
+  using atomic_flag_byte = std::atomic<int8_t>;
+  static_assert(sizeof(atomic_flag_byte) == sizeof(int8_t) &&
+                    alignof(atomic_flag_byte) == alignof(int8_t) &&
+                    atomic_flag_byte::is_always_lock_free,
+                "a caller-owned cancel byte must be readable atomically");
+  return reinterpret_cast<const atomic_flag_byte *>(flag)->load(
+             std::memory_order_relaxed) != 0;
+}
+
+static bool llama_dart_tts_cancelled(const llama_dart_tts *tts) {
+  return tts->cancel_requested.load(std::memory_order_acquire) ||
+         (tts->cancel_flag != nullptr &&
+          llama_dart_tts_flag_raised(tts->cancel_flag));
+}
+
+struct llama_dart_tts_eval_scope;
+
+static thread_local llama_dart_tts_eval_scope *llama_dart_tts_active_eval =
+    nullptr;
+
+struct llama_dart_tts_eval_scope {
+  const llama_dart_tts *tts;
+  llama_dart_tts_eval_chunker chunker;
+  llama_dart_tts_eval_scope *previous;
+
+  explicit llama_dart_tts_eval_scope(const llama_dart_tts *task)
+      : tts(task), previous(llama_dart_tts_active_eval) {
+    llama_dart_tts_active_eval = this;
+  }
+  ~llama_dart_tts_eval_scope() { llama_dart_tts_active_eval = previous; }
+  llama_dart_tts_eval_scope(const llama_dart_tts_eval_scope &) = delete;
+  llama_dart_tts_eval_scope &
+  operator=(const llama_dart_tts_eval_scope &) = delete;
+};
 
 static llama_dart_tts_status llama_dart_tts_fail(
     llama_dart_tts *tts, llama_dart_tts_status status, const char *message) {
@@ -131,6 +169,15 @@ static void llama_dart_tts_release_task_resources(llama_dart_tts *tts) {
     llama_memory_seq_rm(llama_get_memory(tts->llama), tts->sequence_id, 0, -1);
     tts->owns_sequence = false;
   }
+  tts->cancel_flag = nullptr;
+}
+
+static llama_dart_tts_status llama_dart_tts_mark_cancelled(
+    llama_dart_tts *tts) {
+  tts->state = LLAMA_DART_TTS_STATE_CANCELLED;
+  tts->error = "TTS task cancelled";
+  llama_dart_tts_release_task_resources(tts);
+  return LLAMA_DART_TTS_STATUS_CANCELLED;
 }
 
 static llama_dart_tts_model_type llama_dart_tts_model_type_from_upstream(
@@ -199,8 +246,12 @@ static llama_dart_tts_status llama_dart_tts_finish_output(
   const char *data = nullptr;
   size_t data_len = 0;
   int64_t sample_count = 0;
-  if (mtmd_helper_gen_audio_get_output(tts->generator, &sample_rate, &data,
-                                       &data_len, &sample_count) != 0) {
+  const int32_t output_status = mtmd_helper_gen_audio_get_output(
+      tts->generator, &sample_rate, &data, &data_len, &sample_count);
+  if (llama_dart_tts_cancelled(tts)) {
+    return llama_dart_tts_mark_cancelled(tts);
+  }
+  if (output_status != 0) {
     return llama_dart_tts_fail(tts, LLAMA_DART_TTS_STATUS_UPSTREAM_ERROR,
                                "audio output conversion failed");
   }
@@ -883,13 +934,12 @@ LLAMADART_API enum llama_dart_tts_status llama_dart_tts_step(
   }
   const bool active = tts->state == LLAMA_DART_TTS_STATE_PROCESSING_PROMPT ||
                       tts->state == LLAMA_DART_TTS_STATE_GENERATING;
-  if (active && tts->cancel_requested.load(std::memory_order_acquire)) {
-    tts->state = LLAMA_DART_TTS_STATE_CANCELLED;
-    tts->error = "TTS task cancelled";
-    llama_dart_tts_release_task_resources(tts);
+  if (active && llama_dart_tts_cancelled(tts)) {
+    const auto status = llama_dart_tts_mark_cancelled(tts);
     llama_dart_tts_write_progress(tts, out_progress);
-    return LLAMA_DART_TTS_STATUS_CANCELLED;
+    return status;
   }
+  llama_dart_tts_eval_scope eval_scope(tts);
   if (tts->state == LLAMA_DART_TTS_STATE_PROCESSING_PROMPT) {
     const int32_t remaining = mtmd_helper_gen_audio_step_prompt(
         tts->generator, tts->prompt_batch_size);
@@ -940,10 +990,17 @@ LLAMADART_API enum llama_dart_tts_status llama_dart_tts_step(
     const float *state = llama_get_embeddings_ith(tts->llama, -1);
     const float *next_state = nullptr;
     bool stop = false;
-    if (state == nullptr ||
+    const bool generated =
+        state != nullptr &&
         llama_dart_tts_step_gen(&mtmd_helper_gen_audio_step_gen,
                                 tts->generator, sampled, state, &next_state,
-                                &stop) != 0) {
+                                &stop) == 0;
+    if (llama_dart_tts_cancelled(tts)) {
+      const auto status = llama_dart_tts_mark_cancelled(tts);
+      llama_dart_tts_write_progress(tts, out_progress);
+      return status;
+    }
+    if (!generated) {
       const auto status = llama_dart_tts_fail(
           tts, LLAMA_DART_TTS_STATUS_UPSTREAM_ERROR,
           "TTS generation step failed");
@@ -971,6 +1028,32 @@ LLAMADART_API void llama_dart_tts_cancel(struct llama_dart_tts *tts) {
   if (tts != nullptr) {
     tts->cancel_requested.store(true, std::memory_order_release);
   }
+}
+
+LLAMADART_API enum llama_dart_tts_status
+llama_dart_tts_set_cancel_flag(struct llama_dart_tts *tts,
+                               const int8_t *flag) {
+  if (tts == nullptr || flag == nullptr) {
+    return LLAMA_DART_TTS_STATUS_INVALID_ARGUMENT;
+  }
+  if (tts->state != LLAMA_DART_TTS_STATE_PROCESSING_PROMPT &&
+      tts->state != LLAMA_DART_TTS_STATE_GENERATING) {
+    return llama_dart_tts_error(tts, LLAMA_DART_TTS_STATUS_INVALID_STATE,
+                                "no TTS task is active");
+  }
+  tts->cancel_flag = flag;
+  return LLAMA_DART_TTS_STATUS_OK;
+}
+
+LLAMADART_API bool llama_dart_tts_eval_callback(struct ggml_tensor *tensor,
+                                                bool ask, void *user_data) {
+  (void)user_data;
+  llama_dart_tts_eval_scope *scope = llama_dart_tts_active_eval;
+  if (scope == nullptr) {
+    return !ask;
+  }
+  return llama_dart_tts_eval_answer(&scope->chunker, tensor, ask,
+                                    llama_dart_tts_cancelled(scope->tts));
 }
 
 LLAMADART_API enum llama_dart_tts_status

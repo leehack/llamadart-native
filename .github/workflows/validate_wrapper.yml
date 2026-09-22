@@ -261,6 +261,7 @@ jobs:
           cmake --build build/wrapper-contract --target
           llamadart_speculative_api_test
           llamadart_tts_api_test
+          llamadart_tts_eval_test
           llamadart_mtmd_compat_test
           llamadart_tts_smoke
       - name: Run wrapper contract tests
