@@ -5,8 +5,6 @@
 #include <atomic>
 #include <cstdint>
 
-// Scheduler work between chunk boundaries inside one TTS step: multiply-adds
-// for MUL_MAT, elements for other computed nodes.
 static constexpr double llama_dart_tts_eval_budget = 2.5e9;
 
 static inline bool llama_dart_tts_cancel_observed(std::atomic<bool> *latched,
@@ -51,8 +49,6 @@ static inline double llama_dart_tts_eval_node_work(const ggml_tensor *node) {
   }
 }
 
-// Answers one ggml_backend_sched_eval_callback query for a step in progress.
-//
 // Budget boundaries fall only after a MUL_MAT node. A boundary splits any
 // fusion that spans it, which can change the output; the CPU and Metal
 // backends fuse nothing that continues past a MUL_MAT.

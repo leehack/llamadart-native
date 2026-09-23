@@ -222,8 +222,6 @@ struct scheduled_graph {
   }
 };
 
-// The budget first overflows on the first RMS_NORM, so the first boundary
-// moves to the second MUL_MAT; every later MUL_MAT then ends a chunk.
 constexpr double kSchedulerBudget = kMatMulWork + 0.5 * kRowWork;
 
 void test_chunked_compute_matches_unchunked(scheduled_graph &g) {

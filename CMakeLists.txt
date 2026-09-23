@@ -228,7 +228,6 @@ if (LLAMADART_BUILD_TESTS)
     target_compile_features(llamadart_tts_eval_test PRIVATE cxx_std_17)
     target_include_directories(llamadart_tts_eval_test PRIVATE src)
     target_link_libraries(llamadart_tts_eval_test PRIVATE ggml)
-    # Beside the ggml backend modules that ggml_backend_load_all() finds.
     set_target_properties(llamadart_tts_eval_test PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
     add_test(NAME llamadart_tts_eval_test COMMAND llamadart_tts_eval_test)
