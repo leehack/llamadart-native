@@ -285,7 +285,9 @@ It also checks the eval callback: uncancelled PCM stays byte-identical, frame
 steps stay whole, no chunk of the final decode exceeds a quarter of it, and a
 cancel issued a quarter of the way into a decode step, through
 `llama_dart_tts_cancel` or a cancel flag, makes that step return `CANCELLED`
-within a third of the decode's duration.
+within a third of the decode's duration. That holds at the end-of-speech and
+frame-72 decodes even when the flag returns to zero right after the decode
+breaks, and no step returns `OK` after a break.
 Omit `--gpu` for a CPU-only run. An optional speaker-reference audio path may
 appear before the final `--gpu` flag.
 

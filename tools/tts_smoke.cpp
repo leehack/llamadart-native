@@ -25,14 +25,32 @@ static const char *const long_text =
     "enough that the decoder buffers a full window of codec frames before the "
     "end, so the flush runs in the middle of synthesis.";
 
+static constexpr int qwen3_window_frames = 72;
+
 static std::vector<steady_clock::time_point> chunk_ends;
+static int task_breaks = 0;
+static std::atomic<int8_t> *lower_after_break = nullptr;
 
 static bool recording_eval_callback(struct ggml_tensor *tensor, bool ask, void *user_data) {
     const bool answer = llama_dart_tts_eval_callback(tensor, ask, user_data);
     if (!ask) {
         chunk_ends.push_back(steady_clock::now());
+        if (!answer) {
+            ++task_breaks;
+            if (lower_after_break != nullptr) {
+                lower_after_break->store(0);
+            }
+        }
     }
     return answer;
+}
+
+static bool succeeded_after_break(int step, llama_dart_tts_status status) {
+    if (task_breaks == 0 || status != LLAMA_DART_TTS_STATUS_OK) {
+        return false;
+    }
+    std::fprintf(stderr, "step %d returned OK after %d decode break(s)\n", step, task_breaks);
+    return true;
 }
 
 struct step_trace {
@@ -116,7 +134,9 @@ static bool synthesize(llama_dart_tts *tts,
         std::fprintf(stderr, "failed to start TTS: %s\n", llama_dart_tts_last_error(tts));
         return false;
     }
+    task_breaks = 0;
     progress->struct_size = sizeof(*progress);
+    int step = 0;
     do {
         chunk_ends.clear();
         const auto started = steady_clock::now();
@@ -132,6 +152,9 @@ static bool synthesize(llama_dart_tts *tts,
             }
             trace->push_back({elapsed_ms(started, returned),
                               static_cast<int>(chunk_ends.size()) - 1, longest});
+        }
+        if (succeeded_after_break(step++, status)) {
+            return false;
         }
         if (status != LLAMA_DART_TTS_STATUS_OK) {
             std::fprintf(stderr, "TTS failed: %s\n", llama_dart_tts_last_error(tts));
@@ -185,6 +208,7 @@ static bool synthesize(llama_dart_tts *tts,
 static bool cancel_during_long_step(llama_dart_tts *tts,
                                     llama_dart_tts_request *request,
                                     std::atomic<int8_t> *flag,
+                                    bool lower_flag_after_break,
                                     double cancel_after_ms,
                                     double return_within_ms,
                                     double *cancel_to_return_ms,
@@ -202,6 +226,8 @@ static bool cancel_during_long_step(llama_dart_tts *tts,
         std::fprintf(stderr, "failed to attach cancel flag\n");
         return false;
     }
+    task_breaks = 0;
+    lower_after_break = lower_flag_after_break ? flag : nullptr;
     std::atomic<int> running_step{-1};
     std::atomic<int> running_after_frames{0};
     std::atomic<int64_t> running_since{0};
@@ -235,6 +261,7 @@ static bool cancel_during_long_step(llama_dart_tts *tts,
     llama_dart_tts_status status = LLAMA_DART_TTS_STATUS_OK;
     int step = 0;
     int64_t returned_at = 0;
+    bool succeeded_after_a_break = false;
     for (;; ++step) {
         const int frames = progress.frames_generated;
         progress.struct_size = sizeof(progress);
@@ -244,6 +271,7 @@ static bool cancel_during_long_step(llama_dart_tts *tts,
         status = llama_dart_tts_step(tts, &progress);
         running_step.store(-1);
         returned_at = since_origin();
+        succeeded_after_a_break = succeeded_after_a_break || succeeded_after_break(step, status);
         if (status != LLAMA_DART_TTS_STATUS_OK ||
             progress.state == LLAMA_DART_TTS_STATE_COMPLETED) {
             break;
@@ -251,6 +279,7 @@ static bool cancel_during_long_step(llama_dart_tts *tts,
     }
     done.store(true);
     canceller.join();
+    lower_after_break = nullptr;
     const bool same_step = cancelled_step.load() == step;
     *cancel_to_return_ms = (returned_at - cancelled_at.load()) / 1000.0;
     *frames_before_cancel = progress.frames_generated;
@@ -261,6 +290,13 @@ static bool cancel_during_long_step(llama_dart_tts *tts,
     if (cancelled_step.load() < 0) {
         std::fprintf(stderr, "no step after a frame ran %.1f ms, so the in-step cancel never fired\n",
                      cancel_after_ms);
+        return false;
+    }
+    if (succeeded_after_a_break) {
+        return false;
+    }
+    if (lower_flag_after_break && task_breaks == 0) {
+        std::fprintf(stderr, "the decode never broke, so the flag was never lowered\n");
         return false;
     }
     if (!same_step || status != LLAMA_DART_TTS_STATUS_CANCELLED ||
@@ -430,16 +466,45 @@ int main(int argc, char **argv) {
 
     double final_cancel_ms = 0.0;
     int final_cancel_frames = 0;
-    if (!cancel_during_long_step(tts.get(), &request, nullptr, decode_ms / 4, decode_ms / 3,
-                                 &final_cancel_ms, &final_cancel_frames)) {
+    if (!cancel_during_long_step(tts.get(), &request, nullptr, false, decode_ms / 4,
+                                 decode_ms / 3, &final_cancel_ms, &final_cancel_frames)) {
         return 1;
     }
     llama_dart_tts_request long_request = request;
     long_request.text = long_text;
     long_request.text_length = std::char_traits<char>::length(long_text);
+
+    double lowered_final_ms = 0.0;
+    int lowered_final_frames = 0;
+    std::atomic<int8_t> lowered_final_flag{0};
+    const bool lowered_final_ok = cancel_during_long_step(
+        tts.get(), &request, &lowered_final_flag, true, decode_ms / 4, decode_ms / 3,
+        &lowered_final_ms, &lowered_final_frames);
+    if (!lowered_final_ok) {
+        std::fprintf(stderr, "end-of-speech probe with the flag lowered after the break failed\n");
+    }
+    double lowered_window_ms = 0.0;
+    int lowered_window_frames = 0;
+    std::atomic<int8_t> lowered_window_flag{0};
+    bool lowered_window_ok = cancel_during_long_step(
+        tts.get(), &long_request, &lowered_window_flag, true, decode_ms / 4, decode_ms / 3,
+        &lowered_window_ms, &lowered_window_frames);
+    if (lowered_window_ok && lowered_window_frames != qwen3_window_frames - 1) {
+        std::fprintf(stderr,
+                     "the lowered-flag cancel landed after %d frames, not in the frame-%d window\n",
+                     lowered_window_frames, qwen3_window_frames);
+        lowered_window_ok = false;
+    }
+    if (!lowered_window_ok) {
+        std::fprintf(stderr, "window probe with the flag lowered after the break failed\n");
+    }
+    if (!lowered_final_ok || !lowered_window_ok) {
+        return 1;
+    }
+
     double window_cancel_ms = 0.0;
     int window_cancel_frames = 0;
-    if (!cancel_during_long_step(tts.get(), &long_request, &cancel_flag, decode_ms / 4,
+    if (!cancel_during_long_step(tts.get(), &long_request, &cancel_flag, false, decode_ms / 4,
                                  decode_ms / 3, &window_cancel_ms, &window_cancel_frames)) {
         return 1;
     }
@@ -464,13 +529,17 @@ int main(int argc, char **argv) {
                 "first_frames=%d second_frames=%d first_rms=%.6f second_rms=%.6f "
                 "decode_ms=%.1f decode_chunks=%d longest_chunk_ms=%.1f "
                 "final_cancel_ms=%.1f final_cancel_frames=%d "
-                "window_cancel_ms=%.1f window_cancel_frames=%d\n",
+                "window_cancel_ms=%.1f window_cancel_frames=%d "
+                "lowered_final_ms=%.1f lowered_final_frames=%d "
+                "lowered_window_ms=%.1f lowered_window_frames=%d\n",
                 use_gpu ? "gpu" : "cpu", static_cast<int>(info.model_type),
                 info.sample_rate, first_pcm.size(),
                 second_pcm.size(), first_progress.frames_generated,
                 second_progress.frames_generated, first_rms, second_rms, decode_ms,
                 first_trace.back().chunk_boundaries + 1, first_trace.back().longest_chunk_ms,
                 final_cancel_ms, final_cancel_frames,
-                window_cancel_ms, window_cancel_frames);
+                window_cancel_ms, window_cancel_frames,
+                lowered_final_ms, lowered_final_frames,
+                lowered_window_ms, lowered_window_frames);
     return 0;
 }

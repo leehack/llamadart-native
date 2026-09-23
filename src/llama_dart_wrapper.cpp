@@ -96,20 +96,9 @@ struct llama_dart_tts {
 
 static void llama_dart_tts_release_task_resources(llama_dart_tts *tts);
 
-static bool llama_dart_tts_flag_raised(const int8_t *flag) {
-  using atomic_flag_byte = std::atomic<int8_t>;
-  static_assert(sizeof(atomic_flag_byte) == sizeof(int8_t) &&
-                    alignof(atomic_flag_byte) == alignof(int8_t) &&
-                    atomic_flag_byte::is_always_lock_free,
-                "a caller-owned cancel byte must be readable atomically");
-  return reinterpret_cast<const atomic_flag_byte *>(flag)->load(
-             std::memory_order_relaxed) != 0;
-}
-
-static bool llama_dart_tts_cancelled(const llama_dart_tts *tts) {
-  return tts->cancel_requested.load(std::memory_order_acquire) ||
-         (tts->cancel_flag != nullptr &&
-          llama_dart_tts_flag_raised(tts->cancel_flag));
+static bool llama_dart_tts_cancelled(llama_dart_tts *tts) {
+  return llama_dart_tts_cancel_observed(&tts->cancel_requested,
+                                        tts->cancel_flag);
 }
 
 struct llama_dart_tts_eval_scope;
@@ -118,11 +107,11 @@ static thread_local llama_dart_tts_eval_scope *llama_dart_tts_active_eval =
     nullptr;
 
 struct llama_dart_tts_eval_scope {
-  const llama_dart_tts *tts;
+  llama_dart_tts *tts;
   llama_dart_tts_eval_chunker chunker;
   llama_dart_tts_eval_scope *previous;
 
-  explicit llama_dart_tts_eval_scope(const llama_dart_tts *task)
+  explicit llama_dart_tts_eval_scope(llama_dart_tts *task)
       : tts(task), previous(llama_dart_tts_active_eval) {
     llama_dart_tts_active_eval = this;
   }

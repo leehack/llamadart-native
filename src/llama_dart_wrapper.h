@@ -188,10 +188,11 @@ LLAMADART_API enum llama_dart_tts_status llama_dart_tts_step(
 LLAMADART_API void llama_dart_tts_cancel(struct llama_dart_tts * tts);
 
 // Attaches a caller-owned cancel byte to the active task. Any thread may set
-// *flag to nonzero; steps then behave as after llama_dart_tts_cancel. The task
-// reads *flag only inside llama_dart_tts_step and drops it when the task ends,
-// restarts, is reset, or is freed; *flag must stay readable until then.
-// Returns INVALID_STATE when no task is active.
+// *flag to nonzero. The task reads *flag only inside llama_dart_tts_step. Once
+// a read sees nonzero, the task behaves as after llama_dart_tts_cancel, even if
+// *flag returns to zero. The task drops the flag when it ends, is reset, or is
+// freed; *flag must stay readable until then. Returns INVALID_STATE when no
+// task is active.
 LLAMADART_API enum llama_dart_tts_status llama_dart_tts_set_cancel_flag(
     struct llama_dart_tts * tts,
     const int8_t * flag);

@@ -2,9 +2,31 @@
 
 #include "ggml.h"
 
+#include <atomic>
+#include <cstdint>
+
 // Scheduler work between chunk boundaries inside one TTS step: multiply-adds
 // for MUL_MAT, elements for other computed nodes.
 static constexpr double llama_dart_tts_eval_budget = 2.5e9;
+
+static inline bool llama_dart_tts_cancel_observed(std::atomic<bool> *latched,
+                                                  const int8_t *flag) {
+  using atomic_flag_byte = std::atomic<int8_t>;
+  static_assert(sizeof(atomic_flag_byte) == sizeof(int8_t) &&
+                    alignof(atomic_flag_byte) == alignof(int8_t) &&
+                    atomic_flag_byte::is_always_lock_free,
+                "a caller-owned cancel byte must be readable atomically");
+  if (latched->load(std::memory_order_acquire)) {
+    return true;
+  }
+  if (flag == nullptr ||
+      reinterpret_cast<const atomic_flag_byte *>(flag)->load(
+          std::memory_order_relaxed) == 0) {
+    return false;
+  }
+  latched->store(true, std::memory_order_release);
+  return true;
+}
 
 struct llama_dart_tts_eval_chunker {
   double budget = llama_dart_tts_eval_budget;

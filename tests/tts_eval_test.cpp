@@ -8,7 +8,9 @@
 #include "ggml-backend.h"
 #include "ggml.h"
 
+#include <atomic>
 #include <cassert>
+#include <cstdint>
 #include <cstring>
 #include <vector>
 
@@ -81,6 +83,24 @@ void test_cancel_waits_for_first_boundary(ggml_context *ctx) {
   assert(llama_dart_tts_eval_answer(&chunker, sum, true, true));
   assert(!llama_dart_tts_eval_answer(&chunker, idle_sum, true, true));
   assert(!llama_dart_tts_eval_answer(&chunker, sum, true, false));
+}
+
+void test_cancel_flag_latches() {
+  std::atomic<bool> latched{false};
+  std::atomic<int8_t> flag{0};
+  const int8_t *byte = reinterpret_cast<const int8_t *>(&flag);
+  assert(!llama_dart_tts_cancel_observed(&latched, nullptr));
+  assert(!llama_dart_tts_cancel_observed(&latched, byte));
+  assert(!latched.load());
+  flag.store(1);
+  assert(llama_dart_tts_cancel_observed(&latched, byte));
+  flag.store(0);
+  assert(llama_dart_tts_cancel_observed(&latched, byte));
+  assert(llama_dart_tts_cancel_observed(&latched, nullptr));
+
+  std::atomic<bool> requested{true};
+  assert(llama_dart_tts_cancel_observed(&requested, nullptr));
+  assert(llama_dart_tts_cancel_observed(&requested, byte));
 }
 
 struct probe {
@@ -253,6 +273,7 @@ int main() {
   test_node_work(ctx);
   test_boundaries_follow_budget_and_mul_mat(ctx);
   test_cancel_waits_for_first_boundary(ctx);
+  test_cancel_flag_latches();
   ggml_free(ctx);
 
   scheduled_graph graph;
