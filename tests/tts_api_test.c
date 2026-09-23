@@ -51,6 +51,14 @@ int main(void) {
     assert(strcmp(llama_dart_tts_last_error(NULL), "invalid TTS handle") == 0);
 
     llama_dart_tts_cancel(NULL);
+    const int8_t flag = 1;
+    assert(llama_dart_tts_set_cancel_flag(NULL, &flag) == LLAMA_DART_TTS_STATUS_INVALID_ARGUMENT);
+
+    struct ggml_tensor node;
+    memset(&node, 0, sizeof(node));
+    assert(!llama_dart_tts_eval_callback(&node, true, NULL));
+    assert(llama_dart_tts_eval_callback(&node, false, NULL));
+
     llama_dart_tts_free(NULL);
     return 0;
 }

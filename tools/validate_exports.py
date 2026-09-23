@@ -19,6 +19,8 @@ DEFAULT_REQUIRED_SYMBOLS = [
     "llama_dart_tts_start",
     "llama_dart_tts_step",
     "llama_dart_tts_cancel",
+    "llama_dart_tts_set_cancel_flag",
+    "llama_dart_tts_eval_callback",
     "llama_dart_tts_reset",
     "llama_dart_tts_get_output_info",
     "llama_dart_tts_read_pcm",

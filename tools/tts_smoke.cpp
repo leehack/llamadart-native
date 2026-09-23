@@ -4,6 +4,8 @@
 #include "mtmd.h"
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -13,7 +15,53 @@
 #include <limits>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
+
+using steady_clock = std::chrono::steady_clock;
+
+static const char *const long_text =
+    "Hello from Llama Dart. This sentence is here only to make the speech long "
+    "enough that the decoder buffers a full window of codec frames before the "
+    "end, so the flush runs in the middle of synthesis.";
+
+static constexpr int qwen3_window_frames = 72;
+
+static std::vector<steady_clock::time_point> chunk_ends;
+static int task_breaks = 0;
+static std::atomic<int8_t> *lower_after_break = nullptr;
+
+static bool recording_eval_callback(struct ggml_tensor *tensor, bool ask, void *user_data) {
+    const bool answer = llama_dart_tts_eval_callback(tensor, ask, user_data);
+    if (!ask) {
+        chunk_ends.push_back(steady_clock::now());
+        if (!answer) {
+            ++task_breaks;
+            if (lower_after_break != nullptr) {
+                lower_after_break->store(0);
+            }
+        }
+    }
+    return answer;
+}
+
+static bool succeeded_after_break(int step, llama_dart_tts_status status) {
+    if (task_breaks == 0 || status != LLAMA_DART_TTS_STATUS_OK) {
+        return false;
+    }
+    std::fprintf(stderr, "step %d returned OK after %d decode break(s)\n", step, task_breaks);
+    return true;
+}
+
+struct step_trace {
+    double ms;
+    int chunk_boundaries;
+    double longest_chunk_ms;
+};
+
+static double elapsed_ms(steady_clock::time_point from, steady_clock::time_point to) {
+    return std::chrono::duration<double, std::milli>(to - from).count();
+}
 
 static void write_u16(std::ofstream &out, uint16_t value) {
     const char bytes[] = {static_cast<char>(value), static_cast<char>(value >> 8)};
@@ -80,14 +128,34 @@ static bool synthesize(llama_dart_tts *tts,
                        const llama_dart_tts_info &info,
                        std::vector<float> *pcm,
                        llama_dart_tts_progress *progress,
-                       double *rms) {
+                       double *rms,
+                       std::vector<step_trace> *trace = nullptr) {
     if (llama_dart_tts_start(tts, request) != LLAMA_DART_TTS_STATUS_OK) {
         std::fprintf(stderr, "failed to start TTS: %s\n", llama_dart_tts_last_error(tts));
         return false;
     }
+    task_breaks = 0;
     progress->struct_size = sizeof(*progress);
+    int step = 0;
     do {
+        chunk_ends.clear();
+        const auto started = steady_clock::now();
         const llama_dart_tts_status status = llama_dart_tts_step(tts, progress);
+        const auto returned = steady_clock::now();
+        if (trace != nullptr) {
+            double longest = 0.0;
+            auto previous = started;
+            chunk_ends.push_back(returned);
+            for (const auto &end : chunk_ends) {
+                longest = std::max(longest, elapsed_ms(previous, end));
+                previous = end;
+            }
+            trace->push_back({elapsed_ms(started, returned),
+                              static_cast<int>(chunk_ends.size()) - 1, longest});
+        }
+        if (succeeded_after_break(step++, status)) {
+            return false;
+        }
         if (status != LLAMA_DART_TTS_STATUS_OK) {
             std::fprintf(stderr, "TTS failed: %s\n", llama_dart_tts_last_error(tts));
             return false;
@@ -137,6 +205,116 @@ static bool synthesize(llama_dart_tts *tts,
     return true;
 }
 
+static bool cancel_during_long_step(llama_dart_tts *tts,
+                                    llama_dart_tts_request *request,
+                                    std::atomic<int8_t> *flag,
+                                    bool lower_flag_after_break,
+                                    double cancel_after_ms,
+                                    double return_within_ms,
+                                    double *cancel_to_return_ms,
+                                    int *frames_before_cancel) {
+    static_assert(sizeof(std::atomic<int8_t>) == sizeof(int8_t),
+                  "the cancel flag must be a plain byte");
+    if (llama_dart_tts_start(tts, request) != LLAMA_DART_TTS_STATUS_OK) {
+        std::fprintf(stderr, "failed to start in-step cancel probe: %s\n",
+                     llama_dart_tts_last_error(tts));
+        return false;
+    }
+    if (flag != nullptr &&
+        llama_dart_tts_set_cancel_flag(tts, reinterpret_cast<const int8_t *>(flag)) !=
+            LLAMA_DART_TTS_STATUS_OK) {
+        std::fprintf(stderr, "failed to attach cancel flag\n");
+        return false;
+    }
+    task_breaks = 0;
+    lower_after_break = lower_flag_after_break ? flag : nullptr;
+    std::atomic<int> running_step{-1};
+    std::atomic<int> running_after_frames{0};
+    std::atomic<int64_t> running_since{0};
+    std::atomic<int> cancelled_step{-1};
+    std::atomic<int64_t> cancelled_at{0};
+    std::atomic<bool> done{false};
+    const auto origin = steady_clock::now();
+    auto since_origin = [&origin] {
+        return std::chrono::duration_cast<std::chrono::microseconds>(
+                   steady_clock::now() - origin)
+            .count();
+    };
+    std::thread canceller([&] {
+        while (!done.load()) {
+            const int step = running_step.load();
+            if (step >= 0 && running_after_frames.load() > 0 &&
+                since_origin() - running_since.load() >= cancel_after_ms * 1000.0) {
+                cancelled_at.store(since_origin());
+                cancelled_step.store(step);
+                if (flag != nullptr) {
+                    flag->store(1);
+                } else {
+                    llama_dart_tts_cancel(tts);
+                }
+                return;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+    });
+    llama_dart_tts_progress progress{};
+    llama_dart_tts_status status = LLAMA_DART_TTS_STATUS_OK;
+    int step = 0;
+    int64_t returned_at = 0;
+    bool succeeded_after_a_break = false;
+    for (;; ++step) {
+        const int frames = progress.frames_generated;
+        progress.struct_size = sizeof(progress);
+        running_since.store(since_origin());
+        running_after_frames.store(frames);
+        running_step.store(step);
+        status = llama_dart_tts_step(tts, &progress);
+        running_step.store(-1);
+        returned_at = since_origin();
+        succeeded_after_a_break = succeeded_after_a_break || succeeded_after_break(step, status);
+        if (status != LLAMA_DART_TTS_STATUS_OK ||
+            progress.state == LLAMA_DART_TTS_STATE_COMPLETED) {
+            break;
+        }
+    }
+    done.store(true);
+    canceller.join();
+    lower_after_break = nullptr;
+    const bool same_step = cancelled_step.load() == step;
+    *cancel_to_return_ms = (returned_at - cancelled_at.load()) / 1000.0;
+    *frames_before_cancel = progress.frames_generated;
+    if (llama_dart_tts_reset(tts) != LLAMA_DART_TTS_STATUS_OK) {
+        std::fprintf(stderr, "reset after in-step cancel probe failed\n");
+        return false;
+    }
+    if (cancelled_step.load() < 0) {
+        std::fprintf(stderr, "no step after a frame ran %.1f ms, so the in-step cancel never fired\n",
+                     cancel_after_ms);
+        return false;
+    }
+    if (succeeded_after_a_break) {
+        return false;
+    }
+    if (lower_flag_after_break && task_breaks == 0) {
+        std::fprintf(stderr, "the decode never broke, so the flag was never lowered\n");
+        return false;
+    }
+    if (!same_step || status != LLAMA_DART_TTS_STATUS_CANCELLED ||
+        progress.state != LLAMA_DART_TTS_STATE_CANCELLED) {
+        std::fprintf(stderr,
+                     "in-step cancel at step %d ended at step %d with status %d state %d\n",
+                     cancelled_step.load(), step, static_cast<int>(status),
+                     static_cast<int>(progress.state));
+        return false;
+    }
+    if (*cancel_to_return_ms > return_within_ms) {
+        std::fprintf(stderr, "in-step cancel took %.1f ms to return, bound %.1f ms\n",
+                     *cancel_to_return_ms, return_within_ms);
+        return false;
+    }
+    return true;
+}
+
 int main(int argc, char **argv) {
     const bool use_gpu = argc > 1 && std::strcmp(argv[argc - 1], "--gpu") == 0;
     const int value_argc = argc - (use_gpu ? 1 : 0);
@@ -180,9 +358,12 @@ int main(int argc, char **argv) {
     }
     mtmd_context_params mtmd_params = mtmd_context_params_default();
     mtmd_params.use_gpu = use_gpu;
+    std::unique_ptr<mtmd_context, decltype(&mtmd_free)> plain_mtmd(
+        mtmd_init_from_file(argv[2], model.get(), mtmd_params), mtmd_free);
+    mtmd_params.cb_eval = recording_eval_callback;
     std::unique_ptr<mtmd_context, decltype(&mtmd_free)> mtmd(
         mtmd_init_from_file(argv[2], model.get(), mtmd_params), mtmd_free);
-    if (mtmd == nullptr) {
+    if (plain_mtmd == nullptr || mtmd == nullptr) {
         std::fprintf(stderr, "failed to load mmproj\n");
         return 1;
     }
@@ -206,7 +387,9 @@ int main(int argc, char **argv) {
     llama_dart_tts_status status = LLAMA_DART_TTS_STATUS_OK;
     std::unique_ptr<llama_dart_tts, decltype(&llama_dart_tts_free)> tts(
         llama_dart_tts_init(context.get(), mtmd.get(), &status), llama_dart_tts_free);
-    if (tts == nullptr) {
+    std::unique_ptr<llama_dart_tts, decltype(&llama_dart_tts_free)> plain_tts(
+        llama_dart_tts_init(context.get(), plain_mtmd.get(), &status), llama_dart_tts_free);
+    if (tts == nullptr || plain_tts == nullptr) {
         std::fprintf(stderr, "failed to initialize TTS wrapper: %d\n", static_cast<int>(status));
         return 1;
     }
@@ -224,6 +407,15 @@ int main(int argc, char **argv) {
         std::fprintf(stderr, "non-finite sampling validation failed\n");
         return 1;
     }
+    std::atomic<int8_t> cancel_flag{0};
+    const int8_t *cancel_flag_address = reinterpret_cast<const int8_t *>(&cancel_flag);
+    if (llama_dart_tts_set_cancel_flag(tts.get(), cancel_flag_address) !=
+            LLAMA_DART_TTS_STATUS_INVALID_STATE ||
+        llama_dart_tts_set_cancel_flag(tts.get(), nullptr) !=
+            LLAMA_DART_TTS_STATUS_INVALID_ARGUMENT) {
+        std::fprintf(stderr, "cancel flag validation failed\n");
+        return 1;
+    }
     if (llama_dart_tts_start(tts.get(), &request) != LLAMA_DART_TTS_STATUS_OK) {
         std::fprintf(stderr, "failed to start cancellation probe: %s\n",
                      llama_dart_tts_last_error(tts.get()));
@@ -239,10 +431,81 @@ int main(int argc, char **argv) {
         return 1;
     }
 
+    std::vector<float> plain_pcm;
+    llama_dart_tts_progress plain_progress{};
+    double plain_rms = 0.0;
+    if (!synthesize(plain_tts.get(), &request, info, &plain_pcm, &plain_progress, &plain_rms)) {
+        return 1;
+    }
+
     std::vector<float> first_pcm;
     llama_dart_tts_progress first_progress{};
     double first_rms = 0.0;
-    if (!synthesize(tts.get(), &request, info, &first_pcm, &first_progress, &first_rms)) {
+    std::vector<step_trace> first_trace;
+    if (!synthesize(tts.get(), &request, info, &first_pcm, &first_progress, &first_rms,
+                    &first_trace)) {
+        return 1;
+    }
+    if (first_pcm.size() != plain_pcm.size() ||
+        std::memcmp(first_pcm.data(), plain_pcm.data(), first_pcm.size() * sizeof(float)) != 0) {
+        std::fprintf(stderr, "the eval callback changed uncancelled PCM\n");
+        return 1;
+    }
+    const double decode_ms = first_trace.back().ms;
+    for (const step_trace &trace : first_trace) {
+        if (trace.ms < decode_ms / 4 && trace.chunk_boundaries != 0) {
+            std::fprintf(stderr, "a %.1f ms frame step was split into chunks\n", trace.ms);
+            return 1;
+        }
+    }
+    if (first_trace.back().longest_chunk_ms > decode_ms / 4) {
+        std::fprintf(stderr, "a %.1f ms chunk of the %.1f ms final audio decode exceeds a quarter\n",
+                     first_trace.back().longest_chunk_ms, decode_ms);
+        return 1;
+    }
+
+    double final_cancel_ms = 0.0;
+    int final_cancel_frames = 0;
+    if (!cancel_during_long_step(tts.get(), &request, nullptr, false, decode_ms / 4,
+                                 decode_ms / 3, &final_cancel_ms, &final_cancel_frames)) {
+        return 1;
+    }
+    llama_dart_tts_request long_request = request;
+    long_request.text = long_text;
+    long_request.text_length = std::char_traits<char>::length(long_text);
+
+    double lowered_final_ms = 0.0;
+    int lowered_final_frames = 0;
+    std::atomic<int8_t> lowered_final_flag{0};
+    const bool lowered_final_ok = cancel_during_long_step(
+        tts.get(), &request, &lowered_final_flag, true, decode_ms / 4, decode_ms / 3,
+        &lowered_final_ms, &lowered_final_frames);
+    if (!lowered_final_ok) {
+        std::fprintf(stderr, "end-of-speech probe with the flag lowered after the break failed\n");
+    }
+    double lowered_window_ms = 0.0;
+    int lowered_window_frames = 0;
+    std::atomic<int8_t> lowered_window_flag{0};
+    bool lowered_window_ok = cancel_during_long_step(
+        tts.get(), &long_request, &lowered_window_flag, true, decode_ms / 4, decode_ms / 3,
+        &lowered_window_ms, &lowered_window_frames);
+    if (lowered_window_ok && lowered_window_frames != qwen3_window_frames - 1) {
+        std::fprintf(stderr,
+                     "the lowered-flag cancel landed after %d frames, not in the frame-%d window\n",
+                     lowered_window_frames, qwen3_window_frames);
+        lowered_window_ok = false;
+    }
+    if (!lowered_window_ok) {
+        std::fprintf(stderr, "window probe with the flag lowered after the break failed\n");
+    }
+    if (!lowered_final_ok || !lowered_window_ok) {
+        return 1;
+    }
+
+    double window_cancel_ms = 0.0;
+    int window_cancel_frames = 0;
+    if (!cancel_during_long_step(tts.get(), &long_request, &cancel_flag, false, decode_ms / 4,
+                                 decode_ms / 3, &window_cancel_ms, &window_cancel_frames)) {
         return 1;
     }
 
@@ -263,10 +526,20 @@ int main(int argc, char **argv) {
     }
     std::printf("PASS backend=%s model_type=%d sample_rate=%d "
                 "first_samples=%zu second_samples=%zu "
-                "first_frames=%d second_frames=%d first_rms=%.6f second_rms=%.6f\n",
+                "first_frames=%d second_frames=%d first_rms=%.6f second_rms=%.6f "
+                "decode_ms=%.1f decode_chunks=%d longest_chunk_ms=%.1f "
+                "final_cancel_ms=%.1f final_cancel_frames=%d "
+                "window_cancel_ms=%.1f window_cancel_frames=%d "
+                "lowered_final_ms=%.1f lowered_final_frames=%d "
+                "lowered_window_ms=%.1f lowered_window_frames=%d\n",
                 use_gpu ? "gpu" : "cpu", static_cast<int>(info.model_type),
                 info.sample_rate, first_pcm.size(),
                 second_pcm.size(), first_progress.frames_generated,
-                second_progress.frames_generated, first_rms, second_rms);
+                second_progress.frames_generated, first_rms, second_rms, decode_ms,
+                first_trace.back().chunk_boundaries + 1, first_trace.back().longest_chunk_ms,
+                final_cancel_ms, final_cancel_frames,
+                window_cancel_ms, window_cancel_frames,
+                lowered_final_ms, lowered_final_frames,
+                lowered_window_ms, lowered_window_frames);
     return 0;
 }
