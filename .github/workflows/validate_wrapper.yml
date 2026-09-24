@@ -43,7 +43,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        upstream: [post-v0.4.0, v0.4.1]
+        upstream: [post-v0.4.0, v0.4.1, v0.5.0]
     steps:
       - uses: actions/checkout@v7
         with:
@@ -51,7 +51,7 @@ jobs:
           submodules: recursive
       - name: Select candidate upstream
         env:
-          LLAMADART_QUALIFICATION_SHA: ${{ matrix.upstream == 'v0.4.1' && env.LLAMADART_V041_QUALIFICATION_SHA || env.LLAMADART_QUALIFICATION_SHA }}
+          LLAMADART_QUALIFICATION_SHA: ${{ matrix.upstream == 'v0.5.0' && env.LLAMADART_V050_QUALIFICATION_SHA || matrix.upstream == 'v0.4.1' && env.LLAMADART_V041_QUALIFICATION_SHA || env.LLAMADART_QUALIFICATION_SHA }}
         run: |
           git -C third_party/llama.cpp fetch --depth=1 origin "$LLAMADART_QUALIFICATION_SHA"
           git -C third_party/llama.cpp checkout --detach "$LLAMADART_QUALIFICATION_SHA"
@@ -148,7 +148,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        upstream: [post-v0.4.0, v0.4.1]
+        upstream: [post-v0.4.0, v0.4.1, v0.5.0]
     steps:
       - uses: actions/checkout@v7
         with:
@@ -156,7 +156,7 @@ jobs:
           submodules: recursive
       - name: Select candidate upstream
         env:
-          LLAMADART_QUALIFICATION_SHA: ${{ matrix.upstream == 'v0.4.1' && env.LLAMADART_V041_QUALIFICATION_SHA || env.LLAMADART_QUALIFICATION_SHA }}
+          LLAMADART_QUALIFICATION_SHA: ${{ matrix.upstream == 'v0.5.0' && env.LLAMADART_V050_QUALIFICATION_SHA || matrix.upstream == 'v0.4.1' && env.LLAMADART_V041_QUALIFICATION_SHA || env.LLAMADART_QUALIFICATION_SHA }}
         run: |
           git -C third_party/llama.cpp fetch --depth=1 origin "$LLAMADART_QUALIFICATION_SHA"
           git -C third_party/llama.cpp checkout --detach "$LLAMADART_QUALIFICATION_SHA"
@@ -195,7 +195,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        upstream: [pinned, post-v0.4.0]
+        upstream: [pinned, post-v0.4.0, v0.5.0]
     steps:
       - uses: actions/checkout@v7
         with:
@@ -207,7 +207,7 @@ jobs:
           arch: arm64
       - name: Select candidate upstream
         env:
-          LLAMADART_QUALIFICATION_SHA: ${{ matrix.upstream == 'v0.4.1' && env.LLAMADART_V041_QUALIFICATION_SHA || env.LLAMADART_QUALIFICATION_SHA }}
+          LLAMADART_QUALIFICATION_SHA: ${{ matrix.upstream == 'v0.5.0' && env.LLAMADART_V050_QUALIFICATION_SHA || env.LLAMADART_QUALIFICATION_SHA }}
         if: matrix.upstream != 'pinned'
         shell: bash
         run: |
