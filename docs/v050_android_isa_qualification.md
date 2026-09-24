@@ -24,18 +24,20 @@ Only one change touches ARM code: 8034c1d1f adds Q1_0 repack kernels
 (`__ARM_FEATURE_DOTPROD` for the 4x4 kernels and the 4x8 GEMV,
 `__ARM_FEATURE_MATMUL_INT8` for the 4x8 GEMM) and falls through to the
 existing generic C implementation. `arch-fallback.h` maps the new names on
-non-ARM targets. Runtime selection in `repack.cpp` follows the existing
+non-ARM targets. Kernel selection in `repack.cpp` follows the existing
 repack pattern. It requires `ggml_cpu_has_neon()` plus
 `ggml_cpu_has_matmul_int8()` or `ggml_cpu_has_dotprod()`, and `ne[1] % 4 == 0`.
-A variant compiled without a feature therefore runs the generic body, even
-when runtime detection selects the kernel. The kernels contain no SVE or SME
-code.
+On ARM those predicates are compile-time constants of the variant being built
+(`#if __ARM_FEATURE_*` in `ggml-cpu.c`), not HWCAP queries, so each isolated
+variant selects only kernels its own flags allow. Which variant loads remains
+the job of the unchanged `cpu-feats.cpp` scoring. The kernels contain no SVE or
+SME code.
 
 The other CPU changes are ISA-neutral. They add F16 `src1` to the
 Hadamard/FWHT path of `ggml-cpu.c`/`.cpp`/`ops.cpp` (using the existing
 `ggml_cpu_fp16_to_fp32`), add hc ops, and fix a SpacemiT RISC-V transpose.
 Shared changes are: a scheduler graph-reserve failure check (#26070), meta
-backend buffer-view resolution (#29266), the hc op declarations in `ggml.h`,
+backend buffer-view resolution (#29266), the hc ops (declared in `ggml/include/ggml.h`, outside the fingerprinted tree),
 a `ggml_permute` stride-truncation fix (#29227), IQ1_M reference quantization
 building prefix sums once per block (#28706), and GGUF data-section alignment
 relative to the GGUF start (#28993). The added lines of the shared and
@@ -62,9 +64,12 @@ instructions, the same count as v0.4.1, were contained in the existing 18
 functions. In this non-I8MM variant, `ggml_gemm_q1_0_4x8_q8_0` compiles to a
 single tail branch into the generic kernel and contains no `smmla`. The other
 three Q1_0 kernels use `sdot`, which the variant's `GGML_USE_DOTPROD` requires.
-The local `libggml-cpu.so` SHA-256 was
-`20543a590f8f4e92ff0087cf364e43f785331006ddabe27b1f9eb7f16e694d70` (macOS
-NDK host). This CPU artifact check does not claim full Vulkan/OpenCL packaging
+The instruction counts are the reproducible evidence: an independent rebuild
+and the hosted `android-arm64-isa (v0.5.0)` job printed the same PASS line. The
+`libggml-cpu.so` bytes depend on the build path and are not recorded. An
+independent rebuild of `android_armv8.0_1` found all four Q1_0 kernels reduced
+to a branch into the generic code, and no `sdot`, `smmla` or FP16 vector
+arithmetic outside KleidiAI. This CPU artifact check does not claim full Vulkan/OpenCL packaging
 or hardware execution coverage.
 
 `Validate Wrapper` keeps the prior candidate lanes and adds exact v0.5.0 rows:
@@ -75,6 +80,14 @@ or hardware execution coverage.
   `GGML_KLEIDIAI_SME=1` to exercise the unsupported-feature fallback.
 - Windows ARM64 release preset (ClangCL, VS 2026 image) with the optimized
   Kleidi CPU and the native wrapper contracts, built from the exact v0.5.0 SHA.
+
+Coverage gap: this is ISA-safety evidence, not numerical evidence for the new
+Q1_0 fast paths. The emulated dispatch test builds `armv8-a` (the Q1_0 kernels
+compile to their generic fallback) and exercises KleidiAI Q4/Q8 only. No gate
+here compares the DOTPROD Q1_0 kernels with the generic reference, and they
+only matter for Q1_0 models. The containment validator also checks SVE/SME
+only, so I8MM or DOTPROD in a lower variant was checked by hand for this
+release.
 
 Hosted results and an independent exact-head review must pass before merge and
 be linked from the PR. Physical Android and SME hardware execution is not
