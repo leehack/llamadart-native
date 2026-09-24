@@ -705,7 +705,7 @@ jobs:
             backend_glob: "*ggml-blas*.dll"
           - arch: arm64
             vcpkg_triplet: arm64-windows
-            runs_on: windows-11-arm
+            runs_on: windows-11-vs2026-arm
             backend: vulkan
             include_core: true
             needs_cuda: false
@@ -714,7 +714,7 @@ jobs:
             backend_glob: "*ggml-vulkan*.dll"
           - arch: arm64
             vcpkg_triplet: arm64-windows
-            runs_on: windows-11-arm
+            runs_on: windows-11-vs2026-arm
             backend: blas
             include_core: false
             needs_cuda: false
