@@ -69,6 +69,12 @@ The Android artifact check is `tools/validate_android_cpu_isa.py --help`.
   - `third_party/opencl-stubs/`
   - auto-built OpenCL ICD loader from `third_party/OpenCL-ICD-Loader` + `third_party/OpenCL-Headers`
 - Linux arm64 builds on x64 runners require `aarch64-linux-gnu-gcc/g++`, `libopenblas-dev:arm64`, and `libvulkan-dev:arm64`.
+- Windows ARM64 uses the `Visual Studio 18 2026` generator (CMake >= 4.2) with
+  the ClangCL toolset. CI pins the `windows-11-vs2026-arm` runner because the
+  `windows-11-arm` label moved to that image in September 2026
+  (actions/runner-images#14602), and that image has no VS 2022 instance. With
+  only VS 2022 installed, pass `-G "Visual Studio 17 2022"` after
+  `--preset windows-arm64-full`.
 - Windows MSVC builds disable IPO/LTCG for `llama-common` and `mtmd` by default.
   Current MSVC `link.exe` can access-violate when linking the large
   `llama-common` utility DLL with `/LTCG`. CMake's automatic Windows export
