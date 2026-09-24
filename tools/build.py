@@ -313,6 +313,18 @@ def android_base_cmake_args(abi: str, ndk: Path) -> list[str]:
     ]
 
 
+def android_vulkan_glslc(ndk: Path, env: dict[str, str]) -> Path | None:
+    # The NDK's glslc (shaderc v2022.3 through r29) lacks GL_KHR_cooperative_matrix,
+    # which llama.cpp v0.5.0 needs unconditionally (ggml-org/llama.cpp#29373).
+    override = env.get("ANDROID_VULKAN_GLSLC")
+    if override:
+        glslc = Path(override)
+        if not glslc.is_file():
+            fail(f"ANDROID_VULKAN_GLSLC does not name a file: {glslc}")
+        return glslc
+    return find_file_with_suffix(ndk, "glslc") or find_file_with_suffix(ndk, "glslc.exe")
+
+
 def android_configure_args(
     abi: str,
     *,
@@ -331,7 +343,7 @@ def android_configure_args(
         write_android_host_toolchain(toolchain)
         cmake_args.append(f"-DGGML_VULKAN_SHADERS_GEN_TOOLCHAIN={toolchain}")
 
-        glslc = find_file_with_suffix(ndk, "glslc") or find_file_with_suffix(ndk, "glslc.exe")
+        glslc = android_vulkan_glslc(ndk, env)
         if glslc:
             cmake_args.append(f"-DVulkan_GLSLC_EXECUTABLE={glslc}")
 

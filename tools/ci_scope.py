@@ -48,7 +48,7 @@ def validate_results(needs):
     if selected not in ('true', 'false'):
         return False
     expected = 'success' if selected == 'true' else 'skipped'
-    jobs = {'android-arm64-isa', 'kleidiai-dispatch-emulated',
+    jobs = {'android-arm64-isa', 'android-vulkan-shaders', 'kleidiai-dispatch-emulated',
             'windows-arm64-kleidiai', 'linux-artifact-contract',
             'wrapper-contract', 'msvc-mtmd-link-contract'}
     return set(needs) == jobs | {'changes'} and all(

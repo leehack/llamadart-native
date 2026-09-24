@@ -63,6 +63,14 @@ The Android artifact check is `tools/validate_android_cpu_isa.py --help`.
 - CUDA lanes require `nvcc` availability.
 - HIP/ROCm lanes require `hipcc`, `rocblas-dev`, and `hipblas-dev` (Linux x64 only, built in a separate release job).
 - Android Vulkan lanes require NDK-provided `libvulkan.so`.
+- Android Vulkan shaders need a glslc with `GL_KHR_cooperative_matrix` from
+  llama.cpp v0.5.0 on: upstream compiles the `fa_decode` shaders as coopmat
+  unconditionally (ggml-org/llama.cpp#29373), and NDK glslc (shaderc v2022.3
+  through r29) lacks the extension. Set `ANDROID_VULKAN_GLSLC` to a host glslc;
+  release CI uses the Ubuntu `glslc` package, like the Linux Vulkan lanes.
+  Upstream enables shader features from glslc, so this also compiles the KHR
+  coopmat `mul_mm`/flash-attention variants, used at runtime only on devices
+  reporting `VK_KHR_cooperative_matrix` (`GGML_VK_DISABLE_COOPMAT=1` opts out).
 - Vulkan lanes use vendored `third_party/SPIRV-Headers` for SPIR-V registry headers required by upstream `llama.cpp`.
 - Android OpenCL lanes require `CL/cl.h` and `libOpenCL.so` from one of:
   - env overrides (`OPENCL_INCLUDE_DIR`, `OPENCL_LIBRARY_ANDROID_<ABI>`)

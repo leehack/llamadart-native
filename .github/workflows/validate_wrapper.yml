@@ -16,6 +16,7 @@ env:
   # Qualification only: never moves the production submodule or release channel.
   LLAMADART_QUALIFICATION_SHA: 73ab7599b553c03f6f5d2db24a18ad76f2eb36a3
   LLAMADART_V041_QUALIFICATION_SHA: b29c606e28a01b1bc8c1351026a0fa6e616bf6c4
+  LLAMADART_V050_QUALIFICATION_SHA: 7fe450e19305b828c199d602c23a8337aaa1f03b
 
 jobs:
   changes:
@@ -83,6 +84,61 @@ jobs:
             --llama-source third_party/llama.cpp \
             --kleidiai-source build/android-isa/_deps/kleidiai-src \
             build/android-isa/bin/libggml-cpu.so
+
+  android-vulkan-shaders:
+    needs: changes
+    if: needs.changes.outputs.native == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        upstream: [pinned, v0.5.0]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          submodules: recursive
+      - name: Select candidate upstream
+        if: matrix.upstream != 'pinned'
+        run: |
+          git -C third_party/llama.cpp fetch --depth=1 origin "$LLAMADART_V050_QUALIFICATION_SHA"
+          git -C third_party/llama.cpp checkout --detach "$LLAMADART_V050_QUALIFICATION_SHA"
+          test "$(git -C third_party/llama.cpp rev-parse HEAD)" = "$LLAMADART_V050_QUALIFICATION_SHA"
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v4
+        with:
+          packages: platform-tools ndk;28.2.13676358
+      - name: Install build dependencies and the release glslc
+        run: |
+          sudo apt-get update && sudo apt-get install -y ninja-build glslc
+          glslc --version
+      - name: Build the release Android Vulkan backend
+        run: |
+          set -euo pipefail
+          export ANDROID_NDK_HOME="${ANDROID_SDK_ROOT}/ndk/28.2.13676358"
+          ANDROID_VULKAN_GLSLC="$(command -v glslc)"
+          export ANDROID_VULKAN_GLSLC
+          python3 - <<'PY' 2>&1 | tee configure-build.log
+          import os, sys
+          from pathlib import Path
+          sys.path.insert(0, 'tools')
+          import build
+          abi = 'arm64-v8a'
+          build_dir = Path('build/android-vulkan').resolve()
+          env = dict(os.environ)
+          args = build.android_configure_args(
+              abi, build_dir=build_dir, ndk=Path(env['ANDROID_NDK_HOME']), env=env,
+              cache_vars=build.android_backend_cache_vars(abi, 'vulkan'), jobs=4)
+          build.configure_and_build_dir(
+              build_dir, jobs=4, cmake_args=args, build_target='ggml-vulkan', env=env)
+          PY
+          grep -F -- "-DVulkan_GLSLC_EXECUTABLE=$ANDROID_VULKAN_GLSLC" configure-build.log
+          grep -Fx -- '-- GL_KHR_cooperative_matrix supported by glslc' configure-build.log
+          test -f build/android-vulkan/bin/libggml-vulkan.so
 
   kleidiai-dispatch-emulated:
     needs: changes
@@ -324,7 +380,7 @@ jobs:
 
   wrapper-validation:
     if: always()
-    needs: [changes, android-arm64-isa, kleidiai-dispatch-emulated, windows-arm64-kleidiai, linux-artifact-contract, wrapper-contract, msvc-mtmd-link-contract]
+    needs: [changes, android-arm64-isa, android-vulkan-shaders, kleidiai-dispatch-emulated, windows-arm64-kleidiai, linux-artifact-contract, wrapper-contract, msvc-mtmd-link-contract]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
