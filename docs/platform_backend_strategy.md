@@ -67,7 +67,10 @@ The Android artifact check is `tools/validate_android_cpu_isa.py --help`.
   llama.cpp v0.5.0 on: upstream compiles the `fa_decode` shaders as coopmat
   unconditionally (ggml-org/llama.cpp#29373), and NDK glslc (shaderc v2022.3
   through r29) lacks the extension. Set `ANDROID_VULKAN_GLSLC` to a host glslc;
-  release CI uses the Ubuntu `glslc` package, like the Linux Vulkan lanes.
+  release CI uses the Ubuntu 24.04 `glslc` package (shaderc 2023.8), like the
+  Linux Vulkan lanes, on a pinned `ubuntu-24.04` runner so the shader feature set
+  cannot drift with `ubuntu-latest`. This applies to every release built with
+  the override, including rebuilds of the current pin.
   Upstream enables shader features from glslc, so this also compiles the KHR
   coopmat `mul_mm`/flash-attention variants, used at runtime only on devices
   reporting `VK_KHR_cooperative_matrix` (`GGML_VK_DISABLE_COOPMAT=1` opts out).

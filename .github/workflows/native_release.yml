@@ -124,7 +124,9 @@ jobs:
 
   build-android:
     needs: resolve-tag
-    runs-on: ubuntu-latest
+    # Pinned: the Vulkan lanes' glslc comes from this image's apt archive, and a
+    # newer shaderc would silently enable more Android shader features.
+    runs-on: ubuntu-24.04
     env:
       CCACHE_DIR: ${{ github.workspace }}/.ccache
       CCACHE_MAXSIZE: 2G

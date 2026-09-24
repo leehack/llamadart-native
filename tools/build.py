@@ -316,6 +316,7 @@ def android_base_cmake_args(abi: str, ndk: Path) -> list[str]:
 def android_vulkan_glslc(ndk: Path, env: dict[str, str]) -> Path | None:
     # The NDK's glslc (shaderc v2022.3 through r29) lacks GL_KHR_cooperative_matrix,
     # which llama.cpp v0.5.0 needs unconditionally (ggml-org/llama.cpp#29373).
+    # Drop the release override once a pinned upstream gates those shaders.
     override = env.get("ANDROID_VULKAN_GLSLC")
     if override:
         glslc = Path(override)
