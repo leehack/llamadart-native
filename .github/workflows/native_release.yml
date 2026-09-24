@@ -124,7 +124,9 @@ jobs:
 
   build-android:
     needs: resolve-tag
-    runs-on: ubuntu-latest
+    # Pinned: the Vulkan lanes' glslc comes from this image's apt archive, and a
+    # newer shaderc would silently enable more Android shader features.
+    runs-on: ubuntu-24.04
     env:
       CCACHE_DIR: ${{ github.workspace }}/.ccache
       CCACHE_MAXSIZE: 2G
@@ -182,7 +184,15 @@ jobs:
           echo "ANDROID_NDK_HOME=$NDK_DIR" >> "$GITHUB_ENV"
           echo "Using pinned Android NDK: $NDK_DIR"
       - name: Install build deps
-        run: sudo apt-get update && sudo apt-get install -y ninja-build ccache
+        run: |
+          sudo apt-get update && sudo apt-get install -y ninja-build ccache
+          if [ "${{ matrix.backend }}" = "vulkan" ]; then
+            # Host glslc, same package as the Linux Vulkan lanes; the NDK's lacks
+            # GL_KHR_cooperative_matrix (ggml-org/llama.cpp#29373).
+            sudo apt-get install -y glslc
+            glslc --version
+            echo "ANDROID_VULKAN_GLSLC=$(command -v glslc)" >> "$GITHUB_ENV"
+          fi
       - name: Set up ccache
         uses: ./.github/actions/setup-ccache
         with:

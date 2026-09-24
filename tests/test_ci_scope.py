@@ -12,7 +12,7 @@ from ci_scope import changed_paths, native_required, validate_results
 sys.path.insert(0, str(ROOT / 'scripts'))
 from verify_release_provenance import workflow_job
 
-JOBS = ('android-arm64-isa', 'kleidiai-dispatch-emulated',
+JOBS = ('android-arm64-isa', 'android-vulkan-shaders', 'kleidiai-dispatch-emulated',
         'windows-arm64-kleidiai', 'linux-artifact-contract',
         'wrapper-contract', 'msvc-mtmd-link-contract')
 
