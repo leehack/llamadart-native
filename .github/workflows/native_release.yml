@@ -827,12 +827,9 @@ jobs:
           Add-Content $env:GITHUB_ENV "CMAKE_CXX_COMPILER_LAUNCHER="
       - name: Install Vulkan SDK
         if: ${{ matrix.needs_vulkan }}
-        run: |
-          $ver = "1.4.313.2"
-          curl.exe -o $env:RUNNER_TEMP/VulkanSDK-Installer.exe -L "https://sdk.lunarg.com/sdk/download/$ver/windows/vulkansdk-windows-X64-$ver.exe"
-          & "$env:RUNNER_TEMP\VulkanSDK-Installer.exe" --accept-licenses --default-answer --confirm-command install
-          Add-Content $env:GITHUB_ENV "VULKAN_SDK=C:\VulkanSDK\$ver"
-          Add-Content $env:GITHUB_PATH "C:\VulkanSDK\$ver\Bin"
+        uses: ./.github/actions/install-vulkan-sdk-windows
+        with:
+          arch: ${{ matrix.arch }}
       - name: Build
         run: python tools/build.py windows --arch ${{ matrix.arch }} --backend ${{ matrix.backend }}
       - name: Validate Windows backend artifacts

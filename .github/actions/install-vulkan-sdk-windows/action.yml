@@ -1,0 +1,45 @@
+name: Install Vulkan SDK (Windows)
+description: Install the pinned LunarG Vulkan SDK built for the target architecture and export VULKAN_SDK.
+inputs:
+  arch:
+    description: Target architecture, x64 or arm64
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Install Vulkan SDK
+      shell: pwsh
+      env:
+        SDK_ARCH: ${{ inputs.arch }}
+      run: |
+        $ver = "1.4.313.2"
+        # LunarG files the native ARM64 SDK under its "warm" platform. The x64
+        # SDK's vulkan-1.lib is x64-only, and lld-link (VS 2026 ClangCL) refuses
+        # it for ARM64. Digests come from https://vulkan.lunarg.com/sdk/files.json.
+        switch ($env:SDK_ARCH) {
+          "x64" {
+            $url = "https://sdk.lunarg.com/sdk/download/$ver/windows/vulkansdk-windows-X64-$ver.exe"
+            $sha = "34a921d951858274ca8e470e9d0a3b7624db41216b3908ccea9f73c8a1b7500e"
+            $machine = "x64"
+          }
+          "arm64" {
+            $url = "https://sdk.lunarg.com/sdk/download/$ver/warm/vulkansdk-windows-ARM64-$ver.exe"
+            $sha = "29c3e7b9ff9c9d38455708bed7e744f879c770c15f3fedae55c409817c375515"
+            $machine = "ARM64"
+          }
+          default { throw "Unsupported Vulkan SDK arch: $env:SDK_ARCH" }
+        }
+        $installer = Join-Path $env:RUNNER_TEMP "VulkanSDK-Installer.exe"
+        curl.exe -fsSL -o $installer $url
+        if ($LASTEXITCODE -ne 0) { throw "Vulkan SDK download failed: $url" }
+        $actual = (Get-FileHash $installer -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($actual -ne $sha) { throw "Vulkan SDK installer SHA-256 $actual does not match $sha" }
+        & $installer --accept-licenses --default-answer --confirm-command install
+        $sdk = "C:\VulkanSDK\$ver"
+        $lib = Join-Path $sdk "Lib\vulkan-1.lib"
+        if (-not (Test-Path $lib)) { throw "Missing $lib" }
+        # dumpbin comes from the job's MSVC developer environment.
+        $headers = (& dumpbin /headers $lib) -join "`n"
+        if ($headers -notmatch "\($machine\)") { throw "$lib is not a $machine import library" }
+        Add-Content $env:GITHUB_ENV "VULKAN_SDK=$sdk"
+        Add-Content $env:GITHUB_PATH "$sdk\Bin"
