@@ -73,6 +73,8 @@ or hardware execution coverage.
 - Compiled selector and Q4/Q8 scalar-reference compute under QEMU `cortex-a53`
   and `max,sve=off,sme=off`, both normally and with guest
   `GGML_KLEIDIAI_SME=1` to exercise the unsupported-feature fallback.
+- Windows ARM64 release preset (ClangCL, VS 2026 image) with the optimized
+  Kleidi CPU and the native wrapper contracts, built from the exact v0.5.0 SHA.
 
 Hosted results and an independent exact-head review must pass before merge and
 be linked from the PR. Physical Android and SME hardware execution is not

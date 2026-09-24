@@ -90,7 +90,7 @@ class ScopeTests(unittest.TestCase):
         self.assertIn('github.event.pull_request.base.sha || github.event.before',changes)
         self.assertIn('tools/ci_scope.py',changes)
         windows=workflow_job(workflow,'windows-arm64-kleidiai')
-        self.assertIn('upstream: [pinned, post-v0.4.0]',windows)
+        self.assertIn('upstream: [pinned, post-v0.4.0, v0.5.0]',windows)
         for filename in ('validate_wrapper.yml','validate_release_provenance.yml'):
             content=(ROOT/'.github/workflows'/filename).read_text()
             triggers=content.split('permissions:')[0]
