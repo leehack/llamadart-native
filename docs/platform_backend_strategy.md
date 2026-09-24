@@ -88,6 +88,10 @@ The Android artifact check is `tools/validate_android_cpu_isa.py --help`.
   VS 2022 installed, configure directly with
   `cmake --preset windows-arm64-full -G "Visual Studio 17 2022"` in a fresh
   build directory.
+- Windows ARM64 Vulkan links LunarG's native ARM64 SDK (`warm` platform), whose
+  `vulkan-1.lib` is ARM64. The x64 SDK's import library is x64-only, which
+  VS 2026's ClangCL linker (`lld-link`) rejects. `.github/actions/install-vulkan-sdk-windows`
+  pins both installers by SHA-256 and checks the import library's machine type.
 - Windows MSVC builds disable IPO/LTCG for `llama-common` and `mtmd` by default.
   Current MSVC `link.exe` can access-violate when linking the large
   `llama-common` utility DLL with `/LTCG`. CMake's automatic Windows export

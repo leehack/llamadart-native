@@ -231,6 +231,46 @@ jobs:
           $env:PATH = "$wrapperDir;$upstreamDir;$env:PATH"
           ctest --test-dir build/wa64 -C Release --timeout 120 --verbose --output-on-failure
 
+  windows-arm64-vulkan:
+    needs: changes
+    if: needs.changes.outputs.native == 'true'
+    runs-on: windows-11-vs2026-arm
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        upstream: [pinned, v0.5.0]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          submodules: recursive
+      - name: Setup ARM64 MSVC environment
+        uses: TheMrMilchmann/setup-msvc-dev@v4.1.0
+        with:
+          arch: arm64
+      - name: Select candidate upstream
+        if: matrix.upstream != 'pinned'
+        shell: bash
+        run: |
+          git -C third_party/llama.cpp fetch --depth=1 origin "$LLAMADART_V050_QUALIFICATION_SHA"
+          git -C third_party/llama.cpp checkout --detach "$LLAMADART_V050_QUALIFICATION_SHA"
+          test "$(git -C third_party/llama.cpp rev-parse HEAD)" = "$LLAMADART_V050_QUALIFICATION_SHA"
+      - name: Install the release Vulkan SDK
+        uses: ./.github/actions/install-vulkan-sdk-windows
+        with:
+          arch: arm64
+      - name: Build the release Windows ARM64 Vulkan lane
+        run: python tools/build.py windows --arch arm64 --backend vulkan
+      - name: Check the backend is ARM64 and imports the Vulkan loader
+        run: |
+          $dll = "bin/windows/arm64/ggml-vulkan.dll"
+          if (-not (Test-Path $dll)) { throw "Missing $dll" }
+          $headers = (& dumpbin /headers $dll) -join "`n"
+          if ($headers -notmatch "\(ARM64\)") { throw "$dll is not ARM64" }
+          $deps = (& dumpbin /dependents $dll) -join "`n"
+          if ($deps -notmatch "(?im)^\s*vulkan-1\.dll\s*$") { throw "$dll does not import vulkan-1.dll" }
+
   linux-artifact-contract:
     needs: changes
     if: needs.changes.outputs.native == 'true'
@@ -380,7 +420,7 @@ jobs:
 
   wrapper-validation:
     if: always()
-    needs: [changes, android-arm64-isa, android-vulkan-shaders, kleidiai-dispatch-emulated, windows-arm64-kleidiai, linux-artifact-contract, wrapper-contract, msvc-mtmd-link-contract]
+    needs: [changes, android-arm64-isa, android-vulkan-shaders, kleidiai-dispatch-emulated, windows-arm64-kleidiai, windows-arm64-vulkan, linux-artifact-contract, wrapper-contract, msvc-mtmd-link-contract]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
