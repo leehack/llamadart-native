@@ -134,7 +134,7 @@ jobs:
   windows-arm64-kleidiai:
     needs: changes
     if: needs.changes.outputs.native == 'true'
-    runs-on: windows-11-arm
+    runs-on: windows-11-vs2026-arm
     timeout-minutes: 30
     strategy:
       fail-fast: false

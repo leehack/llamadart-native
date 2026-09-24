@@ -175,7 +175,7 @@
       "name": "windows-arm64-full",
       "inherits": "windows-base",
       "binaryDir": "${sourceDir}/build/wa64",
-      "generator": "Visual Studio 17 2022",
+      "generator": "Visual Studio 18 2026",
       "architecture": {
         "value": "ARM64",
         "strategy": "set"
