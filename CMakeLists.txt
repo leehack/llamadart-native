@@ -249,26 +249,47 @@ if (LLAMADART_BUILD_TESTS)
         src
     )
     foreach(scenario dispose order repeat in-flight nested settle timeout
-            blocked exit)
+            idle-wait own-call blocked exit late-static)
         add_test(NAME llamadart_exit_teardown_${scenario}
             COMMAND llamadart_exit_teardown_test ${scenario})
     endforeach()
-    # The model-backed scenarios need GGUF files, so they are opt-in.
+    # Teardown runs at exit on Apple only, and only there are the backends part
+    # of libllamadart, so the scenarios that load a model run there. They use a
+    # model the test writes itself unless one is given.
     set(LLAMADART_EXIT_TEARDOWN_TEST_MODEL "" CACHE FILEPATH
-        "GGUF model for the model-backed exit teardown tests")
+        "GGUF model for the exit teardown tests instead of the generated one")
     set(LLAMADART_EXIT_TEARDOWN_TEST_MMPROJ "" CACHE FILEPATH
-        "GGUF multimodal projector of that model for the mtmd exit teardown test")
-    if (LLAMADART_EXIT_TEARDOWN_TEST_MODEL)
-        foreach(scenario model-idle model-dispose model-decode model-load)
+        "GGUF multimodal projector of that model for the mtmd exit teardown tests")
+    if (APPLE)
+        add_test(NAME llamadart_exit_teardown_graph
+            COMMAND llamadart_exit_teardown_test graph)
+        set(exit_teardown_model "${LLAMADART_EXIT_TEARDOWN_TEST_MODEL}")
+        if (NOT exit_teardown_model)
+            set(exit_teardown_model
+                "${CMAKE_CURRENT_BINARY_DIR}/exit_teardown_test_model.gguf")
+            add_test(NAME llamadart_exit_teardown_make-model
+                COMMAND llamadart_exit_teardown_test make-model
+                    "${exit_teardown_model}")
+            set_tests_properties(llamadart_exit_teardown_make-model PROPERTIES
+                FIXTURES_SETUP llamadart_exit_teardown_model)
+        endif()
+        foreach(scenario model-idle model-dispose model-sync model-wrappers
+                model-order model-session model-session-untracked
+                model-decode model-late-load model-load model-load-wait)
             add_test(NAME llamadart_exit_teardown_${scenario}
                 COMMAND llamadart_exit_teardown_test ${scenario}
-                    "${LLAMADART_EXIT_TEARDOWN_TEST_MODEL}")
+                    "${exit_teardown_model}")
+            set_tests_properties(llamadart_exit_teardown_${scenario} PROPERTIES
+                FIXTURES_REQUIRED llamadart_exit_teardown_model)
         endforeach()
-        if (LLAMADART_EXIT_TEARDOWN_TEST_MMPROJ)
-            add_test(NAME llamadart_exit_teardown_model-mtmd
-                COMMAND llamadart_exit_teardown_test model-mtmd
-                    "${LLAMADART_EXIT_TEARDOWN_TEST_MODEL}"
-                    "${LLAMADART_EXIT_TEARDOWN_TEST_MMPROJ}")
+        if (LLAMADART_EXIT_TEARDOWN_TEST_MODEL AND
+                LLAMADART_EXIT_TEARDOWN_TEST_MMPROJ)
+            foreach(scenario model-mtmd model-order)
+                add_test(NAME llamadart_exit_teardown_mmproj_${scenario}
+                    COMMAND llamadart_exit_teardown_test ${scenario}
+                        "${exit_teardown_model}"
+                        "${LLAMADART_EXIT_TEARDOWN_TEST_MMPROJ}")
+            endforeach()
         endif()
     endif()
 

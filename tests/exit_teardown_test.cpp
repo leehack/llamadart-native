@@ -4,6 +4,7 @@
 
 #include "llama_dart_wrapper.h"
 
+#include "gguf.h"
 #include "mtmd.h"
 
 #include <atomic>
@@ -172,9 +173,7 @@ int test_in_flight() {
 
   const auto started = std::chrono::steady_clock::now();
   llama_dart_exit_teardown();
-  const int64_t waited = elapsed_ms(started);
-  assert(waited >= 300);
-  assert(waited < 20000);
+  assert(elapsed_ms(started) < 20000);
 
   std::vector<std::string> expected = {"call-finished"};
   expected.insert(expected.end(), kStageOrder.begin(), kStageOrder.end());
@@ -251,7 +250,7 @@ int test_settle() {
 
 int test_timeout() {
   track_out_of_stage_order();
-  llama_dart_exit_set_wait_ms(200);
+  llama_dart_exit_set_wait_ms(1000);
 
   std::atomic<bool> in_call{false};
   std::thread([&in_call] {
@@ -266,11 +265,41 @@ int test_timeout() {
   const auto started = std::chrono::steady_clock::now();
   llama_dart_exit_teardown();
   const int64_t waited = elapsed_ms(started);
-  assert(waited >= 150);
+  assert(waited >= 900);
   assert(waited < 20000);
   assert(recorded().empty());
   assert(llama_dart_exit_tracked_count() ==
          static_cast<int32_t>(kStageOrder.size()));
+
+  // Teardown runs once: a second run neither waits nor frees.
+  const auto restarted = std::chrono::steady_clock::now();
+  llama_dart_exit_teardown();
+  assert(elapsed_ms(restarted) < 500);
+  assert(recorded().empty());
+  return 0;
+}
+
+// A call that never ends does not hold up an exit that has nothing to free.
+int test_idle_wait() {
+  std::thread([] { llama_dart_exit_call_begin(); }).join();
+  llama_dart_exit_set_wait_ms(30000);
+  const auto started = std::chrono::steady_clock::now();
+  llama_dart_exit_teardown();
+  assert(elapsed_ms(started) < 5000);
+  return 0;
+}
+
+// Teardown that runs inside a call in flight, as when a callback of that call
+// exits the process, does not wait for the call it is in.
+int test_own_call() {
+  track_out_of_stage_order();
+  llama_dart_exit_set_wait_ms(30000);
+  llama_dart_exit_call_begin();
+  const auto started = std::chrono::steady_clock::now();
+  llama_dart_exit_teardown();
+  assert(elapsed_ms(started) < 5000);
+  assert(recorded() == kStageOrder);
+  llama_dart_exit_call_end();
   return 0;
 }
 
@@ -285,7 +314,9 @@ int test_blocked() {
 
   static std::atomic<int> started{0};
   static std::atomic<int> returned{0};
-  const auto late = [](void (*call)(void *), void *argument) {
+  int launched = 0;
+  const auto late = [&launched](void (*call)(void *), void *argument) {
+    ++launched;
     std::thread([call, argument] {
       started.fetch_add(1);
       call(argument);
@@ -325,8 +356,61 @@ int test_blocked() {
       },
       nullptr);
   late([](void *) { llama_dart_decode(nullptr, llama_batch{}); }, nullptr);
+  late([](void *) { llama_dart_encode(nullptr, llama_batch{}); }, nullptr);
+  late([](void *) { llama_dart_synchronize(nullptr); }, nullptr);
+  late([](void *) { llama_dart_sampler_sample(nullptr, nullptr, 0); }, nullptr);
+  late([](void *) { llama_dart_state_save_file(nullptr, "", nullptr, 0); },
+       nullptr);
+  late(
+      [](void *) {
+        llama_dart_state_load_file(nullptr, "", nullptr, 0, nullptr);
+      },
+      nullptr);
+  late([](void *) { llama_dart_state_seq_get_size_ext(nullptr, 0, 0); },
+       nullptr);
+  late(
+      [](void *) {
+        llama_dart_state_seq_get_data_ext(nullptr, nullptr, 0, 0, 0);
+      },
+      nullptr);
+  late(
+      [](void *) {
+        llama_dart_state_seq_set_data_ext(nullptr, nullptr, 0, 0, 0);
+      },
+      nullptr);
+  late([](void *) { llama_dart_adapter_lora_init(nullptr, ""); }, nullptr);
+  late(
+      [](void *) {
+        llama_dart_mtmd_tokenize(nullptr, nullptr, nullptr, nullptr, 0);
+      },
+      nullptr);
+  late([](void *) { llama_dart_mtmd_encode_chunk(nullptr, nullptr); }, nullptr);
+  late(
+      [](void *) {
+        llama_dart_mtmd_helper_eval_chunks(nullptr, nullptr, nullptr, 0, 0, 1,
+                                           true, nullptr);
+      },
+      nullptr);
+  late(
+      [](void *) {
+        llama_dart_mtmd_helper_eval_chunk_single(nullptr, nullptr, nullptr, 0,
+                                                 0, 1, true, nullptr);
+      },
+      nullptr);
+  late(
+      [](void *) {
+        llama_dart_mtmd_helper_decode_image_chunk(nullptr, nullptr, nullptr,
+                                                  nullptr, 0, 0, 1, nullptr,
+                                                  nullptr, nullptr);
+      },
+      nullptr);
+  late(
+      [](void *) {
+        llama_dart_ggml_backend_sched_graph_compute(nullptr, nullptr);
+      },
+      nullptr);
 
-  while (started.load() < 10) {
+  while (started.load() < launched) {
     sleep_ms(1);
   }
   sleep_ms(300);
@@ -358,109 +442,425 @@ int test_exit() {
   return 0;
 }
 
+// Teardown also runs before a static that libllamadart creates after the
+// first object was tracked.
+int test_late_static() {
+  track_out_of_stage_order();
+  // Runs before the teardown registered by tracking, and after the destructor
+  // of the static created next.
+  assert(atexit(expect_freed_at_exit) == 0);
+  assert(llama_print_system_info() != nullptr);
+  return 0;
+}
+
+void add_tensor(gguf_context *gguf, ggml_context *ggml, const std::string &name,
+                int64_t columns, int64_t rows, bool is_norm) {
+  ggml_tensor *tensor =
+      rows == 0 ? ggml_new_tensor_1d(ggml, GGML_TYPE_F32, columns)
+                : ggml_new_tensor_2d(ggml, GGML_TYPE_F32, columns, rows);
+  ggml_set_name(tensor, name.c_str());
+  static uint32_t seed = 1;
+  float *data = static_cast<float *>(tensor->data);
+  for (int64_t i = 0; i < ggml_nelements(tensor); ++i) {
+    seed = seed * 1664525u + 1013904223u;
+    data[i] = is_norm
+                  ? 1.0f
+                  : (static_cast<float>(seed >> 8) / 16777216.0f - 0.5f) * 0.1f;
+  }
+  gguf_add_tensor(gguf, tensor);
+}
+
+// Writes a two-layer llama model with random weights and no tokenizer. It is
+// large enough to load, offload and decode, and needs no download.
+int make_model(const char *path) {
+  const uint32_t vocab_size = 256;
+  const uint32_t embedding_length = 128;
+  const uint32_t feed_forward_length = 256;
+  const uint32_t block_count = 2;
+
+  gguf_context *gguf = gguf_init_empty();
+  gguf_set_val_str(gguf, "general.architecture", "llama");
+  gguf_set_val_str(gguf, "general.name", "llamadart exit teardown test");
+  gguf_set_val_u32(gguf, "llama.context_length", 512);
+  gguf_set_val_u32(gguf, "llama.embedding_length", embedding_length);
+  gguf_set_val_u32(gguf, "llama.block_count", block_count);
+  gguf_set_val_u32(gguf, "llama.feed_forward_length", feed_forward_length);
+  gguf_set_val_u32(gguf, "llama.attention.head_count", 4);
+  gguf_set_val_f32(gguf, "llama.attention.layer_norm_rms_epsilon", 1e-5f);
+  gguf_set_val_u32(gguf, "llama.vocab_size", vocab_size);
+  gguf_set_val_str(gguf, "tokenizer.ggml.model", "no_vocab");
+
+  ggml_init_params params{};
+  params.mem_size = 16u * 1024 * 1024;
+  ggml_context *ggml = ggml_init(params);
+  assert(ggml != nullptr);
+  add_tensor(gguf, ggml, "token_embd.weight", embedding_length, vocab_size,
+             false);
+  for (uint32_t block = 0; block < block_count; ++block) {
+    const std::string prefix = "blk." + std::to_string(block) + ".";
+    const auto add = [&](const char *name, int64_t columns, int64_t rows) {
+      add_tensor(gguf, ggml, prefix + name, columns, rows, rows == 0);
+    };
+    add("attn_norm.weight", embedding_length, 0);
+    add("attn_q.weight", embedding_length, embedding_length);
+    add("attn_k.weight", embedding_length, embedding_length);
+    add("attn_v.weight", embedding_length, embedding_length);
+    add("attn_output.weight", embedding_length, embedding_length);
+    add("ffn_norm.weight", embedding_length, 0);
+    add("ffn_gate.weight", embedding_length, feed_forward_length);
+    add("ffn_down.weight", feed_forward_length, embedding_length);
+    add("ffn_up.weight", embedding_length, feed_forward_length);
+  }
+  add_tensor(gguf, ggml, "output_norm.weight", embedding_length, 0, true);
+  add_tensor(gguf, ggml, "output.weight", embedding_length, vocab_size, false);
+
+  const bool written = gguf_write_to_file(gguf, path, false);
+  gguf_free(gguf);
+  ggml_free(ggml);
+  return written ? 0 : 1;
+}
+
+struct model_options {
+  bool tracked = true;
+  // Keeps the model and its contexts off every GPU device.
+  bool cpu_only = false;
+};
+
 struct model_fixture {
   llama_model *model = nullptr;
   llama_context *context = nullptr;
   std::vector<llama_token> tokens;
 };
 
-model_fixture load_model(const char *path, bool tracked) {
+model_fixture load_model(const char *path, model_options options = {}) {
   llama_backend_init();
   model_fixture fixture;
-  const auto model_params = llama_model_default_params();
-  fixture.model = tracked ? llama_dart_model_load_from_file(path, model_params)
-                          : llama_model_load_from_file(path, model_params);
+  auto model_params = llama_model_default_params();
+  static ggml_backend_dev_t no_devices[] = {nullptr};
+  model_params.n_gpu_layers = options.cpu_only ? 0 : 99;
+  model_params.devices = options.cpu_only ? no_devices : nullptr;
+  model_params.load_mode = LLAMA_LOAD_MODE_MMAP;
+  fixture.model = options.tracked
+                      ? llama_dart_model_load_from_file(path, model_params)
+                      : llama_model_load_from_file(path, model_params);
   assert(fixture.model != nullptr);
   auto context_params = llama_context_default_params();
-  context_params.n_ctx = 512;
+  context_params.n_ctx = 256;
   fixture.context =
-      tracked ? llama_dart_init_from_model(fixture.model, context_params)
-              : llama_init_from_model(fixture.model, context_params);
+      options.tracked
+          ? llama_dart_init_from_model(fixture.model, context_params)
+          : llama_init_from_model(fixture.model, context_params);
   assert(fixture.context != nullptr);
-
-  const llama_vocab *vocab = llama_model_get_vocab(fixture.model);
-  const char *text = "The quick brown fox jumps over the lazy dog.";
-  fixture.tokens.resize(64);
-  const int32_t count = llama_tokenize(
-      vocab, text, static_cast<int32_t>(strlen(text)), fixture.tokens.data(),
-      static_cast<int32_t>(fixture.tokens.size()), true, true);
-  assert(count > 0);
-  fixture.tokens.resize(static_cast<size_t>(count));
+  // Token ids that every vocabulary has, so no tokenizer is needed.
+  for (llama_token token = 1; token <= 32; ++token) {
+    fixture.tokens.push_back(token);
+  }
   return fixture;
 }
 
-int32_t decode_prompt(model_fixture &fixture, bool tracked) {
-  // The calls llama_dart_decode does not cover are in flight as well.
+llama_batch prompt(model_fixture &fixture) {
+  return llama_batch_get_one(fixture.tokens.data(),
+                             static_cast<int32_t>(fixture.tokens.size()));
+}
+
+void clear_memory(model_fixture &fixture) {
+  // llama_memory_clear has no wrapper. Bracketing it keeps the scenarios free
+  // of calls that only the settle time covers.
   llama_dart_exit_call_begin();
   llama_memory_clear(llama_get_memory(fixture.context), true);
-  const llama_batch batch = llama_batch_get_one(
-      fixture.tokens.data(), static_cast<int32_t>(fixture.tokens.size()));
-  const int32_t status = tracked ? llama_dart_decode(fixture.context, batch)
-                                 : llama_decode(fixture.context, batch);
   llama_dart_exit_call_end();
-  return status;
+}
+
+llama_sampler *greedy_sampler() {
+  llama_sampler *sampler =
+      llama_sampler_chain_init(llama_sampler_chain_default_params());
+  llama_sampler_chain_add(sampler, llama_sampler_init_greedy());
+  return sampler;
+}
+
+// One generation step as the Dart side runs it: decode, then sample.
+llama_token decode_and_sample(model_fixture &fixture, llama_sampler *sampler) {
+  clear_memory(fixture);
+  assert(llama_dart_decode(fixture.context, prompt(fixture)) == 0);
+  return llama_dart_sampler_sample(sampler, fixture.context, -1);
 }
 
 // Exits with a loaded model and context that nothing frees.
 int test_model_idle(const char *path, bool tracked) {
-  model_fixture fixture = load_model(path, tracked);
-  assert(decode_prompt(fixture, tracked) == 0);
+  model_options options;
+  options.tracked = tracked;
+  model_fixture fixture = load_model(path, options);
+  clear_memory(fixture);
+  assert(llama_decode(fixture.context, prompt(fixture)) == 0);
   assert(llama_dart_exit_tracked_count() == (tracked ? 2 : 0));
   return 0;
 }
 
 int test_model_dispose(const char *path) {
+  llama_sampler *sampler = greedy_sampler();
   for (int i = 0; i < 3; ++i) {
-    model_fixture fixture = load_model(path, true);
-    assert(decode_prompt(fixture, true) == 0);
+    model_fixture fixture = load_model(path);
+    assert(decode_and_sample(fixture, sampler) >= 0);
     assert(llama_dart_exit_tracked_count() == 2);
     llama_dart_exit_free(fixture.context);
     llama_dart_exit_free(fixture.model);
     assert(llama_dart_exit_tracked_count() == 0);
   }
+  llama_sampler_free(sampler);
   return 0;
 }
 
-// Exits with a loaded model, context and mtmd context that nothing frees.
-int test_model_mtmd(const char *path, const char *mmproj_path) {
-  model_fixture fixture = load_model(path, true);
-  const mtmd_context_params params = mtmd_context_params_default();
-  assert(llama_dart_mtmd_init_from_file(mmproj_path, fixture.model, nullptr) ==
-         nullptr);
-  mtmd_context *mtmd =
-      llama_dart_mtmd_init_from_file(mmproj_path, fixture.model, &params);
-  assert(mtmd != nullptr);
-  assert(llama_dart_exit_tracked_count() == 3);
-  llama_dart_exit_free(mtmd);
-  assert(llama_dart_exit_tracked_count() == 2);
-  assert(llama_dart_mtmd_init_from_file(mmproj_path, fixture.model, &params) !=
-         nullptr);
-  assert(llama_dart_exit_tracked_count() == 3);
+// A context counts a decode or encode once its backend has finished it, so a
+// synchronize that changes the counts shows that work was still pending.
+bool has_pending_work(model_fixture &fixture) {
+  const llama_perf_context_data before = llama_perf_context(fixture.context);
+  llama_synchronize(fixture.context);
+  const llama_perf_context_data after = llama_perf_context(fixture.context);
+  return before.n_p_eval != after.n_p_eval || before.n_eval != after.n_eval;
+}
+
+// The wrapped decode leaves no backend work for a later, unguarded read.
+int test_model_sync(const char *path) {
+  model_fixture fixture = load_model(path);
+  assert(llama_decode(fixture.context, prompt(fixture)) == 0);
+  assert(has_pending_work(fixture));
+
+  clear_memory(fixture);
+  assert(llama_dart_decode(fixture.context, prompt(fixture)) == 0);
+  assert(!has_pending_work(fixture));
+
+  clear_memory(fixture);
+  assert(llama_decode(fixture.context, prompt(fixture)) == 0);
+  llama_dart_synchronize(fixture.context);
+  assert(!has_pending_work(fixture));
   return 0;
 }
 
-// Exits while another thread is decoding.
-int test_model_decode(const char *path) {
-  static model_fixture fixture;
-  fixture = load_model(path, true);
-  static std::atomic<int> decoded{0};
-  std::thread([] {
-    for (;;) {
-      assert(decode_prompt(fixture, true) == 0);
-      decoded.fetch_add(1);
+// The wrappers pass their arguments and results through.
+int test_model_wrappers(const char *path) {
+  model_fixture fixture = load_model(path);
+  llama_sampler *sampler = greedy_sampler();
+  const llama_token sampled = decode_and_sample(fixture, sampler);
+  assert(sampled == llama_sampler_sample(sampler, fixture.context, -1));
+  llama_sampler_free(sampler);
+  const float first_logit = llama_get_logits_ith(fixture.context, -1)[0];
+
+  const size_t size = llama_dart_state_seq_get_size_ext(fixture.context, 0, 0);
+  assert(size == llama_state_seq_get_size_ext(fixture.context, 0, 0));
+  assert(size > 0);
+  std::vector<uint8_t> state(size);
+  assert(llama_dart_state_seq_get_data_ext(fixture.context, state.data(),
+                                           state.size(), 0, 0) == size);
+  clear_memory(fixture);
+  assert(llama_dart_state_seq_set_data_ext(fixture.context, state.data(),
+                                           state.size(), 0, 0) == size);
+
+  const std::string state_path = std::string(path) + ".state";
+  assert(llama_dart_state_save_file(fixture.context, state_path.c_str(),
+                                    fixture.tokens.data(),
+                                    fixture.tokens.size()));
+  clear_memory(fixture);
+  std::vector<llama_token> restored(fixture.tokens.size() + 1);
+  size_t restored_count = 0;
+  assert(llama_dart_state_load_file(fixture.context, state_path.c_str(),
+                                    restored.data(), restored.size(),
+                                    &restored_count));
+  restored.resize(restored_count);
+  assert(restored == fixture.tokens);
+  assert(remove(state_path.c_str()) == 0);
+  assert(llama_get_logits_ith(fixture.context, -1)[0] == first_logit);
+
+  assert(llama_dart_adapter_lora_init(fixture.model, "missing.gguf") ==
+         nullptr);
+  return 0;
+}
+
+int test_graph() {
+  llama_backend_init();
+  ggml_backend_t backend =
+      ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_CPU, nullptr);
+  assert(backend != nullptr);
+  ggml_backend_sched_t sched =
+      ggml_backend_sched_new(&backend, nullptr, 1, 16, false, true);
+  ggml_init_params params{};
+  params.mem_size =
+      ggml_tensor_overhead() * 8 + ggml_graph_overhead_custom(16, false);
+  params.no_alloc = true;
+  ggml_context *ggml = ggml_init(params);
+  ggml_tensor *left = ggml_new_tensor_1d(ggml, GGML_TYPE_F32, 2);
+  ggml_tensor *right = ggml_new_tensor_1d(ggml, GGML_TYPE_F32, 2);
+  ggml_tensor *sum = ggml_add(ggml, left, right);
+  ggml_cgraph *graph = ggml_new_graph_custom(ggml, 16, false);
+  ggml_build_forward_expand(graph, sum);
+  assert(ggml_backend_sched_alloc_graph(sched, graph));
+  const float left_values[2] = {1.0f, 2.0f};
+  const float right_values[2] = {10.0f, 20.0f};
+  ggml_backend_tensor_set(left, left_values, 0, sizeof(left_values));
+  ggml_backend_tensor_set(right, right_values, 0, sizeof(right_values));
+
+  assert(llama_dart_ggml_backend_sched_graph_compute(sched, graph) ==
+         GGML_STATUS_SUCCESS);
+  float sum_values[2] = {};
+  ggml_backend_tensor_get(sum, sum_values, 0, sizeof(sum_values));
+  assert(sum_values[0] == 11.0f && sum_values[1] == 22.0f);
+
+  ggml_backend_sched_free(sched);
+  ggml_free(ggml);
+  ggml_backend_free(backend);
+  return 0;
+}
+
+std::mutex g_remaining_mutex;
+std::vector<int32_t> g_remaining;
+
+void free_and_count_remaining(void *) {
+  const int32_t remaining = llama_dart_exit_tracked_count();
+  std::lock_guard<std::mutex> lock(g_remaining_mutex);
+  g_remaining.push_back(remaining);
+}
+
+// The model, the context and the mtmd context are freed in their stages:
+// objects tracked in the stages around them see the right ones still tracked.
+int test_model_order(const char *path, const char *mmproj_path) {
+  static char scheduler[] = "scheduler";
+  static char model_user_early[] = "model-user-early";
+  static char model_user_late[] = "model-user-late";
+  static char backend[] = "backend";
+  const auto track = [](char *object, int32_t stage) {
+    assert(llama_dart_exit_track(object, free_and_count_remaining, stage));
+  };
+  track(scheduler, LLAMA_DART_EXIT_STAGE_SCHEDULER);
+  track(model_user_early, LLAMA_DART_EXIT_STAGE_MODEL_USER);
+  track(backend, LLAMA_DART_EXIT_STAGE_BACKEND);
+  model_fixture fixture = load_model(path);
+  int32_t mtmd_count = 0;
+  if (mmproj_path != nullptr) {
+    const mtmd_context_params params = mtmd_context_params_default();
+    assert(llama_dart_mtmd_init_from_file(mmproj_path, fixture.model,
+                                          &params) != nullptr);
+    mtmd_count = 1;
+  }
+  track(model_user_late, LLAMA_DART_EXIT_STAGE_MODEL_USER);
+
+  llama_dart_exit_teardown();
+  // Within a stage the latest tracked object goes first. The scheduler,
+  // tracked before the context, sees everything else; the late model user
+  // sees the context gone and the mtmd context still there; the early one
+  // sees both gone; the backend, tracked before the model, sees only the
+  // model.
+  assert(g_remaining ==
+         std::vector<int32_t>({5 + mtmd_count, 3 + mtmd_count, 2, 1}));
+  assert(llama_dart_exit_tracked_count() == 0);
+  return 0;
+}
+
+llama_dart_speculative *init_ngram_speculative(model_fixture &fixture) {
+  llama_dart_speculative_params params{};
+  params.type_names = "ngram-mod";
+  params.draft_token_max = -1;
+  params.draft_token_min = -1;
+  params.draft_min_probability = -1.0f;
+  params.draft_split_probability = -1.0f;
+  params.ngram_token_min = -1;
+  return llama_dart_speculative_init(fixture.model, nullptr, fixture.context,
+                                     llama_context_default_params(), &params);
+}
+
+// Speculative state is tracked and freed with its context.
+int test_model_session(const char *path) {
+  model_fixture fixture = load_model(path);
+  assert(init_ngram_speculative(fixture) != nullptr);
+  assert(llama_dart_exit_tracked_count() == 3);
+  llama_dart_exit_teardown();
+  assert(llama_dart_exit_tracked_count() == 0);
+  return 0;
+}
+
+// Teardown leaves speculative state alone over a context that an existing
+// caller created with the upstream function and may be decoding on. With
+// nothing else to free, it does not wait for calls in flight either.
+int test_model_session_untracked(const char *path) {
+  model_options options;
+  options.tracked = false;
+  // Metal aborts at exit over a model that is left loaded.
+  options.cpu_only = true;
+  model_fixture fixture = load_model(path, options);
+  assert(init_ngram_speculative(fixture) != nullptr);
+  assert(llama_dart_exit_tracked_count() == 1);
+
+  std::thread([] { llama_dart_exit_call_begin(); }).join();
+  llama_dart_exit_set_wait_ms(30000);
+  const auto started = std::chrono::steady_clock::now();
+  llama_dart_exit_teardown();
+  assert(elapsed_ms(started) < 5000);
+  assert(llama_dart_exit_tracked_count() == 1);
+  return 0;
+}
+
+std::atomic<bool> g_exiting{false};
+
+// Runs generation steps until the process is gone. The step that sees the exit
+// starts late, when the exit has already reached libllamadart's statics.
+void generate_until_exit(model_fixture &fixture) {
+  llama_sampler *sampler = greedy_sampler();
+  for (;;) {
+    llama_dart_exit_call_begin();
+    if (g_exiting.load()) {
+      sleep_ms(300);
     }
+    assert(decode_and_sample(fixture, sampler) >= 0);
+    llama_dart_exit_call_end();
+  }
+}
+
+int exit_while_generating(model_fixture &fixture) {
+  static model_fixture *generating = nullptr;
+  static std::atomic<int> steps{0};
+  generating = &fixture;
+  std::thread([] {
+    llama_sampler *sampler = greedy_sampler();
+    for (int i = 0; i < 3; ++i) {
+      assert(decode_and_sample(*generating, sampler) >= 0);
+      steps.fetch_add(1);
+    }
+    llama_sampler_free(sampler);
+    steps.fetch_add(1);
+    generate_until_exit(*generating);
   }).detach();
-  while (decoded.load() < 3) {
+  while (steps.load() < 4) {
     sleep_ms(1);
   }
+  g_exiting.store(true);
   return 0;
+}
+
+// Exits while another thread is generating.
+int test_model_decode(const char *path) {
+  static model_fixture fixture;
+  fixture = load_model(path);
+  return exit_while_generating(fixture);
+}
+
+// Exits while another thread generates on a model whose load created statics
+// in libllamadart that an earlier, different load had not: a CPU-only load,
+// then one that maps the file into GPU memory.
+int test_model_late_load(const char *path) {
+  static model_fixture first;
+  static model_fixture second;
+  model_options options;
+  options.cpu_only = true;
+  first = load_model(path, options);
+  llama_sampler *sampler = greedy_sampler();
+  assert(decode_and_sample(first, sampler) >= 0);
+  llama_sampler_free(sampler);
+  second = load_model(path);
+  return exit_while_generating(second);
 }
 
 // Exits while another thread is loading the model.
 int test_model_load(const char *path) {
   llama_backend_init();
   static std::atomic<bool> loading{false};
-  static std::atomic<bool> exiting{false};
   static const char *model_path = nullptr;
   model_path = path;
   auto params = llama_model_default_params();
@@ -474,7 +874,7 @@ int test_model_load(const char *path) {
       fprintf(stderr, "the load went on after teardown began\n");
       _Exit(EXIT_FAILURE);
     }
-    while (!exiting.load()) {
+    while (!g_exiting.load()) {
       sleep_ms(1);
     }
     sleep_ms(500);
@@ -488,7 +888,148 @@ int test_model_load(const char *path) {
   while (!loading.load()) {
     sleep_ms(1);
   }
-  exiting.store(true);
+  g_exiting.store(true);
+  return 0;
+}
+
+// Teardown waits for a load in flight although nothing is tracked yet.
+int test_model_load_wait(const char *path) {
+  llama_backend_init();
+  static std::atomic<bool> loading{false};
+  static std::atomic<bool> held{false};
+  static const char *model_path = nullptr;
+  model_path = path;
+  auto params = llama_model_default_params();
+  params.progress_callback = [](float progress, void *) {
+    if (progress > 0.0f && !loading.exchange(true)) {
+      sleep_ms(400);
+      held.store(true);
+    }
+    return true;
+  };
+  std::thread([params] {
+    llama_dart_model_load_from_file(model_path, params);
+  }).detach();
+  while (!loading.load()) {
+    sleep_ms(1);
+  }
+  llama_dart_exit_set_wait_ms(30000);
+  const auto started = std::chrono::steady_clock::now();
+  llama_dart_exit_teardown();
+  assert(held.load());
+  assert(elapsed_ms(started) < 20000);
+  assert(llama_dart_exit_tracked_count() == 0);
+  return 0;
+}
+
+// Evaluates an image prompt chunk by chunk, as the Dart side does.
+int32_t eval_chunks_one_by_one(mtmd_context *mtmd, model_fixture &fixture,
+                               const mtmd_input_chunks *chunks,
+                               llama_pos *position) {
+  const size_t count = mtmd_input_chunks_size(chunks);
+  llama_pos past = 0;
+  for (size_t i = 0; i < count; ++i) {
+    const mtmd_input_chunk *chunk = mtmd_input_chunks_get(chunks, i);
+    int32_t status = 0;
+    if (mtmd_input_chunk_get_type(chunk) == MTMD_INPUT_CHUNK_TYPE_TEXT) {
+      status = llama_dart_mtmd_helper_eval_chunk_single(
+          mtmd, fixture.context, chunk, past, 0, 64, i == count - 1, position);
+    } else {
+      status = llama_dart_mtmd_encode_chunk(mtmd, chunk);
+      if (status == 0) {
+        status = llama_dart_mtmd_helper_decode_image_chunk(
+            mtmd, fixture.context, chunk, mtmd_get_output_embd(mtmd), past, 0,
+            64, position, nullptr, nullptr);
+      }
+    }
+    if (status != 0) {
+      return status;
+    }
+    assert(!has_pending_work(fixture));
+    past = *position;
+  }
+  return 0;
+}
+
+// Exits with a loaded model, context and mtmd context that nothing frees,
+// after an image prompt went through the mtmd wrappers.
+int test_model_mtmd(const char *path, const char *mmproj_path) {
+  model_fixture fixture = load_model(path);
+  const mtmd_context_params params = mtmd_context_params_default();
+  assert(llama_dart_mtmd_init_from_file(mmproj_path, fixture.model, nullptr) ==
+         nullptr);
+  mtmd_context *mtmd =
+      llama_dart_mtmd_init_from_file(mmproj_path, fixture.model, &params);
+  assert(mtmd != nullptr);
+  assert(llama_dart_exit_tracked_count() == 3);
+  llama_dart_exit_free(mtmd);
+  assert(llama_dart_exit_tracked_count() == 2);
+  mtmd = llama_dart_mtmd_init_from_file(mmproj_path, fixture.model, &params);
+  assert(mtmd != nullptr);
+  assert(llama_dart_exit_tracked_count() == 3);
+
+  const std::vector<unsigned char> pixels(224 * 224 * 3, 127);
+  mtmd_bitmap *bitmap = mtmd_bitmap_init(224, 224, pixels.data());
+  const mtmd_bitmap *bitmaps[1] = {bitmap};
+  const std::string text = std::string("Describe ") + mtmd_default_marker();
+  const mtmd_input_text input{text.c_str(), text.size(), true, true};
+  mtmd_input_chunks *chunks = mtmd_input_chunks_init();
+  assert(llama_dart_mtmd_tokenize(mtmd, chunks, &input, bitmaps, 1) == 0);
+  assert(mtmd_input_chunks_size(chunks) > 1);
+
+  llama_pos all_at_once = 0;
+  clear_memory(fixture);
+  assert(llama_dart_mtmd_helper_eval_chunks(mtmd, fixture.context, chunks, 0, 0,
+                                            64, true, &all_at_once) == 0);
+  assert(all_at_once > 0);
+  assert(!has_pending_work(fixture));
+
+  llama_pos one_by_one = 0;
+  clear_memory(fixture);
+  assert(eval_chunks_one_by_one(mtmd, fixture, chunks, &one_by_one) == 0);
+  assert(one_by_one == all_at_once);
+
+  mtmd_input_chunks_free(chunks);
+  mtmd_bitmap_free(bitmap);
+  return 0;
+}
+
+// Exits with MTP state over a tracked context that nothing frees.
+int test_model_mtp(const char *path, const char *draft_path) {
+  model_fixture fixture = load_model(path);
+  llama_model *draft =
+      llama_dart_model_load_from_file(draft_path, llama_model_default_params());
+  assert(draft != nullptr);
+  assert(llama_dart_exit_tracked_count() == 3);
+  llama_dart_mtp *mtp = llama_dart_mtp_init_with_draft_model(
+      draft, fixture.context, llama_context_default_params(), 4, 0, 0.0f,
+      false);
+  assert(mtp != nullptr);
+  assert(llama_dart_exit_tracked_count() == 4);
+  llama_dart_mtp_free(mtp);
+  assert(llama_dart_exit_tracked_count() == 3);
+  assert(llama_dart_mtp_init_with_draft_model(draft, fixture.context,
+                                              llama_context_default_params(), 4,
+                                              0, 0.0f, false) != nullptr);
+  return 0;
+}
+
+// Exits with TTS state over a tracked context that nothing frees.
+int test_model_tts(const char *path, const char *mmproj_path) {
+  model_fixture fixture = load_model(path);
+  mtmd_context_params params = mtmd_context_params_default();
+  params.cb_eval = llama_dart_tts_eval_callback;
+  mtmd_context *mtmd =
+      llama_dart_mtmd_init_from_file(mmproj_path, fixture.model, &params);
+  assert(mtmd != nullptr);
+  assert(llama_dart_exit_tracked_count() == 3);
+  llama_dart_tts_status status = LLAMA_DART_TTS_STATUS_INVALID_ARGUMENT;
+  llama_dart_tts *tts = llama_dart_tts_init(fixture.context, mtmd, &status);
+  assert(tts != nullptr && status == LLAMA_DART_TTS_STATUS_OK);
+  assert(llama_dart_exit_tracked_count() == 4);
+  llama_dart_tts_free(tts);
+  assert(llama_dart_exit_tracked_count() == 3);
+  assert(llama_dart_tts_init(fixture.context, mtmd, &status) != nullptr);
   return 0;
 }
 
@@ -496,7 +1037,10 @@ int test_model_load(const char *path) {
 
 int main(int argc, char **argv) {
   const std::string scenario = argc > 1 ? argv[1] : "";
-  const char *model = argc > 2 ? argv[2] : nullptr;
+  const char *first = argc > 2 ? argv[2] : nullptr;
+  const char *second = argc > 3 ? argv[3] : nullptr;
+  // Keeps llama.cpp's device, load and decode logs out of the test output.
+  llama_dart_set_log_level(3);
   if (scenario == "dispose") {
     return test_dispose();
   }
@@ -518,32 +1062,76 @@ int main(int argc, char **argv) {
   if (scenario == "timeout") {
     return test_timeout();
   }
+  if (scenario == "idle-wait") {
+    return test_idle_wait();
+  }
+  if (scenario == "own-call") {
+    return test_own_call();
+  }
   if (scenario == "blocked") {
     return test_blocked();
   }
   if (scenario == "exit") {
     return test_exit();
   }
-  if (model != nullptr) {
+  if (scenario == "late-static") {
+    return test_late_static();
+  }
+  if (scenario == "graph") {
+    return test_graph();
+  }
+  if (first != nullptr) {
+    if (scenario == "make-model") {
+      return make_model(first);
+    }
     if (scenario == "model-idle") {
-      return test_model_idle(model, true);
+      return test_model_idle(first, true);
     }
     if (scenario == "model-idle-untracked") {
-      return test_model_idle(model, false);
+      return test_model_idle(first, false);
     }
     if (scenario == "model-dispose") {
-      return test_model_dispose(model);
+      return test_model_dispose(first);
+    }
+    if (scenario == "model-sync") {
+      return test_model_sync(first);
+    }
+    if (scenario == "model-wrappers") {
+      return test_model_wrappers(first);
+    }
+    if (scenario == "model-order") {
+      return test_model_order(first, second);
+    }
+    if (scenario == "model-session") {
+      return test_model_session(first);
+    }
+    if (scenario == "model-session-untracked") {
+      return test_model_session_untracked(first);
     }
     if (scenario == "model-decode") {
-      return test_model_decode(model);
+      return test_model_decode(first);
+    }
+    if (scenario == "model-late-load") {
+      return test_model_late_load(first);
     }
     if (scenario == "model-load") {
-      return test_model_load(model);
+      return test_model_load(first);
     }
-    if (scenario == "model-mtmd" && argc > 3) {
-      return test_model_mtmd(model, argv[3]);
+    if (scenario == "model-load-wait") {
+      return test_model_load_wait(first);
+    }
+    if (second != nullptr) {
+      if (scenario == "model-mtmd") {
+        return test_model_mtmd(first, second);
+      }
+      if (scenario == "model-mtp") {
+        return test_model_mtp(first, second);
+      }
+      if (scenario == "model-tts") {
+        return test_model_tts(first, second);
+      }
     }
   }
-  fprintf(stderr, "usage: %s <scenario> [model.gguf [mmproj.gguf]]\n", argv[0]);
+  fprintf(stderr, "usage: %s <scenario> [model.gguf [second.gguf]]\n", argv[0]);
   return 2;
 }

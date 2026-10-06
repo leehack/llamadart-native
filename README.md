@@ -255,34 +255,51 @@ left of it at exit:
 - `llama_dart_exit_free` frees a tracked object and removes it, so nothing is
   freed twice. It takes one pointer and can be a Dart `NativeFinalizer`
   callback.
-- On Apple platforms an `atexit` handler frees the remaining objects in stage
-  order: sessions, schedulers, contexts, model users such as mtmd contexts,
-  backends, then models. It first waits up to 2 s
-  (`llama_dart_exit_set_wait_ms`) for the calls in flight on other threads, and
-  frees nothing if one is still running. A model load in flight is cancelled.
-- `llama_dart_decode`, `llama_dart_encode` and the wrapper's own session
-  functions are calls in flight. Wrap other long native calls on tracked
-  objects in `llama_dart_exit_call_begin` and `llama_dart_exit_call_end`.
+- On Apple platforms teardown runs during exit, before the first static of
+  `libllamadart` is destroyed. It frees the remaining objects in stage order:
+  sessions, schedulers, contexts, model users such as mtmd contexts, backends,
+  then models. It first waits up to 2 s (`llama_dart_exit_set_wait_ms`) for the
+  calls in flight on other threads, and frees nothing if one is still running.
+  A model load in flight is cancelled.
+- `llama_dart_decode`, `llama_dart_encode`, the other `llama_dart_` functions
+  named after an upstream function, and the wrapper's own session functions
+  are calls in flight. The decoding ones also wait for the backend, because
+  Metal computes after `llama_decode` returns. Make every long native call on
+  a tracked object through one of them: a Dart isolate can be killed inside any
+  native call, and only a call that begins and ends in native code is then
+  still accounted for.
 - Once teardown has begun, a thread that reaches one of these functions outside
   a call in flight never returns from it: the objects it holds are gone.
+- TTS, speculative and MTP state over a context that was created with the
+  upstream function is tracked but not freed at exit, so a caller that has not
+  switched to the tracked functions keeps its previous exit behavior.
 
 On other platforms nothing runs at exit; `llama_dart_exit_teardown` runs the
-same teardown on request. `src/llama_dart_wrapper.h` documents each function.
+same teardown on request and must be followed directly by `exit`.
+`src/llama_dart_wrapper.h` documents each function.
 
-`llamadart_exit_teardown_test` covers the registry without a model. The
-scenarios that load one are opt-in:
+`llamadart_exit_teardown_test` covers the registry on every platform. On macOS
+it also writes a small model and runs the scenarios that load one, so ctest
+needs no model file:
 
 ```bash
-cmake -S . -B build/exit-teardown -G Ninja \
-  -DLLAMADART_BUILD_TESTS=ON \
-  -DLLAMADART_EXIT_TEARDOWN_TEST_MODEL=/path/to/model.gguf \
-  -DLLAMADART_EXIT_TEARDOWN_TEST_MMPROJ=/path/to/mmproj.gguf
+cmake -S . -B build/exit-teardown -G Ninja -DLLAMADART_BUILD_TESTS=ON
 cmake --build build/exit-teardown --target llamadart_exit_teardown_test
 ctest --test-dir build/exit-teardown -R exit_teardown --output-on-failure
 ```
 
-`llamadart_exit_teardown_test model-idle-untracked /path/to/model.gguf` exits
-with a model that is not tracked, and aborts on Metal.
+`-DLLAMADART_EXIT_TEARDOWN_TEST_MODEL=/path/to/model.gguf` runs them against
+another model, and adding
+`-DLLAMADART_EXIT_TEARDOWN_TEST_MMPROJ=/path/to/mmproj.gguf` also runs the mtmd
+scenarios. Three scenarios need models of their own and run by hand:
+
+```bash
+build/exit-teardown/llamadart_exit_teardown_test model-mtp target.gguf mtp-draft.gguf
+build/exit-teardown/llamadart_exit_teardown_test model-tts qwen3-tts.gguf mmproj-qwen3-tts.gguf
+build/exit-teardown/llamadart_exit_teardown_test model-idle-untracked model.gguf
+```
+
+The last one exits with a model that is not tracked, and aborts on Metal.
 
 ## Experimental TTS Wrapper
 
