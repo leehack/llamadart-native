@@ -457,13 +457,40 @@ jobs:
           -DLLAMADART_BUILD_TESTS=ON
       - name: Build the exit teardown test
         run: cmake --build ${{ matrix.build_dir }} --target llamadart_exit_teardown_test
-      # The model scenarios write their own model, so nothing is downloaded.
+      - name: Validate wrapper exports and the static destructor binding
+        run: >-
+          python3 tools/validate_exports.py --format nm --tool nm
+          --forbid-import __cxa_atexit
+          ${{ matrix.build_dir }}/libllamadart.dylib
+      # The model scenarios write their own models, so nothing is downloaded.
       # The first scenario that reaches Metal waits for the runner to compile
       # the Metal library, which takes most of a minute.
       - name: Run the exit teardown scenarios
         run: >-
           ctest --test-dir ${{ matrix.build_dir }} -R exit_teardown
           --timeout 300 --output-on-failure
+      # A model that nothing tracks aborts at exit when it holds Metal buffers.
+      # A runner without a usable Metal device is outside this repository's
+      # control, so it is reported instead of failing every native change.
+      - name: Check that the scenarios ran on Metal
+        run: |
+          set +e
+          "${{ matrix.build_dir }}/llamadart_exit_teardown_test" \
+            model-idle-untracked \
+            "${{ matrix.build_dir }}/exit_teardown_test_model.gguf" \
+            > untracked-control.log 2>&1
+          status=$?
+          set -e
+          if [ "$status" -ne 0 ] && grep -q 'rsets->data count' untracked-control.log; then
+            echo "Metal: the untracked control aborted in ggml-metal, so the model scenarios held Metal buffers." | tee -a "$GITHUB_STEP_SUMMARY"
+          elif [ "$status" -eq 0 ]; then
+            echo "::warning title=Exit teardown ran without Metal::The untracked control exited cleanly, so this runner allocated no Metal buffers and the Metal abort path was not exercised."
+            echo "No Metal: the untracked control exited cleanly; the Metal abort path was not exercised on this runner." >> "$GITHUB_STEP_SUMMARY"
+          else
+            cat untracked-control.log
+            echo "The untracked control failed with status $status for another reason."
+            exit 1
+          fi
 
   wrapper-validation:
     if: always()

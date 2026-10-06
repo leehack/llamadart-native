@@ -99,6 +99,13 @@ def parse_args() -> argparse.Namespace:
         dest="symbols",
         help="Required symbol. Defaults to the llamadart wrapper export set.",
     )
+    parser.add_argument(
+        "--forbid-import",
+        action="append",
+        dest="forbidden_imports",
+        default=[],
+        help="Symbol the library must not import. Supported for --format nm.",
+    )
     return parser.parse_args()
 
 
@@ -148,6 +155,15 @@ def exported_symbols_from_nm(output: str) -> set[str]:
     return symbols
 
 
+def imported_symbols_from_nm(output: str) -> set[str]:
+    symbols: set[str] = set()
+    for line in output.splitlines():
+        parts = line.split()
+        if len(parts) >= 2 and parts[-2].upper() == "U":
+            symbols.add(parts[-1].removeprefix("_"))
+    return symbols
+
+
 _DUMPBIN_EXPORT_RE = re.compile(
     r"^\s*\d+\s+[0-9A-Fa-f]+\s+[0-9A-Fa-f]+\s+(\S+)"
 )
@@ -164,6 +180,9 @@ def exported_symbols_from_dumpbin(output: str) -> set[str]:
 
 def main() -> int:
     args = parse_args()
+    if args.forbidden_imports and args.format != "nm":
+        print("--forbid-import requires --format nm", file=sys.stderr)
+        return 2
     output = run_tool(args)
     exported = {
         "readelf": exported_symbols_from_readelf,
@@ -175,6 +194,14 @@ def main() -> int:
     if missing:
         print(f"Missing exports in {args.library}:", file=sys.stderr)
         for symbol in missing:
+            print(f"  - {symbol}", file=sys.stderr)
+        return 1
+
+    imported = imported_symbols_from_nm(output)
+    forbidden = [s for s in args.forbidden_imports if s in imported]
+    if forbidden:
+        print(f"Forbidden imports in {args.library}:", file=sys.stderr)
+        for symbol in forbidden:
             print(f"  - {symbol}", file=sys.stderr)
         return 1
 
