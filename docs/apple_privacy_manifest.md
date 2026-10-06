@@ -57,8 +57,8 @@ python3 tools/validate_apple_xcframework.py --audit-imports \
 It fails when a slice lacks the manifest, carries it in the wrong location,
 ships an invalid property list or an unapproved reason, or when the declared
 categories differ from the required-reason symbols and Objective-C selectors
-the slice binary references (`nm -u`, `otool`). The audit cannot see calls
-resolved through `dlsym`.
+the slice binary references in any architecture (`nm -u -arch all`,
+`otool -arch all`). The audit cannot see calls resolved through `dlsym`.
 
 When an upstream bump makes the audit fail, find the new call sites, choose the
 reason that describes them, and update the manifest and this page together.

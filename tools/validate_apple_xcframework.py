@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import plistlib
+import re
 import shutil
 import subprocess
 import sys
@@ -101,7 +102,7 @@ def validate_manifest(data: bytes) -> tuple[list[str], set[str]]:
         return [*errors, "NSPrivacyAccessedAPITypes must be an array"], declared
     for entry in accessed:
         category = entry.get("NSPrivacyAccessedAPIType") if isinstance(entry, dict) else None
-        if category not in APPROVED_REASONS:
+        if not isinstance(category, str) or category not in APPROVED_REASONS:
             errors.append(f"unknown required-reason API category: {category!r}")
             continue
         if category in declared:
@@ -112,7 +113,7 @@ def validate_manifest(data: bytes) -> tuple[list[str], set[str]]:
             errors.append(f"{category} must declare at least one reason")
             continue
         for reason in reasons:
-            if reason not in APPROVED_REASONS[category]:
+            if not isinstance(reason, str) or reason not in APPROVED_REASONS[category]:
                 errors.append(f"{category} declares unapproved reason {reason!r}")
     return errors, declared
 
@@ -171,18 +172,20 @@ def tool_output(command: list[str]) -> str:
 
 def binary_api_references(binary: Path) -> tuple[set[str], set[str]]:
     """Return undefined symbols and Objective-C selectors across all architectures."""
-
-    def last_fields(output: str) -> set[str]:
-        return {
-            line.split()[-1]
-            for line in output.splitlines()
-            if line.strip() and not line.rstrip().endswith(":")
-        }
-
-    symbols = last_fields(tool_output(["nm", "-u", str(binary)]))
-    selectors = last_fields(
-        tool_output(["otool", "-v", "-s", "__TEXT", "__objc_methname", str(binary)])
+    # Without -arch all, nm reads only the host architecture of a fat binary.
+    undefined = tool_output(["nm", "-u", "-arch", "all", str(binary)])
+    methnames = tool_output(
+        ["otool", "-arch", "all", "-v", "-s", "__TEXT", "__objc_methname", str(binary)]
     )
+    symbols = {
+        line.split()[-1]
+        for line in undefined.splitlines()
+        if line.strip() and not line.rstrip().endswith(":")
+    }
+    selectors = {
+        match.group(1)
+        for match in re.finditer(r"^[0-9a-f]+\s+(\S+)$", methnames, re.MULTILINE)
+    }
     return symbols, selectors
 
 

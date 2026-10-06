@@ -34,7 +34,7 @@ def manifest(**overrides: object) -> bytes:
     return plistlib.dumps(content)
 
 
-def accessed(category: str, *reasons: str) -> dict[str, object]:
+def accessed(category: object, *reasons: object) -> dict[str, object]:
     return {
         "NSPrivacyAccessedAPIType": category,
         "NSPrivacyAccessedAPITypeReasons": list(reasons),
@@ -175,6 +175,12 @@ class ValidateArchiveTests(unittest.TestCase):
             f"{validator.FILE_TIMESTAMP} must declare at least one reason": manifest(
                 NSPrivacyAccessedAPITypes=[accessed(validator.FILE_TIMESTAMP)]
             ),
+            "unknown required-reason API category: ['Timestamp']": manifest(
+                NSPrivacyAccessedAPITypes=[accessed(["Timestamp"], "C617.1")]
+            ),
+            f"{validator.FILE_TIMESTAMP} declares unapproved reason ['C617.1']": manifest(
+                NSPrivacyAccessedAPITypes=[accessed(validator.FILE_TIMESTAMP, ["C617.1"])]
+            ),
         }
         for expected, data in cases.items():
             with self.subTest(expected=expected):
@@ -220,6 +226,76 @@ class ValidateArchiveTests(unittest.TestCase):
 
         self.assertEqual(1, result.returncode)
         self.assertIn("error:", result.stderr)
+
+
+@unittest.skipUnless(
+    sys.platform == "darwin",
+    "needs the Apple toolchain to build and inspect Mach-O binaries",
+)
+class MachOImportAuditTests(unittest.TestCase):
+    PLAIN = "int plain(void) { return 1; }\n"
+    REQUIRED_REASON = (
+        "#import <Foundation/Foundation.h>\n"
+        "#include <mach/mach_time.h>\n"
+        "#include <sys/stat.h>\n"
+        "double required_reason(int fd) {\n"
+        "  struct stat info;\n"
+        '  fstat(fd, &info);\n'
+        '  stat("/", &info);\n'
+        "  return [[NSProcessInfo processInfo] systemUptime] + mach_absolute_time();\n"
+        "}\n"
+    )
+
+    def fat_dylib(self, work: Path, sources: dict[str, str]) -> bytes:
+        thin = []
+        for arch, source in sources.items():
+            source_file = work / f"{arch}.m"
+            source_file.write_text(source, encoding="utf-8")
+            thin.append(work / f"{arch}.dylib")
+            subprocess.run(
+                [
+                    "xcrun", "clang", "-dynamiclib", "-arch", arch,
+                    "-framework", "Foundation", str(source_file), "-o", str(thin[-1]),
+                ],
+                check=True,
+                capture_output=True,
+            )
+        fat = work / "fat.dylib"
+        subprocess.run(
+            ["xcrun", "lipo", "-create", *map(str, thin), "-output", str(fat)],
+            check=True,
+            capture_output=True,
+        )
+        return fat.read_bytes()
+
+    def test_audits_every_architecture_of_a_fat_slice(self) -> None:
+        architectures = ("arm64", "x86_64")
+        for importing in architectures:
+            with self.subTest(importing=importing), tempfile.TemporaryDirectory() as directory:
+                binary = self.fat_dylib(
+                    Path(directory),
+                    {
+                        arch: self.REQUIRED_REASON if arch == importing else self.PLAIN
+                        for arch in architectures
+                    },
+                )
+                archive = write_archive(
+                    directory,
+                    {
+                        f"llama.xcframework/{IOS}/llama.framework/llama": binary,
+                        f"llama.xcframework/{MACOS}/llama.framework/Versions/A/llama": binary,
+                    },
+                )
+
+                self.assertEqual(
+                    [
+                        f"{identifier}: uses {validator.SYSTEM_BOOT_TIME} via "
+                        "_mach_absolute_time, systemUptime but the manifest does "
+                        "not declare it"
+                        for identifier in (IOS, MACOS)
+                    ],
+                    validator.validate_archive(archive, audit_imports=True),
+                )
 
 
 class RequiredCategoryTests(unittest.TestCase):
