@@ -50,7 +50,7 @@ def validate_results(needs):
     expected = 'success' if selected == 'true' else 'skipped'
     jobs = {'android-arm64-isa', 'android-vulkan-shaders', 'kleidiai-dispatch-emulated',
             'windows-arm64-kleidiai', 'windows-arm64-vulkan', 'linux-artifact-contract',
-            'wrapper-contract', 'msvc-mtmd-link-contract'}
+            'wrapper-contract', 'msvc-mtmd-link-contract', 'macos-exit-teardown'}
     return set(needs) == jobs | {'changes'} and all(
         needs[job].get('result') == expected for job in jobs
     )
