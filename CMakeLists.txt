@@ -275,13 +275,27 @@ if (LLAMADART_BUILD_TESTS)
         endif()
         foreach(scenario model-idle model-dispose model-sync model-wrappers
                 model-order model-session model-session-untracked
-                model-decode model-late-load model-load model-load-wait)
+                model-decode-wait model-mtmd-wait model-decode
+                model-late-load model-load model-load-wait)
             add_test(NAME llamadart_exit_teardown_${scenario}
                 COMMAND llamadart_exit_teardown_test ${scenario}
                     "${exit_teardown_model}")
             set_tests_properties(llamadart_exit_teardown_${scenario} PROPERTIES
                 FIXTURES_REQUIRED llamadart_exit_teardown_model)
         endforeach()
+        # llama_encode needs an encoder, which the test also writes.
+        set(exit_teardown_encoder
+            "${CMAKE_CURRENT_BINARY_DIR}/exit_teardown_test_encoder.gguf")
+        add_test(NAME llamadart_exit_teardown_make-encoder-model
+            COMMAND llamadart_exit_teardown_test make-encoder-model
+                "${exit_teardown_encoder}")
+        set_tests_properties(llamadart_exit_teardown_make-encoder-model
+            PROPERTIES FIXTURES_SETUP llamadart_exit_teardown_encoder)
+        add_test(NAME llamadart_exit_teardown_model-encode-wait
+            COMMAND llamadart_exit_teardown_test model-encode-wait
+                "${exit_teardown_encoder}")
+        set_tests_properties(llamadart_exit_teardown_model-encode-wait
+            PROPERTIES FIXTURES_REQUIRED llamadart_exit_teardown_encoder)
         if (LLAMADART_EXIT_TEARDOWN_TEST_MODEL AND
                 LLAMADART_EXIT_TEARDOWN_TEST_MMPROJ)
             foreach(scenario model-mtmd model-order)

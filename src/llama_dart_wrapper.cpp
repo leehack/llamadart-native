@@ -966,18 +966,23 @@ struct llama_dart_exit_creating_call {
   operator=(const llama_dart_exit_creating_call &) = delete;
 };
 
-// A backend may still be computing when llama_decode or llama_encode returns,
-// and the next read of the context then waits for it. That wait must be part
-// of the call in flight, or teardown frees the context under it.
-static int32_t llama_dart_exit_evaluate(int32_t (*evaluate)(llama_context *,
-                                                            llama_batch),
-                                        llama_context *ctx,
-                                        llama_batch batch) {
+// A call in flight that decodes or encodes on a context. A backend may still
+// be computing when llama_decode or llama_encode returns, and the next read of
+// the context then waits for it. That wait must be part of the call in flight,
+// or teardown frees the context under it, so the call ends only after it.
+struct llama_dart_exit_evaluating_call {
+  explicit llama_dart_exit_evaluating_call(llama_context *context)
+      : ctx(context) {}
+  ~llama_dart_exit_evaluating_call() { llama_synchronize(ctx); }
+  llama_dart_exit_evaluating_call(const llama_dart_exit_evaluating_call &) =
+      delete;
+  llama_dart_exit_evaluating_call &
+  operator=(const llama_dart_exit_evaluating_call &) = delete;
+
+  // Declared first, so that it ends after the destructor has waited.
   llama_dart_exit_call call;
-  const int32_t status = evaluate(ctx, batch);
-  llama_synchronize(ctx);
-  return status;
-}
+  llama_context *ctx;
+};
 
 struct llama_dart_exit_load_progress {
   llama_progress_callback callback;
@@ -1173,12 +1178,14 @@ LLAMADART_API struct mtmd_context *llama_dart_mtmd_init_from_file(
 
 LLAMADART_API int32_t llama_dart_decode(struct llama_context *ctx,
                                         struct llama_batch batch) {
-  return llama_dart_exit_evaluate(llama_decode, ctx, batch);
+  llama_dart_exit_evaluating_call call(ctx);
+  return llama_decode(ctx, batch);
 }
 
 LLAMADART_API int32_t llama_dart_encode(struct llama_context *ctx,
                                         struct llama_batch batch) {
-  return llama_dart_exit_evaluate(llama_encode, ctx, batch);
+  llama_dart_exit_evaluating_call call(ctx);
+  return llama_encode(ctx, batch);
 }
 
 LLAMADART_API void llama_dart_synchronize(struct llama_context *ctx) {
@@ -1258,11 +1265,9 @@ LLAMADART_API int32_t llama_dart_mtmd_helper_eval_chunks(
     const struct mtmd_input_chunks *chunks, llama_pos n_past,
     llama_seq_id seq_id, int32_t n_batch, bool logits_last,
     llama_pos *new_n_past) {
-  llama_dart_exit_call call;
-  const int32_t status = mtmd_helper_eval_chunks(
-      ctx, lctx, chunks, n_past, seq_id, n_batch, logits_last, new_n_past);
-  llama_synchronize(lctx);
-  return status;
+  llama_dart_exit_evaluating_call call(lctx);
+  return mtmd_helper_eval_chunks(ctx, lctx, chunks, n_past, seq_id, n_batch,
+                                 logits_last, new_n_past);
 }
 
 LLAMADART_API int32_t llama_dart_mtmd_helper_eval_chunk_single(
@@ -1270,11 +1275,9 @@ LLAMADART_API int32_t llama_dart_mtmd_helper_eval_chunk_single(
     const struct mtmd_input_chunk *chunk, llama_pos n_past,
     llama_seq_id seq_id, int32_t n_batch, bool logits_last,
     llama_pos *new_n_past) {
-  llama_dart_exit_call call;
-  const int32_t status = mtmd_helper_eval_chunk_single(
-      ctx, lctx, chunk, n_past, seq_id, n_batch, logits_last, new_n_past);
-  llama_synchronize(lctx);
-  return status;
+  llama_dart_exit_evaluating_call call(lctx);
+  return mtmd_helper_eval_chunk_single(ctx, lctx, chunk, n_past, seq_id,
+                                       n_batch, logits_last, new_n_past);
 }
 
 LLAMADART_API int32_t llama_dart_mtmd_helper_decode_image_chunk(
@@ -1284,12 +1287,10 @@ LLAMADART_API int32_t llama_dart_mtmd_helper_decode_image_chunk(
     llama_pos *new_n_past,
     int32_t (*callback)(struct llama_batch batch, void *user_data),
     void *user_data) {
-  llama_dart_exit_call call;
-  const int32_t status = mtmd_helper_decode_image_chunk(
-      ctx, lctx, chunk, encoded_embd, n_past, seq_id, n_batch, new_n_past,
-      callback, user_data);
-  llama_synchronize(lctx);
-  return status;
+  llama_dart_exit_evaluating_call call(lctx);
+  return mtmd_helper_decode_image_chunk(ctx, lctx, chunk, encoded_embd, n_past,
+                                        seq_id, n_batch, new_n_past, callback,
+                                        user_data);
 }
 
 LLAMADART_API enum ggml_status

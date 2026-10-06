@@ -442,14 +442,29 @@ int test_exit() {
   return 0;
 }
 
-// Teardown also runs before a static that libllamadart creates after the
-// first object was tracked.
+std::string g_system_info;
+
+// Uses the static behind llama_print_system_info, which teardown must find
+// alive. Only a sanitizer sees a use of it after its destruction.
+void free_and_read_system_info(void *) {
+  if (g_system_info != llama_print_system_info()) {
+    fprintf(stderr, "the system info changed before teardown\n");
+    _Exit(EXIT_FAILURE);
+  }
+}
+
+// A static that libllamadart creates after the first object was tracked is
+// also destroyed only after teardown.
 int test_late_static() {
+  static char reader[] = "reader";
   track_out_of_stage_order();
+  assert(llama_dart_exit_track(reader, free_and_read_system_info,
+                               LLAMA_DART_EXIT_STAGE_MODEL));
   // Runs before the teardown registered by tracking, and after the destructor
   // of the static created next.
   assert(atexit(expect_freed_at_exit) == 0);
-  assert(llama_print_system_info() != nullptr);
+  g_system_info = llama_print_system_info();
+  assert(!g_system_info.empty());
   return 0;
 }
 
@@ -470,49 +485,77 @@ void add_tensor(gguf_context *gguf, ggml_context *ggml, const std::string &name,
   gguf_add_tensor(gguf, tensor);
 }
 
-// Writes a two-layer llama model with random weights and no tokenizer. It is
-// large enough to load, offload and decode, and needs no download.
-int make_model(const char *path) {
+// Writes a two-layer model with random weights and no tokenizer: a llama
+// decoder, or a bert encoder for llama_encode, which a decoder cannot run. It
+// is large enough to load, offload and evaluate, and needs no download.
+int make_model(const char *path, bool is_encoder) {
   const uint32_t vocab_size = 256;
+  const uint32_t context_length = 512;
   const uint32_t embedding_length = 128;
   const uint32_t feed_forward_length = 256;
   const uint32_t block_count = 2;
+  const std::string arch = is_encoder ? "bert" : "llama";
 
   gguf_context *gguf = gguf_init_empty();
-  gguf_set_val_str(gguf, "general.architecture", "llama");
+  const auto set_u32 = [&](const char *key, uint32_t value) {
+    gguf_set_val_u32(gguf, (arch + "." + key).c_str(), value);
+  };
+  gguf_set_val_str(gguf, "general.architecture", arch.c_str());
   gguf_set_val_str(gguf, "general.name", "llamadart exit teardown test");
-  gguf_set_val_u32(gguf, "llama.context_length", 512);
-  gguf_set_val_u32(gguf, "llama.embedding_length", embedding_length);
-  gguf_set_val_u32(gguf, "llama.block_count", block_count);
-  gguf_set_val_u32(gguf, "llama.feed_forward_length", feed_forward_length);
-  gguf_set_val_u32(gguf, "llama.attention.head_count", 4);
-  gguf_set_val_f32(gguf, "llama.attention.layer_norm_rms_epsilon", 1e-5f);
-  gguf_set_val_u32(gguf, "llama.vocab_size", vocab_size);
+  set_u32("context_length", context_length);
+  set_u32("embedding_length", embedding_length);
+  set_u32("block_count", block_count);
+  set_u32("feed_forward_length", feed_forward_length);
+  set_u32("attention.head_count", 4);
+  set_u32("vocab_size", vocab_size);
+  gguf_set_val_f32(gguf,
+                   (arch + (is_encoder ? ".attention.layer_norm_epsilon"
+                                       : ".attention.layer_norm_rms_epsilon"))
+                       .c_str(),
+                   1e-5f);
   gguf_set_val_str(gguf, "tokenizer.ggml.model", "no_vocab");
+  if (is_encoder) {
+    gguf_set_val_u32(gguf, "tokenizer.ggml.token_type_count", 1);
+  }
 
   ggml_init_params params{};
   params.mem_size = 16u * 1024 * 1024;
   ggml_context *ggml = ggml_init(params);
   assert(ggml != nullptr);
-  add_tensor(gguf, ggml, "token_embd.weight", embedding_length, vocab_size,
-             false);
+  const auto add = [&](const std::string &name, int64_t columns, int64_t rows) {
+    add_tensor(gguf, ggml, name + ".weight", columns, rows, rows == 0);
+  };
+  // A norm with a bias, as bert has them.
+  const auto add_norm = [&](const std::string &name) {
+    add(name, embedding_length, 0);
+    add_tensor(gguf, ggml, name + ".bias", embedding_length, 0, false);
+  };
+  add("token_embd", embedding_length, vocab_size);
+  if (is_encoder) {
+    add("position_embd", embedding_length, context_length);
+    add_norm("token_embd_norm");
+  }
   for (uint32_t block = 0; block < block_count; ++block) {
     const std::string prefix = "blk." + std::to_string(block) + ".";
-    const auto add = [&](const char *name, int64_t columns, int64_t rows) {
-      add_tensor(gguf, ggml, prefix + name, columns, rows, rows == 0);
-    };
-    add("attn_norm.weight", embedding_length, 0);
-    add("attn_q.weight", embedding_length, embedding_length);
-    add("attn_k.weight", embedding_length, embedding_length);
-    add("attn_v.weight", embedding_length, embedding_length);
-    add("attn_output.weight", embedding_length, embedding_length);
-    add("ffn_norm.weight", embedding_length, 0);
-    add("ffn_gate.weight", embedding_length, feed_forward_length);
-    add("ffn_down.weight", feed_forward_length, embedding_length);
-    add("ffn_up.weight", embedding_length, feed_forward_length);
+    add(prefix + "attn_q", embedding_length, embedding_length);
+    add(prefix + "attn_k", embedding_length, embedding_length);
+    add(prefix + "attn_v", embedding_length, embedding_length);
+    add(prefix + "attn_output", embedding_length, embedding_length);
+    add(prefix + "ffn_up", embedding_length, feed_forward_length);
+    add(prefix + "ffn_down", feed_forward_length, embedding_length);
+    if (is_encoder) {
+      add_norm(prefix + "attn_output_norm");
+      add_norm(prefix + "layer_output_norm");
+    } else {
+      add(prefix + "attn_norm", embedding_length, 0);
+      add(prefix + "ffn_norm", embedding_length, 0);
+      add(prefix + "ffn_gate", embedding_length, feed_forward_length);
+    }
   }
-  add_tensor(gguf, ggml, "output_norm.weight", embedding_length, 0, true);
-  add_tensor(gguf, ggml, "output.weight", embedding_length, vocab_size, false);
+  if (!is_encoder) {
+    add("output_norm", embedding_length, 0);
+    add("output", embedding_length, vocab_size);
+  }
 
   const bool written = gguf_write_to_file(gguf, path, false);
   gguf_free(gguf);
@@ -524,6 +567,8 @@ struct model_options {
   bool tracked = true;
   // Keeps the model and its contexts off every GPU device.
   bool cpu_only = false;
+  bool embeddings = false;
+  ggml_backend_sched_eval_callback eval_callback = nullptr;
 };
 
 struct model_fixture {
@@ -546,6 +591,8 @@ model_fixture load_model(const char *path, model_options options = {}) {
   assert(fixture.model != nullptr);
   auto context_params = llama_context_default_params();
   context_params.n_ctx = 256;
+  context_params.embeddings = options.embeddings;
+  context_params.cb_eval = options.eval_callback;
   fixture.context =
       options.tracked
           ? llama_dart_init_from_model(fixture.model, context_params)
@@ -766,12 +813,33 @@ llama_dart_speculative *init_ngram_speculative(model_fixture &fixture) {
                                      llama_context_default_params(), &params);
 }
 
-// Speculative state is tracked and freed with its context.
+std::atomic<int> g_embeddings_seen{-1};
+
+// Freeing speculative state turns the embeddings of its context off again.
+void free_and_decode_embeddings(void *object) {
+  model_fixture &fixture = *static_cast<model_fixture *>(object);
+  assert(llama_decode(fixture.context, prompt(fixture)) == 0);
+  g_embeddings_seen.store(
+      llama_get_embeddings_ith(fixture.context, -1) != nullptr ? 1 : 0);
+}
+
+// Speculative state is tracked, and teardown frees it before its context.
 int test_model_session(const char *path) {
-  model_fixture fixture = load_model(path);
+  static model_fixture fixture;
+  fixture = load_model(path);
   assert(init_ngram_speculative(fixture) != nullptr);
   assert(llama_dart_exit_tracked_count() == 3);
+
+  llama_set_embeddings(fixture.context, true);
+  free_and_decode_embeddings(&fixture);
+  assert(g_embeddings_seen.load() == 1);
+  clear_memory(fixture);
+  // Freed after the speculative state and before the context.
+  assert(llama_dart_exit_track(&fixture, free_and_decode_embeddings,
+                               LLAMA_DART_EXIT_STAGE_SCHEDULER));
+
   llama_dart_exit_teardown();
+  assert(g_embeddings_seen.load() == 0);
   assert(llama_dart_exit_tracked_count() == 0);
   return 0;
 }
@@ -795,6 +863,86 @@ int test_model_session_untracked(const char *path) {
   assert(elapsed_ms(started) < 5000);
   assert(llama_dart_exit_tracked_count() == 1);
   return 0;
+}
+
+std::atomic<bool> g_hold_evaluation{false};
+std::atomic<bool> g_evaluation_held{false};
+std::atomic<bool> g_release_evaluation{false};
+
+// Holds the evaluation that calls it until it is released.
+bool hold_evaluation(ggml_tensor *, bool, void *) {
+  if (g_hold_evaluation.load()) {
+    g_evaluation_held.store(true);
+    while (!g_release_evaluation.load()) {
+      sleep_ms(1);
+    }
+  }
+  return false;
+}
+
+void fail_on_pending_work(void *object) {
+  if (has_pending_work(*static_cast<model_fixture *>(object))) {
+    fprintf(stderr,
+            "teardown found no call in flight while the backend had work\n");
+    _Exit(EXIT_FAILURE);
+  }
+}
+
+// The backend wait of a wrapped evaluation is part of its call in flight: an
+// evaluation that is still computing when teardown begins has left no work
+// pending by the time teardown sees no call in flight and frees.
+int test_evaluation_wait(const char *path, void (*evaluate)(model_fixture &),
+                         bool embeddings) {
+  static model_fixture fixture;
+  static void (*held_evaluate)(model_fixture &) = nullptr;
+  model_options options;
+  options.embeddings = embeddings;
+  options.eval_callback = hold_evaluation;
+  fixture = load_model(path, options);
+  // The first evaluation of a context is counted before it is computed.
+  evaluate(fixture);
+  assert(!has_pending_work(fixture));
+  clear_memory(fixture);
+
+  // The session stage is freed first, as soon as no call is in flight.
+  assert(llama_dart_exit_track(&fixture, fail_on_pending_work,
+                               LLAMA_DART_EXIT_STAGE_SESSION));
+  llama_dart_exit_set_wait_ms(30000);
+  held_evaluate = evaluate;
+  g_hold_evaluation.store(true);
+  std::thread([] { held_evaluate(fixture); }).detach();
+  while (!g_evaluation_held.load()) {
+    sleep_ms(1);
+  }
+  // Releases the evaluation once teardown is waiting for it.
+  std::thread([] {
+    sleep_ms(300);
+    g_release_evaluation.store(true);
+  }).detach();
+  llama_dart_exit_teardown();
+  assert(g_release_evaluation.load());
+  assert(llama_dart_exit_tracked_count() == 0);
+  return 0;
+}
+
+void decode_prompt(model_fixture &fixture) {
+  assert(llama_dart_decode(fixture.context, prompt(fixture)) == 0);
+}
+
+void encode_prompt(model_fixture &fixture) {
+  assert(llama_dart_encode(fixture.context, prompt(fixture)) == 0);
+}
+
+// Evaluates a text chunk, which needs no mtmd context.
+void eval_text_chunk(model_fixture &fixture) {
+  mtmd_input_chunks *chunks = mtmd_test_create_input_chunks();
+  const mtmd_input_chunk *text = mtmd_input_chunks_get(chunks, 0);
+  assert(mtmd_input_chunk_get_type(text) == MTMD_INPUT_CHUNK_TYPE_TEXT);
+  llama_pos position = 0;
+  assert(llama_dart_mtmd_helper_eval_chunk_single(
+             nullptr, fixture.context, text, 0, 0, 16, true, &position) == 0);
+  assert(position == 5);
+  mtmd_input_chunks_free(chunks);
 }
 
 std::atomic<bool> g_exiting{false};
@@ -1082,7 +1230,19 @@ int main(int argc, char **argv) {
   }
   if (first != nullptr) {
     if (scenario == "make-model") {
-      return make_model(first);
+      return make_model(first, false);
+    }
+    if (scenario == "make-encoder-model") {
+      return make_model(first, true);
+    }
+    if (scenario == "model-decode-wait") {
+      return test_evaluation_wait(first, decode_prompt, false);
+    }
+    if (scenario == "model-encode-wait") {
+      return test_evaluation_wait(first, encode_prompt, true);
+    }
+    if (scenario == "model-mtmd-wait") {
+      return test_evaluation_wait(first, eval_text_chunk, false);
     }
     if (scenario == "model-idle") {
       return test_model_idle(first, true);
