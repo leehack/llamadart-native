@@ -458,10 +458,12 @@ jobs:
       - name: Build the exit teardown test
         run: cmake --build ${{ matrix.build_dir }} --target llamadart_exit_teardown_test
       # The model scenarios write their own model, so nothing is downloaded.
+      # The first scenario that reaches Metal waits for the runner to compile
+      # the Metal library, which takes most of a minute.
       - name: Run the exit teardown scenarios
         run: >-
           ctest --test-dir ${{ matrix.build_dir }} -R exit_teardown
-          --timeout 120 --output-on-failure
+          --timeout 300 --output-on-failure
 
   wrapper-validation:
     if: always()
