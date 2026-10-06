@@ -18,6 +18,7 @@ LIBRARY_NAME = "libllamadart.dylib"
 MODULE_NAME = "llama"
 UMBRELLA_HEADER_NAME = "llama_module.h"
 BUNDLE_IDENTIFIER = "dev.leehack.llamadart.native.llama"
+PRIVACY_MANIFEST = REPO_ROOT / "tools" / "apple" / "PrivacyInfo.xcprivacy"
 
 
 def run(command: list[str]) -> None:
@@ -156,6 +157,7 @@ def make_ios_framework(source: Path, destination: Path) -> Path:
         executable=MODULE_NAME,
         bundle_identifier=BUNDLE_IDENTIFIER,
     )
+    shutil.copy2(PRIVACY_MANIFEST, destination / PRIVACY_MANIFEST.name)
     return destination
 
 
@@ -189,6 +191,9 @@ def make_macos_framework(source: Path, destination: Path) -> Path:
         executable=MODULE_NAME,
         bundle_identifier=BUNDLE_IDENTIFIER,
     )
+    # Versioned bundles keep resources out of the framework root; a manifest
+    # there is unsealed content that fails code signing.
+    shutil.copy2(PRIVACY_MANIFEST, resources_dir / PRIVACY_MANIFEST.name)
 
     (destination / "Versions" / "Current").symlink_to("A")
     for name in ["Headers", "Modules", "Resources", MODULE_NAME]:
