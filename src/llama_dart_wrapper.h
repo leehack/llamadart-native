@@ -211,12 +211,16 @@ LLAMADART_API void llama_dart_set_log_level(int level);
 // as "blocks after teardown" when it is called outside a call in flight;
 // inside one it works as before, since teardown is waiting for that call. The
 // thread that runs teardown is exempt: there, such a function returns without
-// tracking, untracking or freeing anything.
+// tracking, untracking or freeing anything. A thread blocked this way stays
+// blocked until the process is gone, so a static destructor or atexit handler
+// of another image that joins such a thread hangs the exit.
 //
 // A native call that is not a call in flight is not waited for. Teardown only
 // allows a thread 250 ms after its last call in flight to reach the next one,
-// which covers the short calls between two decodes. Make every longer call on
-// a tracked object through a function that is a call in flight.
+// which covers the short calls between two decodes. A longer call on a tracked
+// object that is not a call in flight is a use after free at exit, also where
+// exiting with the object alive was harmless. From Dart, make every such call
+// through a llama_dart_ function that is a call in flight.
 
 // Tracks object so that exit teardown frees it with free_fn. Tracking an
 // address again replaces its entry. Returns false for a null argument or an
@@ -255,8 +259,9 @@ LLAMADART_API void llama_dart_exit_set_wait_ms(int32_t wait_ms);
 // Runs exit teardown now; later runs do nothing. Afterwards tracked objects
 // are unusable and other threads that reach libllamadart stay blocked, so
 // call it only as the last step before the process exits and follow it
-// directly with exit or _exit on the same thread. A Dart program must call
-// dart:io exit and not return from main, which waits for blocked isolates.
+// directly with exit or _exit on the same thread. It is meant for native
+// hosts. Do not bind it from Dart: a Dart program that returns from main
+// after it waits forever for its blocked isolates.
 LLAMADART_API void llama_dart_exit_teardown(void);
 
 // llama_model_load_from_file that tracks the model in the MODEL stage. The

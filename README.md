@@ -269,18 +269,25 @@ left of it at exit:
   native call, and only a call that begins and ends in native code is then
   still accounted for.
 - Once teardown has begun, a thread that reaches one of these functions outside
-  a call in flight never returns from it: the objects it holds are gone.
+  a call in flight never returns from it: the objects it holds are gone. It
+  stays blocked until the process is gone, so a static destructor of another
+  library that joins such a thread hangs the exit.
+- A native call on a tracked object that is not a call in flight is only safe
+  while it is short: teardown allows 250 ms after a thread's last call in
+  flight. A longer one is a use after free at exit.
 - TTS, speculative and MTP state over a context that was created with the
   upstream function is tracked but not freed at exit, so a caller that has not
   switched to the tracked functions keeps its previous exit behavior.
 
 On other platforms nothing runs at exit; `llama_dart_exit_teardown` runs the
-same teardown on request and must be followed directly by `exit`.
+same teardown on request and must be followed directly by `exit`. It is for
+native hosts: like `llama_dart_exit_call_begin` and `llama_dart_exit_call_end`,
+it is not meant to be bound from Dart.
 `src/llama_dart_wrapper.h` documents each function.
 
 `llamadart_exit_teardown_test` covers the registry on every platform. On macOS
-it also writes a small model and runs the scenarios that load one, so ctest
-needs no model file:
+it also writes a small decoder and a small encoder model and runs the
+scenarios that load one, so ctest needs no model file:
 
 ```bash
 cmake -S . -B build/exit-teardown -G Ninja -DLLAMADART_BUILD_TESTS=ON
