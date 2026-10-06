@@ -25,10 +25,10 @@ class ValidateExportsTests(unittest.TestCase):
             validate_exports.imported_symbols_from_nm(NM_OUTPUT),
             {'__cxa_finalize', 'dlsym'})
 
-    def run_tool(self, nm_output, *arguments):
+    def run_tool(self, nm_output, *arguments, library_bytes=b''):
         with tempfile.TemporaryDirectory() as temp:
             library = Path(temp) / 'libllamadart.dylib'
-            library.write_bytes(b'')
+            library.write_bytes(library_bytes)
             listing = Path(temp) / 'nm.txt'
             listing.write_text(nm_output)
             tool = Path(temp) / 'nm'
@@ -56,6 +56,26 @@ class ValidateExportsTests(unittest.TestCase):
             NM_OUTPUT + '0000000000002ff8 T ___cxa_atexit\n',
             '--forbid-import', '__cxa_atexit')
         self.assertEqual(defined.returncode, 0, defined.stderr)
+
+    @unittest.skipIf(sys.platform == 'win32', 'the stand-in nm is a shell script')
+    def test_forbidden_import_refuses_a_universal_file(self):
+        # nm would list one slice of it only.
+        for magic in (b'\xca\xfe\xba\xbe', b'\xca\xfe\xba\xbf',
+                      b'\xbe\xba\xfe\xca', b'\xbf\xba\xfe\xca'):
+            with self.subTest(magic=magic):
+                universal = self.run_tool(
+                    NM_OUTPUT, '--forbid-import', '__cxa_atexit',
+                    library_bytes=magic + b'\0' * 28)
+                self.assertEqual(universal.returncode, 2)
+                self.assertIn('single-architecture', universal.stderr)
+        thin = self.run_tool(
+            NM_OUTPUT, '--forbid-import', '__cxa_atexit',
+            library_bytes=b'\xcf\xfa\xed\xfe' + b'\0' * 28)
+        self.assertEqual(thin.returncode, 0, thin.stderr)
+        # Without the import check a universal file is accepted as before.
+        unchecked = self.run_tool(
+            NM_OUTPUT, library_bytes=b'\xca\xfe\xba\xbe' + b'\0' * 28)
+        self.assertEqual(unchecked.returncode, 0, unchecked.stderr)
 
 
 if __name__ == '__main__':

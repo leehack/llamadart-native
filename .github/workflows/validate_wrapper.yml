@@ -469,10 +469,11 @@ jobs:
         run: >-
           ctest --test-dir ${{ matrix.build_dir }} -R exit_teardown
           --timeout 300 --output-on-failure
-      # A model that nothing tracks aborts at exit when it holds Metal buffers.
-      # A runner without a usable Metal device is outside this repository's
-      # control, so it is reported instead of failing every native change.
-      - name: Check that the scenarios ran on Metal
+      # A model that nothing tracks aborts at exit when Metal residency sets
+      # are live. Whether a runner has them is outside this repository's
+      # control, so their absence is reported instead of failing every native
+      # change. The model-freed scenario shows the frees either way.
+      - name: Check whether the Metal abort path was exercised
         run: |
           set +e
           "${{ matrix.build_dir }}/llamadart_exit_teardown_test" \
@@ -482,10 +483,10 @@ jobs:
           status=$?
           set -e
           if [ "$status" -ne 0 ] && grep -q 'rsets->data count' untracked-control.log; then
-            echo "Metal: the untracked control aborted in ggml-metal, so the model scenarios held Metal buffers." | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "Metal residency sets: the untracked control aborted in ggml-metal, so the model scenarios exercised the Metal abort path." | tee -a "$GITHUB_STEP_SUMMARY"
           elif [ "$status" -eq 0 ]; then
-            echo "::warning title=Exit teardown ran without Metal::The untracked control exited cleanly, so this runner allocated no Metal buffers and the Metal abort path was not exercised."
-            echo "No Metal: the untracked control exited cleanly; the Metal abort path was not exercised on this runner." >> "$GITHUB_STEP_SUMMARY"
+            echo "::warning title=Metal abort path not exercised::The untracked control exited cleanly, so no Metal residency set was live on this runner. That does not show whether Metal buffers were in use."
+            echo "No Metal residency sets: the untracked control exited cleanly, so the Metal abort path was not exercised on this runner. Metal buffers may still have been in use." >> "$GITHUB_STEP_SUMMARY"
           else
             cat untracked-control.log
             echo "The untracked control failed with status $status for another reason."

@@ -104,9 +104,25 @@ def parse_args() -> argparse.Namespace:
         action="append",
         dest="forbidden_imports",
         default=[],
-        help="Symbol the library must not import. Supported for --format nm.",
+        help=(
+            "Symbol the library must not import. Supported for --format nm "
+            "and single-architecture files."
+        ),
     )
     return parser.parse_args()
+
+
+_UNIVERSAL_MAGICS = (
+    b"\xca\xfe\xba\xbe",
+    b"\xbe\xba\xfe\xca",
+    b"\xca\xfe\xba\xbf",
+    b"\xbf\xba\xfe\xca",
+)
+
+
+def is_universal_binary(library: Path) -> bool:
+    with library.open("rb") as file:
+        return file.read(4) in _UNIVERSAL_MAGICS
 
 
 def run_tool(args: argparse.Namespace) -> str:
@@ -182,6 +198,14 @@ def main() -> int:
     args = parse_args()
     if args.forbidden_imports and args.format != "nm":
         print("--forbid-import requires --format nm", file=sys.stderr)
+        return 2
+    # nm lists only the host architecture of a universal file, so the other
+    # slices would go unchecked.
+    if args.forbidden_imports and is_universal_binary(args.library):
+        print(
+            f"--forbid-import needs a single-architecture file: {args.library}",
+            file=sys.stderr,
+        )
         return 2
     output = run_tool(args)
     exported = {
