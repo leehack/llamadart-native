@@ -463,8 +463,8 @@ int test_late_static() {
   // Runs before the teardown registered by tracking, and after the destructor
   // of the static created next.
   assert(atexit(expect_freed_at_exit) == 0);
+  // Empty where no backend is part of the library or loaded.
   g_system_info = llama_print_system_info();
-  assert(!g_system_info.empty());
   return 0;
 }
 
