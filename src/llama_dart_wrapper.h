@@ -192,8 +192,8 @@ LLAMADART_API void llama_dart_set_log_level(int level);
 // It leaves TTS, speculative and MTP state alone while the llama or mtmd
 // context that state was created over is not tracked: a caller that creates
 // contexts with the upstream functions may be using them in calls teardown
-// cannot see. With nothing to free and no creating call in flight, it does not
-// wait.
+// cannot see. With nothing to free and no creating call or free in flight, it
+// does not wait.
 //
 // A call in flight is the time a thread spends inside one of:
 // - the three llama_dart creating functions named above and

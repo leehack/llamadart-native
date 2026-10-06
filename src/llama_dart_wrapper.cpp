@@ -768,6 +768,9 @@ struct llama_dart_exit_registry {
   uint64_t next_order = 0;
   int32_t calls = 0;
   int32_t creating_calls = 0;
+  // Frees in flight. The object of one is no longer in objects, and exit must
+  // not go on to destroy the statics that the free still uses.
+  int32_t freeing_calls = 0;
   int32_t wait_ms = 2000;
   std::atomic<bool> armed{false};
   std::atomic<bool> torn_down{false};
@@ -931,9 +934,37 @@ static void llama_dart_exit_release(void *object,
     if (llama_dart_exit_call_depth++ == 0) {
       ++registry.calls;
     }
+    // Counted under the lock that untracked the object, so that teardown sees
+    // either the object or its free.
+    ++registry.freeing_calls;
   }
   free_fn(object);
+  {
+    std::lock_guard<std::mutex> lock(registry.mutex);
+    --registry.freeing_calls;
+  }
   llama_dart_exit_call_end();
+}
+
+// Begins a call in flight on this thread. A creating call is counted as one
+// under the same lock, so that teardown cannot run in between and return
+// before the creation starts.
+static void llama_dart_exit_begin_call(bool creating) {
+  if (!creating && llama_dart_exit_call_depth > 0) {
+    ++llama_dart_exit_call_depth;
+    return;
+  }
+  auto &registry = llama_dart_exit_state();
+  std::unique_lock<std::mutex> lock(registry.mutex);
+  if (llama_dart_exit_call_depth > 0) {
+    ++llama_dart_exit_call_depth;
+  } else if (llama_dart_exit_admit(registry, lock)) {
+    ++registry.calls;
+    llama_dart_exit_call_depth = 1;
+  }
+  if (creating) {
+    ++registry.creating_calls;
+  }
 }
 
 struct llama_dart_exit_call {
@@ -946,12 +977,7 @@ struct llama_dart_exit_call {
 // A call in flight that tracks what it creates. Teardown waits for it even
 // when nothing is tracked yet.
 struct llama_dart_exit_creating_call {
-  llama_dart_exit_creating_call() {
-    llama_dart_exit_call_begin();
-    auto &registry = llama_dart_exit_state();
-    std::lock_guard<std::mutex> lock(registry.mutex);
-    ++registry.creating_calls;
-  }
+  llama_dart_exit_creating_call() { llama_dart_exit_begin_call(true); }
   ~llama_dart_exit_creating_call() {
     {
       auto &registry = llama_dart_exit_state();
@@ -1059,17 +1085,7 @@ LLAMADART_API int32_t llama_dart_exit_tracked_count(void) {
 }
 
 LLAMADART_API void llama_dart_exit_call_begin(void) {
-  if (llama_dart_exit_call_depth > 0) {
-    ++llama_dart_exit_call_depth;
-    return;
-  }
-  auto &registry = llama_dart_exit_state();
-  std::unique_lock<std::mutex> lock(registry.mutex);
-  if (!llama_dart_exit_admit(registry, lock)) {
-    return;
-  }
-  ++registry.calls;
-  llama_dart_exit_call_depth = 1;
+  llama_dart_exit_begin_call(false);
 }
 
 LLAMADART_API void llama_dart_exit_call_end(void) {
@@ -1103,9 +1119,9 @@ LLAMADART_API void llama_dart_exit_teardown(void) {
     const auto can_free = [&registry](const auto &tracked) {
       return llama_dart_exit_can_free(registry, tracked.second);
     };
-    // With nothing to free and nothing being created, a call in flight is no
-    // reason to hold up the exit.
-    if (registry.creating_calls == 0 &&
+    // With nothing to free and nothing being created or freed, a call in
+    // flight is no reason to hold up the exit.
+    if (registry.creating_calls == 0 && registry.freeing_calls == 0 &&
         std::none_of(registry.objects.begin(), registry.objects.end(),
                      can_free)) {
       return;
