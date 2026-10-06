@@ -1095,6 +1095,8 @@ jobs:
             --input-dir bundles \
             --output-dir release_assets \
             --clean
+          python3 tools/validate_apple_xcframework.py --audit-imports \
+            "release_assets/llamadart-native-apple-xcframework-${{ needs.resolve-tag.outputs.release_tag }}.zip"
 
           mkdir -p \
             headers_bundle/libllamadart \

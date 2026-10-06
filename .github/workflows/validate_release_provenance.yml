@@ -28,6 +28,15 @@ jobs:
           tests.package_linux_artifact_test
           tests.validate_linux_artifact_test
 
+  macos-apple-xcframework-tools:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Test Apple XCFramework tools against Mach-O binaries
+        run: python3 -m unittest -v tests.test_apple_xcframework
+
   verify:
     runs-on: ubuntu-latest
     steps:

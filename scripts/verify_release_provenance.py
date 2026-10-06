@@ -326,6 +326,16 @@ def verify_workflow_contract(errors: list[str]) -> None:
         errors,
     )
     require(
+        -1
+        < package_job.find("python3 tools/package_apple_xcframework.py")
+        < package_job.find(
+            "python3 tools/validate_apple_xcframework.py --audit-imports"
+        )
+        < manifest,
+        "Apple XCFramework privacy manifests must be validated against slice imports before manifest generation",
+        errors,
+    )
+    require(
         -1 < linux_archive_nullglob < linux_archive_glob,
         "Linux release archive discovery must use nullglob so an empty directory reports zero archives",
         errors,

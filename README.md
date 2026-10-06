@@ -133,7 +133,9 @@ Release assets contain:
 - Apple: consolidated `libllamadart` per target.
 - Apple SPM: `llamadart-native-apple-xcframework-<tag>.zip`, a
   `llamadart_native.xcframework` built from the same Apple slices and wrapper
-  code as the native-assets tarballs.
+  code as the native-assets tarballs. Each framework slice embeds a
+  `PrivacyInfo.xcprivacy`; the per-target Apple tarballs are bare dylibs and
+  carry none. See [`docs/apple_privacy_manifest.md`](docs/apple_privacy_manifest.md).
 - Non-Apple core libs: `llamadart`, `llama`, `llama-common`, `ggml`, `ggml-base` (and `mtmd` where produced)
 - Non-Apple backend libs: `ggml-<backend>` modules (`ggml-vulkan`, `ggml-opencl`, etc.)
 - Windows backend runtime deps:
@@ -176,6 +178,11 @@ Assets are suffixed with platform/arch, for example:
   SONAMEs, and local `DT_NEEDED` dependencies.
 - `tools/package_apple_xcframework.py`: packages Apple `libllamadart` slices as
   an SPM-compatible XCFramework zip.
+- `tools/apple/PrivacyInfo.xcprivacy`: privacy manifest embedded in every
+  XCFramework slice.
+- `tools/validate_apple_xcframework.py`: checks each XCFramework slice's privacy
+  manifest location, contents, and declared required-reason API categories
+  against the slice binary's imports.
 - `scripts/generate_assets_manifest.sh`: builds `assets.json` + checksums.
 - `scripts/auto_release_dispatch.py`: decides whether daily discovery authorizes
   one exact native release dispatch and emits its immutable inputs.
