@@ -240,9 +240,41 @@ if (LLAMADART_BUILD_TESTS)
     target_link_libraries(llamadart_mtmd_compat_test PRIVATE mtmd)
     add_test(NAME llamadart_mtmd_compat_test COMMAND llamadart_mtmd_compat_test)
 
+    add_executable(llamadart_exit_teardown_test tests/exit_teardown_test.cpp)
+    target_compile_features(llamadart_exit_teardown_test PRIVATE cxx_std_17)
+    target_link_libraries(llamadart_exit_teardown_test PRIVATE
+        llamadart_lib Threads::Threads)
+    target_include_directories(llamadart_exit_teardown_test PRIVATE
+        third_party/llama.cpp/tools/mtmd
+        src
+    )
+    foreach(scenario dispose order repeat in-flight nested settle timeout
+            blocked exit)
+        add_test(NAME llamadart_exit_teardown_${scenario}
+            COMMAND llamadart_exit_teardown_test ${scenario})
+    endforeach()
+    # The model-backed scenarios need GGUF files, so they are opt-in.
+    set(LLAMADART_EXIT_TEARDOWN_TEST_MODEL "" CACHE FILEPATH
+        "GGUF model for the model-backed exit teardown tests")
+    set(LLAMADART_EXIT_TEARDOWN_TEST_MMPROJ "" CACHE FILEPATH
+        "GGUF multimodal projector of that model for the mtmd exit teardown test")
+    if (LLAMADART_EXIT_TEARDOWN_TEST_MODEL)
+        foreach(scenario model-idle model-dispose model-decode model-load)
+            add_test(NAME llamadart_exit_teardown_${scenario}
+                COMMAND llamadart_exit_teardown_test ${scenario}
+                    "${LLAMADART_EXIT_TEARDOWN_TEST_MODEL}")
+        endforeach()
+        if (LLAMADART_EXIT_TEARDOWN_TEST_MMPROJ)
+            add_test(NAME llamadart_exit_teardown_model-mtmd
+                COMMAND llamadart_exit_teardown_test model-mtmd
+                    "${LLAMADART_EXIT_TEARDOWN_TEST_MODEL}"
+                    "${LLAMADART_EXIT_TEARDOWN_TEST_MMPROJ}")
+        endif()
+    endif()
+
     # Contract assertions must execute against optimized Release libraries too.
     foreach(test_target llamadart_speculative_api_test llamadart_tts_api_test
-            llamadart_tts_eval_test)
+            llamadart_tts_eval_test llamadart_exit_teardown_test)
         if (MSVC)
             target_compile_options(${test_target} PRIVATE /UNDEBUG)
         else()

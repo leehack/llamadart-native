@@ -11,6 +11,19 @@ from pathlib import Path
 
 
 DEFAULT_REQUIRED_SYMBOLS = [
+    "llama_dart_exit_track",
+    "llama_dart_exit_untrack",
+    "llama_dart_exit_free",
+    "llama_dart_exit_tracked_count",
+    "llama_dart_exit_call_begin",
+    "llama_dart_exit_call_end",
+    "llama_dart_exit_set_wait_ms",
+    "llama_dart_exit_teardown",
+    "llama_dart_model_load_from_file",
+    "llama_dart_init_from_model",
+    "llama_dart_mtmd_init_from_file",
+    "llama_dart_decode",
+    "llama_dart_encode",
     "llama_dart_tts_api_version",
     "llama_dart_tts_request_default",
     "llama_dart_tts_get_info",
@@ -70,7 +83,7 @@ def parse_args() -> argparse.Namespace:
         "--symbol",
         action="append",
         dest="symbols",
-        help="Required symbol. Defaults to the llamadart speculative export set.",
+        help="Required symbol. Defaults to the llamadart wrapper export set.",
     )
     return parser.parse_args()
 
