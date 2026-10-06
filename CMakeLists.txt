@@ -249,7 +249,8 @@ if (LLAMADART_BUILD_TESTS)
         src
     )
     foreach(scenario dispose order repeat in-flight nested settle timeout
-            idle-wait own-call blocked exit late-static)
+            idle-wait own-call blocked exit late-static free-in-flight
+            free-timeout)
         add_test(NAME llamadart_exit_teardown_${scenario}
             COMMAND llamadart_exit_teardown_test ${scenario})
     endforeach()
@@ -276,7 +277,8 @@ if (LLAMADART_BUILD_TESTS)
         foreach(scenario model-idle model-dispose model-sync model-wrappers
                 model-order model-session model-session-untracked
                 model-freed model-decode-wait model-mtmd-wait model-decode
-                model-late-load model-load model-load-wait)
+                model-late-load model-load model-load-wait
+                model-free-in-flight)
             add_test(NAME llamadart_exit_teardown_${scenario}
                 COMMAND llamadart_exit_teardown_test ${scenario}
                     "${exit_teardown_model}")

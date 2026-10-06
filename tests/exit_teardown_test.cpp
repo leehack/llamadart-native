@@ -316,8 +316,13 @@ int test_timeout() {
   return 0;
 }
 
-// A call that never ends does not hold up an exit that has nothing to free.
+// A call that never ends does not hold up an exit that has nothing to free,
+// and neither does a free that has finished.
 int test_idle_wait() {
+  char *object = name("object");
+  assert(
+      llama_dart_exit_track(object, free_named, LLAMA_DART_EXIT_STAGE_MODEL));
+  llama_dart_exit_free(object);
   std::thread([] { llama_dart_exit_call_begin(); }).join();
   llama_dart_exit_set_wait_ms(30000);
   const auto started = std::chrono::steady_clock::now();
@@ -998,6 +1003,13 @@ void beat_until_teardown() {
   }
 }
 
+void start_beat() {
+  std::thread(beat_until_teardown).detach();
+  while (g_last_beat_ms.load() == 0) {
+    sleep_ms(1);
+  }
+}
+
 // Releases the held evaluation once teardown is waiting for it, and gives up
 // after ten seconds.
 void release_when_teardown_waits() {
@@ -1057,10 +1069,7 @@ int test_evaluation_wait(const char *path, void (*evaluate)(model_fixture &),
   while (!g_evaluation_held.load()) {
     sleep_ms(1);
   }
-  std::thread(beat_until_teardown).detach();
-  while (g_last_beat_ms.load() == 0) {
-    sleep_ms(1);
-  }
+  start_beat();
   std::thread(release_when_teardown_waits).detach();
   llama_dart_exit_teardown();
   assert(g_release_evaluation.load());
@@ -1210,6 +1219,102 @@ int test_model_load_wait(const char *path) {
   llama_dart_exit_teardown();
   assert(held.load());
   assert(elapsed_ms(started) < 20000);
+  assert(llama_dart_exit_tracked_count() == 0);
+  return 0;
+}
+
+std::atomic<bool> g_free_started{false};
+std::atomic<bool> g_free_finished{false};
+
+// A free that the exit catches in flight: it finishes only once teardown has
+// begun.
+void free_when_teardown_waits(void *) {
+  g_free_started.store(true);
+  release_when_teardown_waits();
+  g_free_finished.store(true);
+}
+
+// Teardown waits for a free in flight although nothing is tracked any more.
+// The free has untracked its object, and the exit would go on to destroy what
+// the free still uses.
+int test_free_in_flight() {
+  static char object[] = "object";
+  assert(llama_dart_exit_track(object, free_when_teardown_waits,
+                               LLAMA_DART_EXIT_STAGE_MODEL));
+  llama_dart_exit_set_wait_ms(30000);
+  start_beat();
+  std::thread([] { llama_dart_exit_free(object); }).detach();
+  while (!g_free_started.load()) {
+    sleep_ms(1);
+  }
+  assert(llama_dart_exit_tracked_count() == 0);
+
+  llama_dart_exit_teardown();
+  assert(g_free_finished.load());
+  assert(!g_released_before_teardown.load());
+  return 0;
+}
+
+// A free that never finishes holds teardown up for the wait time only.
+int test_free_timeout() {
+  static char object[] = "object";
+  assert(llama_dart_exit_track(
+      object,
+      [](void *) {
+        g_free_started.store(true);
+        sleep_ms(600000);
+      },
+      LLAMA_DART_EXIT_STAGE_MODEL));
+  llama_dart_exit_set_wait_ms(1000);
+  std::thread([] { llama_dart_exit_free(object); }).detach();
+  while (!g_free_started.load()) {
+    sleep_ms(1);
+  }
+
+  const auto started = std::chrono::steady_clock::now();
+  llama_dart_exit_teardown();
+  const int64_t waited = elapsed_ms(started);
+  assert(waited >= 900);
+  assert(waited < 20000);
+  return 0;
+}
+
+void free_model_when_teardown_waits(void *object) {
+  g_free_started.store(true);
+  release_when_teardown_waits();
+  llama_model_free(static_cast<llama_model *>(object));
+  g_free_finished.store(true);
+}
+
+void expect_free_finished_at_exit() {
+  if (!g_free_finished.load() || g_released_before_teardown.load()) {
+    fprintf(stderr, "the exit did not wait for the free in flight\n");
+    _Exit(EXIT_FAILURE);
+  }
+}
+
+// Exits while another thread frees the model, the only object still tracked.
+// Metal aborts in its static destructor when the exit does not wait for the
+// free; without Metal the check at exit shows it.
+int test_model_free_in_flight(const char *path) {
+  // Registered first, so it runs after teardown and after the Metal device,
+  // which the load creates, is destroyed.
+  assert(atexit(expect_free_finished_at_exit) == 0);
+  static model_fixture fixture;
+  fixture = load_model(path);
+  llama_sampler *sampler = greedy_sampler();
+  assert(decode_and_sample(fixture, sampler) >= 0);
+  llama_sampler_free(sampler);
+  llama_dart_exit_free(fixture.context);
+  // Tracked again, with a free that the test can hold.
+  assert(llama_dart_exit_track(fixture.model, free_model_when_teardown_waits,
+                               LLAMA_DART_EXIT_STAGE_MODEL));
+  llama_dart_exit_set_wait_ms(30000);
+  start_beat();
+  std::thread([] { llama_dart_exit_free(fixture.model); }).detach();
+  while (!g_free_started.load()) {
+    sleep_ms(1);
+  }
   assert(llama_dart_exit_tracked_count() == 0);
   return 0;
 }
@@ -1369,6 +1474,12 @@ int main(int argc, char **argv) {
   if (scenario == "late-static") {
     return test_late_static();
   }
+  if (scenario == "free-in-flight") {
+    return test_free_in_flight();
+  }
+  if (scenario == "free-timeout") {
+    return test_free_timeout();
+  }
   if (scenario == "graph") {
     return test_graph();
   }
@@ -1426,6 +1537,9 @@ int main(int argc, char **argv) {
     }
     if (scenario == "model-load-wait") {
       return test_model_load_wait(first);
+    }
+    if (scenario == "model-free-in-flight") {
+      return test_model_free_in_flight(first);
     }
     if (second != nullptr) {
       if (scenario == "model-mtmd") {
