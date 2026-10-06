@@ -240,9 +240,76 @@ if (LLAMADART_BUILD_TESTS)
     target_link_libraries(llamadart_mtmd_compat_test PRIVATE mtmd)
     add_test(NAME llamadart_mtmd_compat_test COMMAND llamadart_mtmd_compat_test)
 
+    add_executable(llamadart_exit_teardown_test tests/exit_teardown_test.cpp)
+    target_compile_features(llamadart_exit_teardown_test PRIVATE cxx_std_17)
+    target_link_libraries(llamadart_exit_teardown_test PRIVATE
+        llamadart_lib Threads::Threads)
+    target_include_directories(llamadart_exit_teardown_test PRIVATE
+        third_party/llama.cpp/tools/mtmd
+        src
+    )
+    foreach(scenario dispose order repeat in-flight nested settle timeout
+            idle-wait own-call blocked exit late-static)
+        add_test(NAME llamadart_exit_teardown_${scenario}
+            COMMAND llamadart_exit_teardown_test ${scenario})
+    endforeach()
+    # Teardown runs at exit on Apple only, and only there are the backends part
+    # of libllamadart, so the scenarios that load a model run there. They use a
+    # model the test writes itself unless one is given.
+    set(LLAMADART_EXIT_TEARDOWN_TEST_MODEL "" CACHE FILEPATH
+        "GGUF model for the exit teardown tests instead of the generated one")
+    set(LLAMADART_EXIT_TEARDOWN_TEST_MMPROJ "" CACHE FILEPATH
+        "GGUF multimodal projector of that model for the mtmd exit teardown tests")
+    if (APPLE)
+        add_test(NAME llamadart_exit_teardown_graph
+            COMMAND llamadart_exit_teardown_test graph)
+        set(exit_teardown_model "${LLAMADART_EXIT_TEARDOWN_TEST_MODEL}")
+        if (NOT exit_teardown_model)
+            set(exit_teardown_model
+                "${CMAKE_CURRENT_BINARY_DIR}/exit_teardown_test_model.gguf")
+            add_test(NAME llamadart_exit_teardown_make-model
+                COMMAND llamadart_exit_teardown_test make-model
+                    "${exit_teardown_model}")
+            set_tests_properties(llamadart_exit_teardown_make-model PROPERTIES
+                FIXTURES_SETUP llamadart_exit_teardown_model)
+        endif()
+        foreach(scenario model-idle model-dispose model-sync model-wrappers
+                model-order model-session model-session-untracked
+                model-freed model-decode-wait model-mtmd-wait model-decode
+                model-late-load model-load model-load-wait)
+            add_test(NAME llamadart_exit_teardown_${scenario}
+                COMMAND llamadart_exit_teardown_test ${scenario}
+                    "${exit_teardown_model}")
+            set_tests_properties(llamadart_exit_teardown_${scenario} PROPERTIES
+                FIXTURES_REQUIRED llamadart_exit_teardown_model)
+        endforeach()
+        # llama_encode needs an encoder, which the test also writes.
+        set(exit_teardown_encoder
+            "${CMAKE_CURRENT_BINARY_DIR}/exit_teardown_test_encoder.gguf")
+        add_test(NAME llamadart_exit_teardown_make-encoder-model
+            COMMAND llamadart_exit_teardown_test make-encoder-model
+                "${exit_teardown_encoder}")
+        set_tests_properties(llamadart_exit_teardown_make-encoder-model
+            PROPERTIES FIXTURES_SETUP llamadart_exit_teardown_encoder)
+        add_test(NAME llamadart_exit_teardown_model-encode-wait
+            COMMAND llamadart_exit_teardown_test model-encode-wait
+                "${exit_teardown_encoder}")
+        set_tests_properties(llamadart_exit_teardown_model-encode-wait
+            PROPERTIES FIXTURES_REQUIRED llamadart_exit_teardown_encoder)
+        if (LLAMADART_EXIT_TEARDOWN_TEST_MODEL AND
+                LLAMADART_EXIT_TEARDOWN_TEST_MMPROJ)
+            foreach(scenario model-mtmd model-order model-freed)
+                add_test(NAME llamadart_exit_teardown_mmproj_${scenario}
+                    COMMAND llamadart_exit_teardown_test ${scenario}
+                        "${exit_teardown_model}"
+                        "${LLAMADART_EXIT_TEARDOWN_TEST_MMPROJ}")
+            endforeach()
+        endif()
+    endif()
+
     # Contract assertions must execute against optimized Release libraries too.
     foreach(test_target llamadart_speculative_api_test llamadart_tts_api_test
-            llamadart_tts_eval_test)
+            llamadart_tts_eval_test llamadart_exit_teardown_test)
         if (MSVC)
             target_compile_options(${test_target} PRIVATE /UNDEBUG)
         else()

@@ -171,7 +171,7 @@ Assets are suffixed with platform/arch, for example:
 - `third_party/opencl-stubs`: optional local fallback location for OpenCL headers/stubs.
 - `tools/build.py`: cross-platform build entrypoint.
 - `tools/validate_exports.py`: verifies required wrapper C exports, including
-  speculative-decoding and TTS symbols, in release artifacts.
+  exit-teardown, speculative-decoding and TTS symbols, in release artifacts.
 - `tools/package_linux_artifact.py`: preserves Linux ELF version files and
   SONAME symlinks while transporting split CI artifacts.
 - `tools/validate_linux_artifact.py`: checks Linux archive members, symlinks,
@@ -243,6 +243,77 @@ This build produces the shipped runtime libraries only; upstream tools such as
 `llama-cli` are force-disabled here. See
 [Parity Tool Builds](docs/parity_tools.md) for building them from a released
 tag's pinned `llama.cpp` commit in a separate clone.
+
+## Exit Teardown
+
+ggml-metal aborts in its static destructor
+(`GGML_ASSERT([rsets->data count] == 0)`) when the process exits while a Metal
+buffer is still allocated. A Flutter macOS quit calls C `exit` without shutting
+the Dart isolates down, and a hot restart drops them without running their
+finalizers, so the caller cannot free its models in time.
+
+`libllamadart` therefore tracks live objects in a registry and frees what is
+left of it at exit:
+
+- `llama_dart_model_load_from_file`, `llama_dart_init_from_model` and
+  `llama_dart_mtmd_init_from_file` create a tracked object. So do the TTS,
+  speculative, MTP and n-gram init functions. Tracking happens inside the
+  creating call. `llama_dart_exit_track` tracks any other object.
+- `llama_dart_exit_free` frees a tracked object and removes it, so nothing is
+  freed twice. It takes one pointer and can be a Dart `NativeFinalizer`
+  callback.
+- On Apple platforms teardown runs during exit, before the first static of
+  `libllamadart` is destroyed. It frees the remaining objects in stage order:
+  sessions, schedulers, contexts, model users such as mtmd contexts, backends,
+  then models. It first waits up to 2 s (`llama_dart_exit_set_wait_ms`) for the
+  calls in flight on other threads, and frees nothing if one is still running.
+  A model load in flight is cancelled.
+- `llama_dart_decode`, `llama_dart_encode`, the other `llama_dart_` functions
+  named after an upstream function, and the wrapper's own session functions
+  are calls in flight. The decoding ones also wait for the backend, because
+  Metal computes after `llama_decode` returns. Make every long native call on
+  a tracked object through one of them: a Dart isolate can be killed inside any
+  native call, and only a call that begins and ends in native code is then
+  still accounted for.
+- Once teardown has begun, a thread that reaches one of these functions outside
+  a call in flight never returns from it: the objects it holds are gone. It
+  stays blocked until the process is gone, so a static destructor of another
+  library that joins such a thread hangs the exit.
+- A native call on a tracked object that is not a call in flight is only safe
+  while it is short: teardown allows 250 ms after a thread's last call in
+  flight. A longer one is a use after free at exit.
+- TTS, speculative and MTP state over a context that was created with the
+  upstream function is tracked but not freed at exit, so a caller that has not
+  switched to the tracked functions keeps its previous exit behavior.
+
+On other platforms nothing runs at exit; `llama_dart_exit_teardown` runs the
+same teardown on request and must be followed directly by `exit`. It is for
+native hosts: like `llama_dart_exit_call_begin` and `llama_dart_exit_call_end`,
+it is not meant to be bound from Dart.
+`src/llama_dart_wrapper.h` documents each function.
+
+`llamadart_exit_teardown_test` covers the registry on every platform. On macOS
+it also writes a small decoder and a small encoder model and runs the
+scenarios that load one, so ctest needs no model file:
+
+```bash
+cmake -S . -B build/exit-teardown -G Ninja -DLLAMADART_BUILD_TESTS=ON
+cmake --build build/exit-teardown --target llamadart_exit_teardown_test
+ctest --test-dir build/exit-teardown -R exit_teardown --output-on-failure
+```
+
+`-DLLAMADART_EXIT_TEARDOWN_TEST_MODEL=/path/to/model.gguf` runs them against
+another model, and adding
+`-DLLAMADART_EXIT_TEARDOWN_TEST_MMPROJ=/path/to/mmproj.gguf` also runs the mtmd
+scenarios. Three scenarios need models of their own and run by hand:
+
+```bash
+build/exit-teardown/llamadart_exit_teardown_test model-mtp target.gguf mtp-draft.gguf
+build/exit-teardown/llamadart_exit_teardown_test model-tts qwen3-tts.gguf mmproj-qwen3-tts.gguf
+build/exit-teardown/llamadart_exit_teardown_test model-idle-untracked model.gguf
+```
+
+The last one exits with a model that is not tracked, and aborts on Metal.
 
 ## Experimental TTS Wrapper
 

@@ -11,6 +11,33 @@ from pathlib import Path
 
 
 DEFAULT_REQUIRED_SYMBOLS = [
+    "llama_dart_exit_track",
+    "llama_dart_exit_untrack",
+    "llama_dart_exit_free",
+    "llama_dart_exit_tracked_count",
+    "llama_dart_exit_call_begin",
+    "llama_dart_exit_call_end",
+    "llama_dart_exit_set_wait_ms",
+    "llama_dart_exit_teardown",
+    "llama_dart_model_load_from_file",
+    "llama_dart_init_from_model",
+    "llama_dart_mtmd_init_from_file",
+    "llama_dart_decode",
+    "llama_dart_encode",
+    "llama_dart_synchronize",
+    "llama_dart_sampler_sample",
+    "llama_dart_state_save_file",
+    "llama_dart_state_load_file",
+    "llama_dart_state_seq_get_size_ext",
+    "llama_dart_state_seq_get_data_ext",
+    "llama_dart_state_seq_set_data_ext",
+    "llama_dart_adapter_lora_init",
+    "llama_dart_mtmd_tokenize",
+    "llama_dart_mtmd_encode_chunk",
+    "llama_dart_mtmd_helper_eval_chunks",
+    "llama_dart_mtmd_helper_eval_chunk_single",
+    "llama_dart_mtmd_helper_decode_image_chunk",
+    "llama_dart_ggml_backend_sched_graph_compute",
     "llama_dart_tts_api_version",
     "llama_dart_tts_request_default",
     "llama_dart_tts_get_info",
@@ -70,9 +97,32 @@ def parse_args() -> argparse.Namespace:
         "--symbol",
         action="append",
         dest="symbols",
-        help="Required symbol. Defaults to the llamadart speculative export set.",
+        help="Required symbol. Defaults to the llamadart wrapper export set.",
+    )
+    parser.add_argument(
+        "--forbid-import",
+        action="append",
+        dest="forbidden_imports",
+        default=[],
+        help=(
+            "Symbol the library must not import. Supported for --format nm "
+            "and single-architecture files."
+        ),
     )
     return parser.parse_args()
+
+
+_UNIVERSAL_MAGICS = (
+    b"\xca\xfe\xba\xbe",
+    b"\xbe\xba\xfe\xca",
+    b"\xca\xfe\xba\xbf",
+    b"\xbf\xba\xfe\xca",
+)
+
+
+def is_universal_binary(library: Path) -> bool:
+    with library.open("rb") as file:
+        return file.read(4) in _UNIVERSAL_MAGICS
 
 
 def run_tool(args: argparse.Namespace) -> str:
@@ -121,6 +171,15 @@ def exported_symbols_from_nm(output: str) -> set[str]:
     return symbols
 
 
+def imported_symbols_from_nm(output: str) -> set[str]:
+    symbols: set[str] = set()
+    for line in output.splitlines():
+        parts = line.split()
+        if len(parts) >= 2 and parts[-2].upper() == "U":
+            symbols.add(parts[-1].removeprefix("_"))
+    return symbols
+
+
 _DUMPBIN_EXPORT_RE = re.compile(
     r"^\s*\d+\s+[0-9A-Fa-f]+\s+[0-9A-Fa-f]+\s+(\S+)"
 )
@@ -137,6 +196,17 @@ def exported_symbols_from_dumpbin(output: str) -> set[str]:
 
 def main() -> int:
     args = parse_args()
+    if args.forbidden_imports and args.format != "nm":
+        print("--forbid-import requires --format nm", file=sys.stderr)
+        return 2
+    # nm lists only the host architecture of a universal file, so the other
+    # slices would go unchecked.
+    if args.forbidden_imports and is_universal_binary(args.library):
+        print(
+            f"--forbid-import needs a single-architecture file: {args.library}",
+            file=sys.stderr,
+        )
+        return 2
     output = run_tool(args)
     exported = {
         "readelf": exported_symbols_from_readelf,
@@ -148,6 +218,14 @@ def main() -> int:
     if missing:
         print(f"Missing exports in {args.library}:", file=sys.stderr)
         for symbol in missing:
+            print(f"  - {symbol}", file=sys.stderr)
+        return 1
+
+    imported = imported_symbols_from_nm(output)
+    forbidden = [s for s in args.forbidden_imports if s in imported]
+    if forbidden:
+        print(f"Forbidden imports in {args.library}:", file=sys.stderr)
+        for symbol in forbidden:
             print(f"  - {symbol}", file=sys.stderr)
         return 1
 

@@ -31,6 +31,31 @@ struct llama_dart_tts;
 // Opaque mtmd context supplied by the caller.
 struct mtmd_context;
 
+// Upstream mtmd types, declared in mtmd.h.
+struct mtmd_context_params;
+struct mtmd_bitmap;
+struct mtmd_input_chunk;
+struct mtmd_input_chunks;
+struct mtmd_input_text;
+
+// Order in which exit teardown frees tracked objects: every object of a lower
+// stage before any object of a higher one, so an object goes before the
+// objects it uses.
+enum llama_dart_exit_stage {
+    // Per-request state over a context: speculative, TTS and sampler state.
+    LLAMA_DART_EXIT_STAGE_SESSION = 0,
+    // ggml schedulers.
+    LLAMA_DART_EXIT_STAGE_SCHEDULER = 1,
+    // llama.cpp contexts.
+    LLAMA_DART_EXIT_STAGE_CONTEXT = 2,
+    // Other objects that use a model, such as mtmd contexts and ggml buffers.
+    LLAMA_DART_EXIT_STAGE_MODEL_USER = 3,
+    // ggml backends.
+    LLAMA_DART_EXIT_STAGE_BACKEND = 4,
+    // Models.
+    LLAMA_DART_EXIT_STAGE_MODEL = 5,
+};
+
 #define LLAMA_DART_TTS_API_VERSION 1
 
 enum llama_dart_tts_status {
@@ -144,6 +169,226 @@ struct llama_dart_speculative_params {
 
 // Sets the log level for llama.cpp
 LLAMADART_API void llama_dart_set_log_level(int level);
+
+// Exit teardown
+//
+// libllamadart keeps a registry of live native objects and frees what is left
+// of it when the process exits without freeing them itself, as a Flutter quit
+// or hot restart does. ggml-metal aborts in its static destructor while any
+// Metal buffer is still allocated, so teardown has to run before that
+// destructor. On Apple platforms it runs during exit, before the first static
+// of libllamadart is destroyed. Elsewhere it runs only when
+// llama_dart_exit_teardown is called.
+//
+// Objects are tracked, before the creating call returns, by
+// llama_dart_model_load_from_file, llama_dart_init_from_model,
+// llama_dart_mtmd_init_from_file and the llama_dart_tts,
+// llama_dart_speculative, llama_dart_mtp and llama_dart_ngram init functions,
+// and by llama_dart_exit_track.
+//
+// Teardown waits a bounded time for the calls in flight and then frees the
+// tracked objects in llama_dart_exit_stage order, latest tracked first within
+// a stage. If a call is still in flight when the wait ends, it frees nothing.
+// It leaves TTS, speculative and MTP state alone while the llama or mtmd
+// context that state was created over is not tracked: a caller that creates
+// contexts with the upstream functions may be using them in calls teardown
+// cannot see. With nothing to free and no creating call in flight, it does not
+// wait.
+//
+// A call in flight is the time a thread spends inside one of:
+// - the three llama_dart creating functions named above and
+//   llama_dart_exit_free;
+// - llama_dart_decode, llama_dart_encode and the other llama_dart functions
+//   below that wrap an upstream function of the same name;
+// - the libllamadart functions that create, free, or run a task, draft or
+//   batch on, TTS, speculative, MTP or n-gram state;
+// - llama_dart_sampler_sample_and_accept_n;
+// or between llama_dart_exit_call_begin and llama_dart_exit_call_end.
+//
+// Once teardown has begun, the objects a thread holds may be freed as soon as
+// it has no call in flight. From then on, the end of a thread's outermost call
+// in flight never returns to its caller. Neither does a function documented
+// as "blocks after teardown" when it is called outside a call in flight;
+// inside one it works as before, since teardown is waiting for that call. The
+// thread that runs teardown is exempt: there, such a function returns without
+// tracking, untracking or freeing anything. A thread blocked this way stays
+// blocked until the process is gone, so a static destructor or atexit handler
+// of another image that joins such a thread hangs the exit.
+//
+// A native call that is not a call in flight is not waited for. Teardown only
+// allows a thread 250 ms after its last call in flight to reach the next one,
+// which covers the short calls between two decodes. A longer call on a tracked
+// object that is not a call in flight is a use after free at exit, also where
+// exiting with the object alive was harmless. From Dart, make every such call
+// through a llama_dart_ function that is a call in flight.
+
+// Tracks object so that exit teardown frees it with free_fn. Tracking an
+// address again replaces its entry. Returns false for a null argument or an
+// unknown stage. Blocks after teardown.
+LLAMADART_API bool llama_dart_exit_track(
+    void * object,
+    void (*free_fn)(void *),
+    int32_t stage);
+
+// Stops tracking object without freeing it. Returns whether it was tracked.
+// Blocks after teardown.
+LLAMADART_API bool llama_dart_exit_untrack(void * object);
+
+// Stops tracking object and frees it with the function it was tracked with.
+// Does nothing when object is not tracked, so each tracked object is freed
+// once, whether by this call or by teardown. Usable as a Dart NativeFinalizer
+// callback. Blocks after teardown.
+LLAMADART_API void llama_dart_exit_free(void * object);
+
+// Number of tracked objects.
+LLAMADART_API int32_t llama_dart_exit_tracked_count(void);
+
+// Mark the start and end of a call in flight on the calling thread, for C and
+// C++ callers of native functions that libllamadart does not wrap. They nest.
+// Each begin needs one end on the same thread: a thread that never reaches end
+// keeps teardown from freeing anything. Do not call them from Dart, where an
+// isolate that is killed during the native call in between never reaches end.
+// begin blocks after teardown.
+LLAMADART_API void llama_dart_exit_call_begin(void);
+LLAMADART_API void llama_dart_exit_call_end(void);
+
+// Sets how long teardown waits for calls in flight. Negative values are
+// treated as zero. The default is 2000 ms.
+LLAMADART_API void llama_dart_exit_set_wait_ms(int32_t wait_ms);
+
+// Runs exit teardown now; later runs do nothing. Afterwards tracked objects
+// are unusable and other threads that reach libllamadart stay blocked, so
+// call it only as the last step before the process exits and follow it
+// directly with exit or _exit on the same thread. It is meant for native
+// hosts. Do not bind it from Dart: a Dart program that returns from main
+// after it waits forever for its blocked isolates.
+LLAMADART_API void llama_dart_exit_teardown(void);
+
+// llama_model_load_from_file that tracks the model in the MODEL stage. The
+// load is cancelled when teardown begins. llama.cpp gets a progress callback
+// even when params has none, so it does not log its own progress dots. Free
+// the model with llama_dart_exit_free. Blocks after teardown.
+LLAMADART_API struct llama_model * llama_dart_model_load_from_file(
+    const char * path_model,
+    struct llama_model_params params);
+
+// llama_init_from_model that tracks the context in the CONTEXT stage. Free it
+// with llama_dart_exit_free. Blocks after teardown.
+LLAMADART_API struct llama_context * llama_dart_init_from_model(
+    struct llama_model * model,
+    struct llama_context_params params);
+
+// mtmd_init_from_file that tracks the context in the MODEL_USER stage. Free it
+// with llama_dart_exit_free. Blocks after teardown.
+LLAMADART_API struct mtmd_context * llama_dart_mtmd_init_from_file(
+    const char * mmproj_fname,
+    const struct llama_model * text_model,
+    const struct mtmd_context_params * ctx_params);
+
+// llama_decode and llama_encode as calls in flight that also wait for the
+// backend to finish (llama_synchronize) before they return. Both block after
+// teardown.
+LLAMADART_API int32_t llama_dart_decode(
+    struct llama_context * ctx,
+    struct llama_batch batch);
+LLAMADART_API int32_t llama_dart_encode(
+    struct llama_context * ctx,
+    struct llama_batch batch);
+
+// The upstream functions of the same name, without the llama_dart_ prefix, as
+// calls in flight. Each takes and returns what the upstream function does and
+// blocks after teardown. The mtmd helpers that decode also wait for the llama
+// context's backend before they return.
+LLAMADART_API void llama_dart_synchronize(struct llama_context * ctx);
+
+LLAMADART_API llama_token llama_dart_sampler_sample(
+    struct llama_sampler * smpl,
+    struct llama_context * ctx,
+    int32_t idx);
+
+LLAMADART_API bool llama_dart_state_save_file(
+    struct llama_context * ctx,
+    const char * path_session,
+    const llama_token * tokens,
+    size_t n_token_count);
+
+LLAMADART_API bool llama_dart_state_load_file(
+    struct llama_context * ctx,
+    const char * path_session,
+    llama_token * tokens_out,
+    size_t n_token_capacity,
+    size_t * n_token_count_out);
+
+LLAMADART_API size_t llama_dart_state_seq_get_size_ext(
+    struct llama_context * ctx,
+    llama_seq_id seq_id,
+    uint32_t flags);
+
+LLAMADART_API size_t llama_dart_state_seq_get_data_ext(
+    struct llama_context * ctx,
+    uint8_t * dst,
+    size_t size,
+    llama_seq_id seq_id,
+    uint32_t flags);
+
+LLAMADART_API size_t llama_dart_state_seq_set_data_ext(
+    struct llama_context * ctx,
+    const uint8_t * src,
+    size_t size,
+    llama_seq_id dest_seq_id,
+    uint32_t flags);
+
+// The adapter is not tracked: llama.cpp frees it with its model.
+LLAMADART_API struct llama_adapter_lora * llama_dart_adapter_lora_init(
+    struct llama_model * model,
+    const char * path_lora);
+
+LLAMADART_API int32_t llama_dart_mtmd_tokenize(
+    const struct mtmd_context * ctx,
+    struct mtmd_input_chunks * output,
+    const struct mtmd_input_text * text,
+    const struct mtmd_bitmap * const * bitmaps,
+    size_t n_bitmaps);
+
+LLAMADART_API int32_t llama_dart_mtmd_encode_chunk(
+    struct mtmd_context * ctx,
+    const struct mtmd_input_chunk * chunk);
+
+LLAMADART_API int32_t llama_dart_mtmd_helper_eval_chunks(
+    struct mtmd_context * ctx,
+    struct llama_context * lctx,
+    const struct mtmd_input_chunks * chunks,
+    llama_pos n_past,
+    llama_seq_id seq_id,
+    int32_t n_batch,
+    bool logits_last,
+    llama_pos * new_n_past);
+
+LLAMADART_API int32_t llama_dart_mtmd_helper_eval_chunk_single(
+    struct mtmd_context * ctx,
+    struct llama_context * lctx,
+    const struct mtmd_input_chunk * chunk,
+    llama_pos n_past,
+    llama_seq_id seq_id,
+    int32_t n_batch,
+    bool logits_last,
+    llama_pos * new_n_past);
+
+LLAMADART_API int32_t llama_dart_mtmd_helper_decode_image_chunk(
+    struct mtmd_context * ctx,
+    struct llama_context * lctx,
+    const struct mtmd_input_chunk * chunk,
+    float * encoded_embd,
+    llama_pos n_past,
+    llama_seq_id seq_id,
+    int32_t n_batch,
+    llama_pos * new_n_past,
+    int32_t (*callback)(struct llama_batch batch, void * user_data),
+    void * user_data);
+
+LLAMADART_API enum ggml_status llama_dart_ggml_backend_sched_graph_compute(
+    ggml_backend_sched_t sched,
+    struct ggml_cgraph * graph);
 
 // Returns the version of libllamadart's stable symbol contract around
 // experimental upstream audio-generation internals.

@@ -359,6 +359,7 @@ jobs:
           llamadart_tts_api_test
           llamadart_tts_eval_test
           llamadart_mtmd_compat_test
+          llamadart_exit_teardown_test
           llamadart_tts_smoke
       - name: Run wrapper contract tests
         run: ctest --test-dir build/wrapper-contract --output-on-failure
@@ -418,9 +419,83 @@ jobs:
             --symbol mtmd_input_chunk_get_placeholder `
             build/wx64/bin/mtmd.dll
 
+  macos-exit-teardown:
+    needs: changes
+    if: needs.changes.outputs.native == 'true'
+    name: macos-exit-teardown (${{ matrix.build }})
+    runs-on: macos-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The shipped configuration: Release with link-time optimization.
+          - build: release
+            configure: --preset macos-arm64-full
+            build_dir: build/macos-arm64-full
+          - build: address-sanitizer
+            configure: >-
+              -S . -B build/exit-teardown-asan -G Ninja
+              -DCMAKE_BUILD_TYPE=RelWithDebInfo
+              -DGGML_NATIVE=OFF
+              -DGGML_OPENMP=OFF
+              "-DCMAKE_C_FLAGS=-fsanitize=address -fno-omit-frame-pointer"
+              "-DCMAKE_CXX_FLAGS=-fsanitize=address -fno-omit-frame-pointer"
+              -DCMAKE_OBJC_FLAGS=-fsanitize=address
+              -DCMAKE_SHARED_LINKER_FLAGS=-fsanitize=address
+              -DCMAKE_EXE_LINKER_FLAGS=-fsanitize=address
+            build_dir: build/exit-teardown-asan
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+          persist-credentials: false
+      - name: Configure the Metal wrapper with its tests
+        run: >-
+          cmake ${{ matrix.configure }}
+          -DGGML_CCACHE=OFF
+          -DLLAMADART_BUILD_TESTS=ON
+      - name: Build the exit teardown test
+        run: cmake --build ${{ matrix.build_dir }} --target llamadart_exit_teardown_test
+      - name: Validate wrapper exports and the static destructor binding
+        run: >-
+          python3 tools/validate_exports.py --format nm --tool nm
+          --forbid-import __cxa_atexit
+          ${{ matrix.build_dir }}/libllamadart.dylib
+      # The model scenarios write their own models, so nothing is downloaded.
+      # The first scenario that reaches Metal waits for the runner to compile
+      # the Metal library, which takes most of a minute.
+      - name: Run the exit teardown scenarios
+        run: >-
+          ctest --test-dir ${{ matrix.build_dir }} -R exit_teardown
+          --timeout 300 --output-on-failure
+      # A model that nothing tracks aborts at exit when Metal residency sets
+      # are live. Whether a runner has them is outside this repository's
+      # control, so their absence is reported instead of failing every native
+      # change. The model-freed scenario shows the frees either way.
+      - name: Check whether the Metal abort path was exercised
+        run: |
+          set +e
+          "${{ matrix.build_dir }}/llamadart_exit_teardown_test" \
+            model-idle-untracked \
+            "${{ matrix.build_dir }}/exit_teardown_test_model.gguf" \
+            > untracked-control.log 2>&1
+          status=$?
+          set -e
+          if [ "$status" -ne 0 ] && grep -q 'rsets->data count' untracked-control.log; then
+            echo "Metal residency sets: the untracked control aborted in ggml-metal, so the model scenarios exercised the Metal abort path." | tee -a "$GITHUB_STEP_SUMMARY"
+          elif [ "$status" -eq 0 ]; then
+            echo "::warning title=Metal abort path not exercised::The untracked control exited cleanly, so no Metal residency set was live on this runner. That does not show whether Metal buffers were in use."
+            echo "No Metal residency sets: the untracked control exited cleanly, so the Metal abort path was not exercised on this runner. Metal buffers may still have been in use." >> "$GITHUB_STEP_SUMMARY"
+          else
+            cat untracked-control.log
+            echo "The untracked control failed with status $status for another reason."
+            exit 1
+          fi
+
   wrapper-validation:
     if: always()
-    needs: [changes, android-arm64-isa, android-vulkan-shaders, kleidiai-dispatch-emulated, windows-arm64-kleidiai, windows-arm64-vulkan, linux-artifact-contract, wrapper-contract, msvc-mtmd-link-contract]
+    needs: [changes, android-arm64-isa, android-vulkan-shaders, kleidiai-dispatch-emulated, windows-arm64-kleidiai, windows-arm64-vulkan, linux-artifact-contract, wrapper-contract, msvc-mtmd-link-contract, macos-exit-teardown]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
