@@ -275,7 +275,7 @@ if (LLAMADART_BUILD_TESTS)
         endif()
         foreach(scenario model-idle model-dispose model-sync model-wrappers
                 model-order model-session model-session-untracked
-                model-decode-wait model-mtmd-wait model-decode
+                model-freed model-decode-wait model-mtmd-wait model-decode
                 model-late-load model-load model-load-wait)
             add_test(NAME llamadart_exit_teardown_${scenario}
                 COMMAND llamadart_exit_teardown_test ${scenario}
@@ -298,7 +298,7 @@ if (LLAMADART_BUILD_TESTS)
             PROPERTIES FIXTURES_REQUIRED llamadart_exit_teardown_encoder)
         if (LLAMADART_EXIT_TEARDOWN_TEST_MODEL AND
                 LLAMADART_EXIT_TEARDOWN_TEST_MMPROJ)
-            foreach(scenario model-mtmd model-order)
+            foreach(scenario model-mtmd model-order model-freed)
                 add_test(NAME llamadart_exit_teardown_mmproj_${scenario}
                     COMMAND llamadart_exit_teardown_test ${scenario}
                         "${exit_teardown_model}"

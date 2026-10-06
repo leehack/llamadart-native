@@ -18,6 +18,21 @@
 #include <thread>
 #include <vector>
 
+#if defined(__has_feature)
+#if __has_feature(address_sanitizer)
+#define LLAMADART_TEST_ADDRESS_SANITIZER 1
+#endif
+#endif
+#if defined(__SANITIZE_ADDRESS__) && !defined(LLAMADART_TEST_ADDRESS_SANITIZER)
+#define LLAMADART_TEST_ADDRESS_SANITIZER 1
+#endif
+
+#if defined(LLAMADART_TEST_ADDRESS_SANITIZER)
+#include <sanitizer/asan_interface.h>
+#elif defined(__APPLE__)
+#include <malloc/malloc.h>
+#endif
+
 // Each scenario runs in its own process: teardown runs once per process and
 // leaves the registry unusable from other threads.
 
@@ -43,6 +58,28 @@ char *name(const char *value) { return const_cast<char *>(value); }
 void sleep_ms(int ms) {
   std::this_thread::sleep_for(std::chrono::milliseconds(ms));
 }
+
+int64_t now_ms() {
+  return std::chrono::duration_cast<std::chrono::milliseconds>(
+             std::chrono::steady_clock::now().time_since_epoch())
+      .count();
+}
+
+// Whether the heap block that began at object has been freed, for a build
+// that can tell: AddressSanitizer poisons a freed block, and the macOS
+// allocator reports no size for one until it hands the block out again.
+#if defined(LLAMADART_TEST_ADDRESS_SANITIZER)
+const bool kSeesFreedBlocks = true;
+bool is_freed(const void *object) {
+  return __asan_address_is_poisoned(object) != 0;
+}
+#elif defined(__APPLE__)
+const bool kSeesFreedBlocks = true;
+bool is_freed(const void *object) { return malloc_size(object) == 0; }
+#else
+const bool kSeesFreedBlocks = false;
+bool is_freed(const void *) { return false; }
+#endif
 
 int64_t elapsed_ms(std::chrono::steady_clock::time_point since) {
   return std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -463,8 +500,10 @@ int test_late_static() {
   // Runs before the teardown registered by tracking, and after the destructor
   // of the static created next.
   assert(atexit(expect_freed_at_exit) == 0);
-  // Empty where no backend is part of the library or loaded.
   g_system_info = llama_print_system_info();
+  // The reader needs text that lives on the heap for a sanitizer to see a use
+  // after the static is gone. There is none where no backend is loaded.
+  assert(!kTeardownRunsAtExit || g_system_info.size() > 64);
   return 0;
 }
 
@@ -815,12 +854,13 @@ llama_dart_speculative *init_ngram_speculative(model_fixture &fixture) {
 
 std::atomic<int> g_embeddings_seen{-1};
 
-// Freeing speculative state turns the embeddings of its context off again.
+// Freeing speculative state turns the embeddings of its context off again,
+// and a decode then leaves no embeddings.
 void free_and_decode_embeddings(void *object) {
   model_fixture &fixture = *static_cast<model_fixture *>(object);
   assert(llama_decode(fixture.context, prompt(fixture)) == 0);
-  g_embeddings_seen.store(
-      llama_get_embeddings_ith(fixture.context, -1) != nullptr ? 1 : 0);
+  g_embeddings_seen.store(llama_get_embeddings(fixture.context) != nullptr ? 1
+                                                                           : 0);
 }
 
 // Speculative state is tracked, and teardown frees it before its context.
@@ -841,6 +881,82 @@ int test_model_session(const char *path) {
   llama_dart_exit_teardown();
   assert(g_embeddings_seen.load() == 0);
   assert(llama_dart_exit_tracked_count() == 0);
+  return 0;
+}
+
+struct freed_objects {
+  llama_dart_ngram *ngram = nullptr;
+  llama_dart_speculative *speculative = nullptr;
+  llama_context *context = nullptr;
+  mtmd_context *mtmd = nullptr;
+  bool ngram_freed = false;
+  bool speculative_freed = false;
+  bool context_freed = false;
+  bool mtmd_freed = false;
+};
+
+freed_objects g_freed;
+
+void free_and_check_ngram(void *) {
+  g_freed.ngram_freed = is_freed(g_freed.ngram);
+}
+
+void free_and_check_speculative(void *) {
+  g_freed.speculative_freed = is_freed(g_freed.speculative);
+}
+
+void free_and_check_context(void *) {
+  g_freed.context_freed = is_freed(g_freed.context);
+}
+
+void free_and_check_mtmd(void *) {
+  g_freed.mtmd_freed = g_freed.mtmd == nullptr || is_freed(g_freed.mtmd);
+}
+
+// Teardown frees the tracked objects themselves. Without Metal nothing else
+// shows it: leaving them allocated is then harmless at exit.
+int test_model_freed(const char *path, const char *mmproj_path) {
+  if (!kSeesFreedBlocks) {
+    fprintf(stderr, "skipped: this build cannot tell a freed block\n");
+    return 0;
+  }
+  static char after_ngram[] = "after-ngram";
+  static char after_speculative[] = "after-speculative";
+  static char after_context[] = "after-context";
+  static char after_mtmd[] = "after-mtmd";
+  const auto track = [](char *object, void (*check)(void *), int32_t stage) {
+    assert(llama_dart_exit_track(object, check, stage));
+  };
+  // Each check is tracked so that teardown reaches it right after the object
+  // it looks at, before anything can allocate the same block again: within a
+  // stage the latest tracked object goes first.
+  model_fixture fixture = load_model(path);
+  g_freed.context = fixture.context;
+  g_freed.speculative = init_ngram_speculative(fixture);
+  assert(g_freed.speculative != nullptr);
+  track(after_ngram, free_and_check_ngram, LLAMA_DART_EXIT_STAGE_SESSION);
+  g_freed.ngram = llama_dart_ngram_simple_init(4, 8);
+  assert(g_freed.ngram != nullptr);
+  track(after_speculative, free_and_check_speculative,
+        LLAMA_DART_EXIT_STAGE_SCHEDULER);
+  if (mmproj_path != nullptr) {
+    const mtmd_context_params params = mtmd_context_params_default();
+    g_freed.mtmd =
+        llama_dart_mtmd_init_from_file(mmproj_path, fixture.model, &params);
+    assert(g_freed.mtmd != nullptr && !is_freed(g_freed.mtmd));
+  }
+  track(after_context, free_and_check_context,
+        LLAMA_DART_EXIT_STAGE_MODEL_USER);
+  track(after_mtmd, free_and_check_mtmd, LLAMA_DART_EXIT_STAGE_BACKEND);
+  assert(!is_freed(g_freed.ngram) && !is_freed(g_freed.speculative));
+  assert(!is_freed(fixture.context) && !is_freed(fixture.model));
+
+  llama_dart_exit_teardown();
+  assert(is_freed(fixture.model));
+  assert(g_freed.ngram_freed);
+  assert(g_freed.speculative_freed);
+  assert(g_freed.context_freed);
+  assert(g_freed.mtmd_freed);
   return 0;
 }
 
@@ -868,6 +984,33 @@ int test_model_session_untracked(const char *path) {
 std::atomic<bool> g_hold_evaluation{false};
 std::atomic<bool> g_evaluation_held{false};
 std::atomic<bool> g_release_evaluation{false};
+std::atomic<bool> g_released_before_teardown{false};
+std::atomic<int64_t> g_last_beat_ms{0};
+
+// A thread outside any call in flight blocks in libllamadart once teardown
+// has begun, so this beat stops when teardown starts to wait.
+void beat_until_teardown() {
+  static char untracked[] = "untracked";
+  for (;;) {
+    g_last_beat_ms.store(now_ms());
+    llama_dart_exit_untrack(untracked);
+    sleep_ms(1);
+  }
+}
+
+// Releases the held evaluation once teardown is waiting for it, and gives up
+// after ten seconds.
+void release_when_teardown_waits() {
+  const int64_t started = now_ms();
+  while (now_ms() - g_last_beat_ms.load() < 200) {
+    if (now_ms() - started > 10000) {
+      g_released_before_teardown.store(true);
+      break;
+    }
+    sleep_ms(1);
+  }
+  g_release_evaluation.store(true);
+}
 
 // Holds the evaluation that calls it until it is released.
 bool hold_evaluation(ggml_tensor *, bool, void *) {
@@ -914,13 +1057,14 @@ int test_evaluation_wait(const char *path, void (*evaluate)(model_fixture &),
   while (!g_evaluation_held.load()) {
     sleep_ms(1);
   }
-  // Releases the evaluation once teardown is waiting for it.
-  std::thread([] {
-    sleep_ms(300);
-    g_release_evaluation.store(true);
-  }).detach();
+  std::thread(beat_until_teardown).detach();
+  while (g_last_beat_ms.load() == 0) {
+    sleep_ms(1);
+  }
+  std::thread(release_when_teardown_waits).detach();
   llama_dart_exit_teardown();
   assert(g_release_evaluation.load());
+  assert(!g_released_before_teardown.load());
   assert(llama_dart_exit_tracked_count() == 0);
   return 0;
 }
@@ -1264,6 +1408,9 @@ int main(int argc, char **argv) {
     }
     if (scenario == "model-session") {
       return test_model_session(first);
+    }
+    if (scenario == "model-freed") {
+      return test_model_freed(first, second);
     }
     if (scenario == "model-session-untracked") {
       return test_model_session_untracked(first);
