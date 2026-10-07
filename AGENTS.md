@@ -46,6 +46,8 @@ dispatch gates in `validate_wrapper.yml` before merging. See
 audited source fingerprints merely to silence a failed check.
 See `docs/post_v040_qualification.md` for the exact nonpublishing correctness
 candidate, its separate pinned lanes, and remaining artifact/hardware gates.
+See `docs/v060_qualification.md` for the v0.6.0 wrapper adapters, candidate lanes
+and outstanding Android ISA audit before publication or downstream adoption.
 
 - `.github/workflows/native_release.yml`
   - Exact native build + release workflow, used by manual dispatch and the

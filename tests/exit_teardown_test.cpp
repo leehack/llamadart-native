@@ -727,6 +727,33 @@ int test_model_sync(const char *path) {
   return 0;
 }
 
+// Optional real-vocabulary model check for the v0.6.0 process adapter.
+int test_model_speculative_process(const char *path) {
+  model_fixture fixture = load_model(path);
+  assert(llama_dart_decode(fixture.context, prompt(fixture)) == 0);
+  // The real draft context must consume a legacy batch, including the
+  // implicit position/sequence fields of llama_batch_get_one(). Merely
+  // returning true from the process adapter cannot satisfy this assertion.
+  llama_dart_speculative_params spec_params{};
+  spec_params.type_names = "draft-simple";
+  auto *speculative = llama_dart_speculative_init(
+      fixture.model, fixture.model, fixture.context,
+      llama_context_default_params(), &spec_params);
+  assert(speculative != nullptr);
+  auto *draft_context = llama_dart_speculative_get_draft_context(speculative);
+  assert(draft_context != nullptr);
+  assert(llama_dart_speculative_process_batch(speculative, prompt(fixture)));
+  assert(llama_memory_seq_pos_max(llama_get_memory(draft_context), 0) ==
+         static_cast<llama_pos>(fixture.tokens.size()) - 1);
+  auto next_token = fixture.tokens.back();
+  assert(llama_dart_speculative_process_batch(
+      speculative, llama_batch_get_one(&next_token, 1)));
+  assert(llama_memory_seq_pos_max(llama_get_memory(draft_context), 0) ==
+         static_cast<llama_pos>(fixture.tokens.size()));
+  llama_dart_speculative_free(speculative);
+  return 0;
+}
+
 // The wrappers pass their arguments and results through.
 int test_model_wrappers(const char *path) {
   model_fixture fixture = load_model(path);
@@ -1320,6 +1347,23 @@ int test_model_free_in_flight(const char *path) {
 }
 
 // Evaluates an image prompt chunk by chunk, as the Dart side does.
+int32_t observe_image_batch(llama_batch batch, void *opaque) {
+  auto *calls = static_cast<int32_t *>(opaque);
+  ++*calls;
+  assert(batch.n_tokens > 0 && batch.token == nullptr && batch.embd != nullptr);
+  assert(batch.pos != nullptr);
+  for (int32_t i = 0; i < batch.n_tokens; ++i) {
+    assert(batch.n_seq_id[i] == 1 && batch.seq_id[i][0] == 0);
+    assert(batch.logits[i] == 0);
+  }
+  return 0;
+}
+
+int32_t reject_image_batch(llama_batch batch, void *opaque) {
+  observe_image_batch(batch, opaque);
+  return 73;
+}
+
 int32_t eval_chunks_one_by_one(mtmd_context *mtmd, model_fixture &fixture,
                                const mtmd_input_chunks *chunks,
                                llama_pos *position) {
@@ -1334,9 +1378,13 @@ int32_t eval_chunks_one_by_one(mtmd_context *mtmd, model_fixture &fixture,
     } else {
       status = llama_dart_mtmd_encode_chunk(mtmd, chunk);
       if (status == 0) {
+        int32_t callback_calls = 0;
         status = llama_dart_mtmd_helper_decode_image_chunk(
             mtmd, fixture.context, chunk, mtmd_get_output_embd(mtmd), past, 0,
-            64, position, nullptr, nullptr);
+            64, position, observe_image_batch, &callback_calls);
+        if (status == 0) {
+          assert(callback_calls > 0);
+        }
       }
     }
     if (status != 0) {
@@ -1385,6 +1433,26 @@ int test_model_mtmd(const char *path, const char *mmproj_path) {
   clear_memory(fixture);
   assert(eval_chunks_one_by_one(mtmd, fixture, chunks, &one_by_one) == 0);
   assert(one_by_one == all_at_once);
+
+  // A failing legacy callback must be observable through the exported wrapper.
+  clear_memory(fixture);
+  bool rejected_image = false;
+  for (size_t i = 0; i < mtmd_input_chunks_size(chunks); ++i) {
+    const auto *chunk = mtmd_input_chunks_get(chunks, i);
+    if (mtmd_input_chunk_get_type(chunk) == MTMD_INPUT_CHUNK_TYPE_IMAGE) {
+      assert(llama_dart_mtmd_encode_chunk(mtmd, chunk) == 0);
+      int32_t callback_calls = 0;
+      llama_pos position = 0;
+      assert(llama_dart_mtmd_helper_decode_image_chunk(
+          mtmd, fixture.context, chunk, mtmd_get_output_embd(mtmd), 0, 0, 64,
+          &position, reject_image_batch, &callback_calls) == 73);
+      assert(callback_calls == 1);
+      assert(!has_pending_work(fixture));
+      rejected_image = true;
+      break;
+    }
+  }
+  assert(rejected_image);
 
   mtmd_input_chunks_free(chunks);
   mtmd_bitmap_free(bitmap);
@@ -1510,6 +1578,9 @@ int main(int argc, char **argv) {
     }
     if (scenario == "model-sync") {
       return test_model_sync(first);
+    }
+    if (scenario == "model-speculative-process") {
+      return test_model_speculative_process(argv[2]);
     }
     if (scenario == "model-wrappers") {
       return test_model_wrappers(first);

@@ -1304,9 +1304,9 @@ LLAMADART_API int32_t llama_dart_mtmd_helper_decode_image_chunk(
     int32_t (*callback)(struct llama_batch batch, void *user_data),
     void *user_data) {
   llama_dart_exit_evaluating_call call(lctx);
-  return mtmd_helper_decode_image_chunk(ctx, lctx, chunk, encoded_embd, n_past,
-                                        seq_id, n_batch, new_n_past, callback,
-                                        user_data);
+  return llama_dart_decode_image_chunk_compat(
+      ctx, lctx, chunk, encoded_embd, n_past, seq_id, n_batch, new_n_past,
+      callback, user_data);
 }
 
 LLAMADART_API enum ggml_status
@@ -1920,7 +1920,9 @@ LLAMADART_API bool llama_dart_speculative_process_batch(
   if (speculative->caps_draft_process_outputs) {
     batch = llama_dart_cap_batch_outputs(batch, speculative->process_output_mask);
   }
-  return common_speculative_process(speculative->spec, batch);
+  return llama_dart_speculative_process_compat(speculative->spec, batch,
+                                              speculative->ctx_tgt,
+                                              speculative->ctx_dft);
 }
 
 LLAMADART_API int32_t llama_dart_speculative_draft(
@@ -2132,7 +2134,8 @@ llama_dart_mtp_process_batch(struct llama_dart_mtp *mtp,
   if (mtp == nullptr || mtp->spec == nullptr) {
     return false;
   }
-  return common_speculative_process(mtp->spec, batch);
+  return llama_dart_speculative_process_compat(mtp->spec, batch, mtp->ctx_tgt,
+                                              mtp->ctx_dft);
 }
 
 LLAMADART_API int32_t llama_dart_mtp_draft(
@@ -2256,7 +2259,7 @@ llama_dart_ngram_process_batch(struct llama_dart_ngram *ngram,
   if (ngram == nullptr || ngram->spec == nullptr) {
     return false;
   }
-  return common_speculative_process(ngram->spec, batch);
+  return llama_dart_speculative_process_compat(ngram->spec, batch, nullptr);
 }
 
 LLAMADART_API int32_t llama_dart_ngram_draft(
