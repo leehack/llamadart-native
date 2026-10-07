@@ -146,6 +146,8 @@ llamadart_configure_kleidiai_windows_assembly()
 # Recheck after switching upstream revisions in an existing build.
 include(CheckCXXSourceCompiles)
 include(CMakePushCheckState)
+# Match the wrapper's C++17 contract when probing common.h (std::filesystem).
+set(CMAKE_CXX_STANDARD 17)
 cmake_push_check_state(RESET)
 set(CMAKE_REQUIRED_INCLUDES
     "${CMAKE_CURRENT_SOURCE_DIR}/third_party/llama.cpp/include"
@@ -155,6 +157,17 @@ unset(LLAMADART_MTMD_HELPER_HAS_OPTIONS CACHE)
 check_cxx_source_compiles("#include <mtmd-helper.h>
 int main() { return sizeof(decltype(mtmd_helper_init_opt_default())) == 0; }"
     LLAMADART_MTMD_HELPER_HAS_OPTIONS)
+unset(LLAMADART_MTMD_HELPER_HAS_EMBD_BATCH CACHE)
+check_cxx_source_compiles("#include <mtmd-helper.h>
+int main() { return sizeof(mtmd_helper_embd_batch) == 0; }"
+    LLAMADART_MTMD_HELPER_HAS_EMBD_BATCH)
+list(APPEND CMAKE_REQUIRED_INCLUDES
+    "${CMAKE_CURRENT_SOURCE_DIR}/third_party/llama.cpp/common"
+    "${CMAKE_CURRENT_SOURCE_DIR}/third_party/llama.cpp/vendor")
+unset(LLAMADART_SPECULATIVE_HAS_COMMON_BATCH CACHE)
+check_cxx_source_compiles("#include <common.h>
+int main() { return sizeof(common_batch) == 0; }"
+    LLAMADART_SPECULATIVE_HAS_COMMON_BATCH)
 cmake_pop_check_state()
 if (TARGET ggml-vulkan AND LLAMADART_SPIRV_HEADERS_INCLUDE)
     target_include_directories(ggml-vulkan SYSTEM PRIVATE "${LLAMADART_SPIRV_HEADERS_INCLUDE}")
@@ -177,6 +190,8 @@ llamadart_attach_android_cpu_backend_score(ggml-cpu)
 
 add_library(llamadart_lib SHARED "src/llama_dart_wrapper.cpp")
 target_compile_definitions(llamadart_lib PRIVATE
+    LLAMADART_MTMD_HELPER_HAS_EMBD_BATCH=$<BOOL:${LLAMADART_MTMD_HELPER_HAS_EMBD_BATCH}>
+    LLAMADART_SPECULATIVE_HAS_COMMON_BATCH=$<BOOL:${LLAMADART_SPECULATIVE_HAS_COMMON_BATCH}>
     LLAMADART_MTMD_HELPER_HAS_OPTIONS=$<BOOL:${LLAMADART_MTMD_HELPER_HAS_OPTIONS}>)
 
 if (MINGW)
@@ -212,6 +227,8 @@ if (LLAMADART_BUILD_TESTS)
     enable_testing()
     add_executable(llamadart_speculative_api_test tests/speculative_api_test.cpp)
     target_compile_features(llamadart_speculative_api_test PRIVATE cxx_std_17)
+    target_compile_definitions(llamadart_speculative_api_test PRIVATE
+        LLAMADART_SPECULATIVE_HAS_COMMON_BATCH=$<BOOL:${LLAMADART_SPECULATIVE_HAS_COMMON_BATCH}>)
     target_link_libraries(llamadart_speculative_api_test PRIVATE llamadart_lib)
     target_include_directories(llamadart_speculative_api_test PRIVATE
         third_party/llama.cpp/common
@@ -236,6 +253,7 @@ if (LLAMADART_BUILD_TESTS)
     target_compile_features(llamadart_mtmd_compat_test PRIVATE cxx_std_17)
     target_include_directories(llamadart_mtmd_compat_test PRIVATE src)
     target_compile_definitions(llamadart_mtmd_compat_test PRIVATE
+        LLAMADART_MTMD_HELPER_HAS_EMBD_BATCH=$<BOOL:${LLAMADART_MTMD_HELPER_HAS_EMBD_BATCH}>
         LLAMADART_MTMD_HELPER_HAS_OPTIONS=$<BOOL:${LLAMADART_MTMD_HELPER_HAS_OPTIONS}>)
     target_link_libraries(llamadart_mtmd_compat_test PRIVATE mtmd)
     add_test(NAME llamadart_mtmd_compat_test COMMAND llamadart_mtmd_compat_test)
@@ -285,6 +303,11 @@ if (LLAMADART_BUILD_TESTS)
             set_tests_properties(llamadart_exit_teardown_${scenario} PROPERTIES
                 FIXTURES_REQUIRED llamadart_exit_teardown_model)
         endforeach()
+        if (LLAMADART_EXIT_TEARDOWN_TEST_MODEL)
+            add_test(NAME llamadart_exit_teardown_model-speculative-process
+                COMMAND llamadart_exit_teardown_test model-speculative-process
+                    "${LLAMADART_EXIT_TEARDOWN_TEST_MODEL}")
+        endif()
         # llama_encode needs an encoder, which the test also writes.
         set(exit_teardown_encoder
             "${CMAKE_CURRENT_BINARY_DIR}/exit_teardown_test_encoder.gguf")
@@ -311,7 +334,7 @@ if (LLAMADART_BUILD_TESTS)
 
     # Contract assertions must execute against optimized Release libraries too.
     foreach(test_target llamadart_speculative_api_test llamadart_tts_api_test
-            llamadart_tts_eval_test llamadart_exit_teardown_test)
+            llamadart_tts_eval_test llamadart_exit_teardown_test llamadart_mtmd_compat_test)
         if (MSVC)
             target_compile_options(${test_target} PRIVATE /UNDEBUG)
         else()

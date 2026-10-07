@@ -20,7 +20,8 @@ import sys
 # Bind complete source subtree pairs, not independent hash sets: a new caller
 # or a different KleidiAI combination invalidates the dispatch audit.
 # Candidate audit evidence: docs/post_v040_qualification.md,
-# docs/v041_android_isa_qualification.md and docs/v050_android_isa_qualification.md.
+# docs/v041_android_isa_qualification.md, docs/v050_android_isa_qualification.md
+# and docs/v060_android_isa_qualification.md.
 SOURCE_PAIRS = frozenset({
     (  # llama.cpp v0.4.0 / KleidiAI v1.24.0
         "c4dc92a7d95ebfad7f5f55e75be2ae773b7d95faf72a9581c9479c42bc41bca0",
@@ -36,6 +37,10 @@ SOURCE_PAIRS = frozenset({
     ),
     (  # llama.cpp v0.5.0 7fe450e19305b828c199d602c23a8337aaa1f03b
         "68d5bc369749e78545f50dd5107368ec7ee1874619794795cd142b0043c747f6",
+        "64189fc613c1c4c3aaeeb6bb12b38d85dd6728cafd2261a5a88f1b77b10fe59c",
+    ),
+    (  # llama.cpp v0.6.0 d81235049384534c167caea52b85a694f6103d14
+        "adc8d989599211a4b789b2c595b2ae52335c5a390e6c4972171c46589aa05e7e",
         "64189fc613c1c4c3aaeeb6bb12b38d85dd6728cafd2261a5a88f1b77b10fe59c",
     ),
 })
