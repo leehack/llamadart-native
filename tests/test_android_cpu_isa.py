@@ -106,6 +106,7 @@ class AndroidCpuIsaTest(unittest.TestCase):
                                  "dcb0f04ebb9654b1fe5ac7cc45737c79e62b116a2063ceda81a7ec1ddb1b20e2",
                                  "bf7ae6d2ea861ce6cd4b56afce154a45461df79b46c02e340d1adfe0075467b5",
                                  "68d5bc369749e78545f50dd5107368ec7ee1874619794795cd142b0043c747f6",
+                                 "adc8d989599211a4b789b2c595b2ae52335c5a390e6c4972171c46589aa05e7e",
                              ))
         self.assertEqual(audit.SOURCE_PAIRS, expected)
         for ggml, kai in expected:

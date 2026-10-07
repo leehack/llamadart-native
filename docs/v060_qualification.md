@@ -76,13 +76,11 @@ x64/arm64 artifacts, Linux wrapper contracts, MSVC mtmd linking and macOS
 Release/ASan teardown. Existing production and historical baselines remain.
 Hosted candidate jobs have not yet run for this change.
 
-The Android source fingerprint intentionally remains unapproved. Candidate
-`ggml/src` digest is
-`adc8d989599211a4b789b2c595b2ae52335c5a390e6c4972171c46589aa05e7e`.
-CPU build selection, ARM quantization and shared CPU implementation changed;
-adding this digest without the documented selector/caller and compiled ISA
-audit would bypass a release gate. That audit and the hosted platform checks
-remain required before publication. Native full-platform bundles, manifest
-checksums, Apple packaging and downstream regenerated bindings/model-backed
-qualification remain separate artifact/adoption gates. The matching Web bridge
-must be qualified and published in its owning repositories before its pin moves.
+The Android source-pair audit and local production ISA validator passed as
+recorded in `v060_android_isa_qualification.md`. The complete source pair is
+accepted without broadening the instruction/function allowlist. Hosted
+latest-head ISA/dispatch/platform checks and independent review remain required
+before merge. Native full-platform bundles, manifest checksums, Apple packaging
+and downstream regenerated bindings/model-backed qualification remain separate
+artifact/adoption gates. The matching Web bridge must be qualified and published
+in its owning repositories before its pin moves.
