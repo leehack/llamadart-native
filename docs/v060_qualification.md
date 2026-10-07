@@ -74,13 +74,17 @@ ASR or TTS. M-RoPE layout has synthetic adapter coverage, not a real-model claim
 Vulkan shaders, emulated KleidiAI dispatch, Windows ARM64 CPU/Vulkan, Linux
 x64/arm64 artifacts, Linux wrapper contracts, MSVC mtmd linking and macOS
 Release/ASan teardown. Existing production and historical baselines remain.
-Hosted candidate jobs have not yet run for this change.
+All 36 wrapper jobs passed at implementation head
+`41d697cbc132d9d198ec03fb8a44cdfe4fba7b80` in
+[run 37604135940](https://github.com/leehack/llamadart-native/actions/runs/37604135940).
+The three release provenance jobs also passed in
+[run 37604135946](https://github.com/leehack/llamadart-native/actions/runs/37604135946).
 
 The Android source-pair audit and local production ISA validator passed as
 recorded in `v060_android_isa_qualification.md`. The complete source pair is
-accepted without broadening the instruction/function allowlist. Hosted
-latest-head ISA/dispatch/platform checks and independent review remain required
-before merge. Native full-platform bundles, manifest checksums, Apple packaging
+accepted without broadening the instruction/function allowlist. Hosted ISA/dispatch/platform checks passed at the implementation head above.
+Every updated PR head must pass its required checks, and independent review
+remains required before mark-ready. Native full-platform bundles, manifest checksums, Apple packaging
 and downstream regenerated bindings/model-backed qualification remain separate
 artifact/adoption gates. The matching Web bridge must be qualified and published
 in its owning repositories before its pin moves.

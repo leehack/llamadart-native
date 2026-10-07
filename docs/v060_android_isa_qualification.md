@@ -69,9 +69,11 @@ python3 tools/validate_android_cpu_isa.py \
 ```
 
 The hosted v0.6.0 compiled KleidiAI selector/Q4/Q8 reference checks passed on
-the initial PR head in run `37603489552`; they exercise QEMU `cortex-a53` and
+implementation head `41d697cbc132d9d198ec03fb8a44cdfe4fba7b80` in
+[run 37604135940](https://github.com/leehack/llamadart-native/actions/runs/37604135940); they exercise QEMU `cortex-a53` and
 `max,sve=off,sme=off`, including unsupported SME requests. Hosted Android
-instruction validation and the latest-head platform matrix remain required.
+instruction validation and all candidate/baseline platform lanes passed in
+that run. Every updated PR head must pass its required checks before mark-ready.
 Emulated execution is not physical Android or SME hardware qualification.
 No physical-device result, full release packaging or downstream adoption is
 claimed by this audit.
