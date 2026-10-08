@@ -80,16 +80,35 @@ static inline void llama_dart_error_record(const char *message) noexcept {
   error.set = true;
 }
 
+#if defined(_MSC_VER)
+#define LLAMA_DART_NOINLINE __declspec(noinline)
+#else
+#define LLAMA_DART_NOINLINE __attribute__((noinline))
+#endif
+
+// Records the exception that is being handled. A barrier's own catch block
+// catches everything and calls this, which names the type in a function that
+// nothing is inlined into. With clang-cl for Windows ARM64, a typed catch in
+// the inlined body of llama_dart_exit_free read a wrong exception object,
+// where a catch of everything in the same place worked.
+static LLAMA_DART_NOINLINE void llama_dart_error_record_current() noexcept {
+  try {
+    throw;
+  } catch (const std::exception &error) {
+    llama_dart_error_record(error.what());
+  } catch (...) {
+    llama_dart_error_record(nullptr);
+  }
+}
+
 // Runs call so that no C++ exception leaves libllamadart: an exception unwinds
 // call, is recorded as the thread's last error, and failure is returned.
 template <typename Result, typename Call>
 static Result llama_dart_catch(Result failure, Call &&call) noexcept {
   try {
     return call();
-  } catch (const std::exception &error) {
-    llama_dart_error_record(error.what());
   } catch (...) {
-    llama_dart_error_record(nullptr);
+    llama_dart_error_record_current();
   }
   return failure;
 }
