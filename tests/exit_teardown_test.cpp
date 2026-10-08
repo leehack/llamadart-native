@@ -14,6 +14,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <vector>
@@ -529,10 +530,19 @@ void add_tensor(gguf_context *gguf, ggml_context *ggml, const std::string &name,
   gguf_add_tensor(gguf, tensor);
 }
 
-// Writes a two-layer model with random weights and no tokenizer: a llama
-// decoder, or a bert encoder for llama_encode, which a decoder cannot run. It
-// is large enough to load, offload and evaluate, and needs no download.
-int make_model(const char *path, bool is_encoder) {
+// The text of a token of the model that make_model writes with a vocabulary:
+// two lowercase letters, which a grammar can name without escaping.
+std::string vocabulary_piece(llama_token token) {
+  return {static_cast<char>('a' + token % 26),
+          static_cast<char>('a' + token / 26)};
+}
+
+// Writes a two-layer model with random weights: a llama decoder, or a bert
+// encoder for llama_encode, which a decoder cannot run. It is large enough to
+// load, offload and evaluate, and needs no download. It has no tokenizer
+// unless with_vocabulary asks for one, which a grammar sampler needs.
+int make_model(const char *path, bool is_encoder,
+               bool with_vocabulary = false) {
   const uint32_t vocab_size = 256;
   const uint32_t context_length = 512;
   const uint32_t embedding_length = 128;
@@ -557,7 +567,30 @@ int make_model(const char *path, bool is_encoder) {
                                        : ".attention.layer_norm_rms_epsilon"))
                        .c_str(),
                    1e-5f);
-  gguf_set_val_str(gguf, "tokenizer.ggml.model", "no_vocab");
+  if (with_vocabulary) {
+    std::vector<std::string> pieces = {"<unk>", "<s>", "</s>"};
+    std::vector<float> scores(vocab_size, 0.0f);
+    std::vector<int32_t> types(vocab_size, LLAMA_TOKEN_TYPE_NORMAL);
+    types[0] = LLAMA_TOKEN_TYPE_UNKNOWN;
+    types[1] = types[2] = LLAMA_TOKEN_TYPE_CONTROL;
+    while (pieces.size() < vocab_size) {
+      pieces.push_back(
+          vocabulary_piece(static_cast<llama_token>(pieces.size())));
+    }
+    std::vector<const char *> texts;
+    for (const std::string &piece : pieces) {
+      texts.push_back(piece.c_str());
+    }
+    gguf_set_val_str(gguf, "tokenizer.ggml.model", "llama");
+    gguf_set_arr_str(gguf, "tokenizer.ggml.tokens", texts.data(),
+                     texts.size());
+    gguf_set_arr_data(gguf, "tokenizer.ggml.scores", GGUF_TYPE_FLOAT32,
+                      scores.data(), scores.size());
+    gguf_set_arr_data(gguf, "tokenizer.ggml.token_type", GGUF_TYPE_INT32,
+                      types.data(), types.size());
+  } else {
+    gguf_set_val_str(gguf, "tokenizer.ggml.model", "no_vocab");
+  }
   if (is_encoder) {
     gguf_set_val_u32(gguf, "tokenizer.ggml.token_type_count", 1);
   }
@@ -1498,6 +1531,200 @@ int test_model_tts(const char *path, const char *mmproj_path) {
   return 0;
 }
 
+void throw_on_free(void *) { throw std::runtime_error("free failed"); }
+
+// Whether a thread that holds no call in flight sees the registry idle, which
+// it is only when every call that threw also ended its call in flight.
+// Teardown frees a tracked object only then. It is the last use of the
+// registry in a scenario.
+bool calls_in_flight_ended() {
+  static char probe[] = "probe";
+  g_log.clear();
+  assert(llama_dart_exit_track(probe, free_named,
+                               LLAMA_DART_EXIT_STAGE_SESSION));
+  llama_dart_exit_set_wait_ms(100);
+  std::thread([] { llama_dart_exit_teardown(); }).join();
+  const std::vector<std::string> freed = recorded();
+  return !freed.empty() && freed.front() == "probe";
+}
+
+// An exception from a tracked object's free function stays inside
+// libllamadart and is reported as the calling thread's last error.
+int test_barrier_free() {
+  static char object[] = "object";
+  assert(llama_dart_last_error() == nullptr);
+  assert(llama_dart_exit_track(object, throw_on_free,
+                               LLAMA_DART_EXIT_STAGE_SESSION));
+  llama_dart_exit_free(object);
+  assert(llama_dart_last_error() != nullptr);
+  assert(std::string(llama_dart_last_error()) == "free failed");
+  assert(llama_dart_exit_tracked_count() == 0);
+
+  // A call that catches nothing clears it, and so does the caller.
+  assert(llama_dart_exit_track(object, free_named,
+                               LLAMA_DART_EXIT_STAGE_SESSION));
+  assert(llama_dart_last_error() == nullptr);
+  assert(llama_dart_exit_track(object, throw_on_free,
+                               LLAMA_DART_EXIT_STAGE_SESSION));
+  llama_dart_exit_free(object);
+  assert(llama_dart_last_error() != nullptr);
+  llama_dart_clear_last_error();
+  assert(llama_dart_last_error() == nullptr);
+
+  assert(calls_in_flight_ended());
+  return 0;
+}
+
+const llama_token kGrammarToken = 3;
+const llama_token kRejectedToken = 4;
+
+llama_sampler *grammar_sampler(const llama_vocab *vocab, llama_token token) {
+  const std::string grammar =
+      "root ::= \"" + vocabulary_piece(token) + "\"";
+  llama_sampler *sampler =
+      llama_sampler_init_grammar(vocab, grammar.c_str(), "root");
+  assert(sampler != nullptr);
+  return sampler;
+}
+
+bool is_grammar_stack_error(const char *error) {
+  return error != nullptr &&
+         strstr(error, "Unexpected empty grammar stack") != nullptr;
+}
+
+// llama.cpp throws when a grammar sampler accepts a token that its grammar
+// rejects. The wrapper reports that as a failure with a message, on the
+// thread that made the call only, and the process goes on. Only the
+// vocabulary is loaded, which needs no backend.
+int test_barrier_grammar(const char *path) {
+  llama_backend_init();
+  auto model_params = llama_model_default_params();
+  model_params.vocab_only = true;
+  llama_model *model = llama_dart_model_load_from_file(path, model_params);
+  assert(model != nullptr);
+  assert(llama_dart_last_error() == nullptr);
+  const llama_vocab *vocab = llama_model_get_vocab(model);
+
+  llama_sampler *rejecting = grammar_sampler(vocab, kGrammarToken);
+  assert(!llama_dart_sampler_accept(rejecting, kRejectedToken));
+  assert(is_grammar_stack_error(llama_dart_last_error()));
+  const std::string error = llama_dart_last_error();
+  llama_sampler_free(rejecting);
+
+  // Another thread has no error of its own until it catches one, and neither
+  // its error nor clearing it changes this thread's.
+  std::thread([vocab] {
+    assert(llama_dart_last_error() == nullptr);
+    llama_sampler *sampler = grammar_sampler(vocab, kRejectedToken);
+    assert(!llama_dart_sampler_accept(sampler, kGrammarToken));
+    assert(is_grammar_stack_error(llama_dart_last_error()));
+    assert(strstr(llama_dart_last_error(),
+                  vocabulary_piece(kGrammarToken).c_str()) != nullptr);
+    llama_sampler_free(sampler);
+    llama_dart_clear_last_error();
+    assert(llama_dart_last_error() == nullptr);
+  }).join();
+  assert(llama_dart_last_error() != nullptr);
+  assert(error == llama_dart_last_error());
+  assert(error.find(vocabulary_piece(kRejectedToken)) != std::string::npos);
+
+  // A token that the grammar accepts is no error and clears the last one.
+  llama_sampler *accepting = grammar_sampler(vocab, kGrammarToken);
+  assert(llama_dart_sampler_accept(accepting, kGrammarToken));
+  assert(llama_dart_last_error() == nullptr);
+  llama_sampler_free(accepting);
+
+  assert(calls_in_flight_ended());
+  return 0;
+}
+
+std::atomic<int> g_eval_failure{0};
+
+// A graph evaluation callback that throws on request, as a backend does when
+// it fails in the middle of a decode.
+bool throwing_eval_callback(ggml_tensor *, bool ask, void *) {
+  switch (g_eval_failure.exchange(0)) {
+  case 1:
+    throw std::runtime_error("evaluation failed");
+  case 2:
+    throw 42;
+  default:
+    return !ask;
+  }
+}
+
+// The same through a decode and the sampling that follows it, as generation
+// runs them, and for an exception from inside the decode itself.
+int test_model_barrier(const char *path) {
+  model_options options;
+  options.eval_callback = throwing_eval_callback;
+  model_fixture fixture = load_model(path, options);
+  const llama_vocab *vocab = llama_model_get_vocab(fixture.model);
+  llama_sampler *greedy = greedy_sampler();
+  const llama_token sampled = decode_and_sample(fixture, greedy);
+  assert(sampled >= 0);
+  assert(llama_dart_last_error() == nullptr);
+
+  // The greedy sampler selects the token before the grammar sees it, so the
+  // chain accepts a token that the grammar rejects.
+  const llama_token other =
+      sampled == kGrammarToken ? kRejectedToken : kGrammarToken;
+  const auto rejecting_chain = [vocab, other] {
+    llama_sampler *chain = greedy_sampler();
+    llama_sampler_chain_add(chain, grammar_sampler(vocab, other));
+    return chain;
+  };
+  llama_sampler *chain = rejecting_chain();
+  assert(llama_dart_sampler_sample(chain, fixture.context, -1) ==
+         LLAMA_TOKEN_NULL);
+  assert(is_grammar_stack_error(llama_dart_last_error()));
+  llama_sampler_free(chain);
+
+  chain = rejecting_chain();
+  const int32_t index = -1;
+  llama_token draft = 0;
+  llama_token accepted = 0;
+  assert(llama_dart_sampler_sample_and_accept_n(
+             chain, fixture.context, &index, 1, &draft, 0, &accepted, 1) ==
+         LLAMA_DART_STATUS_EXCEPTION);
+  assert(is_grammar_stack_error(llama_dart_last_error()));
+  llama_sampler_free(chain);
+
+  // The context is still usable, and a call that succeeds clears the error.
+  assert(llama_dart_sampler_sample(greedy, fixture.context, -1) == sampled);
+  assert(llama_dart_last_error() == nullptr);
+
+  clear_memory(fixture);
+  g_eval_failure.store(1);
+  assert(llama_dart_decode(fixture.context, prompt(fixture)) ==
+         LLAMA_DART_STATUS_EXCEPTION);
+  assert(std::string(llama_dart_last_error()) == "evaluation failed");
+  clear_memory(fixture);
+  g_eval_failure.store(2);
+  assert(llama_dart_decode(fixture.context, prompt(fixture)) ==
+         LLAMA_DART_STATUS_EXCEPTION);
+  assert(std::string(llama_dart_last_error()) == "unknown C++ exception");
+
+  // A failure that llama.cpp reports itself is not an exception: it keeps
+  // its own return value and leaves no last error.
+  llama_token invalid = -2;
+  clear_memory(fixture);
+  const int32_t status =
+      llama_dart_decode(fixture.context, llama_batch_get_one(&invalid, 1));
+  assert(status != 0 && status != LLAMA_DART_STATUS_EXCEPTION);
+  assert(llama_dart_last_error() == nullptr);
+  auto context_params = llama_context_default_params();
+  context_params.n_seq_max = 1u << 20;
+  assert(llama_dart_init_from_model(fixture.model, context_params) == nullptr);
+  assert(llama_dart_last_error() == nullptr);
+  assert(llama_dart_exit_tracked_count() == 2);
+
+  assert(decode_and_sample(fixture, greedy) == sampled);
+  llama_sampler_free(greedy);
+  assert(calls_in_flight_ended());
+  return 0;
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -1551,9 +1778,21 @@ int main(int argc, char **argv) {
   if (scenario == "graph") {
     return test_graph();
   }
+  if (scenario == "barrier-free") {
+    return test_barrier_free();
+  }
   if (first != nullptr) {
     if (scenario == "make-model") {
       return make_model(first, false);
+    }
+    if (scenario == "make-vocabulary-model") {
+      return make_model(first, false, true);
+    }
+    if (scenario == "barrier-grammar") {
+      return test_barrier_grammar(first);
+    }
+    if (scenario == "model-barrier") {
+      return test_model_barrier(first);
     }
     if (scenario == "make-encoder-model") {
       return make_model(first, true);

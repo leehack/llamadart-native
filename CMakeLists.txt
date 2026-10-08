@@ -268,10 +268,24 @@ if (LLAMADART_BUILD_TESTS)
     )
     foreach(scenario dispose order repeat in-flight nested settle timeout
             idle-wait own-call blocked exit late-static free-in-flight
-            free-timeout)
+            free-timeout barrier-free)
         add_test(NAME llamadart_exit_teardown_${scenario}
             COMMAND llamadart_exit_teardown_test ${scenario})
     endforeach()
+    # A grammar sampler needs a vocabulary, which loads without a backend, so
+    # this scenario runs on every platform. The test writes the model.
+    set(exit_teardown_vocabulary_model
+        "${CMAKE_CURRENT_BINARY_DIR}/exit_teardown_test_vocabulary_model.gguf")
+    add_test(NAME llamadart_exit_teardown_make-vocabulary-model
+        COMMAND llamadart_exit_teardown_test make-vocabulary-model
+            "${exit_teardown_vocabulary_model}")
+    set_tests_properties(llamadart_exit_teardown_make-vocabulary-model
+        PROPERTIES FIXTURES_SETUP llamadart_exit_teardown_vocabulary_model)
+    add_test(NAME llamadart_exit_teardown_barrier-grammar
+        COMMAND llamadart_exit_teardown_test barrier-grammar
+            "${exit_teardown_vocabulary_model}")
+    set_tests_properties(llamadart_exit_teardown_barrier-grammar PROPERTIES
+        FIXTURES_REQUIRED llamadart_exit_teardown_vocabulary_model)
     # Teardown runs at exit on Apple only, and only there are the backends part
     # of libllamadart, so the scenarios that load a model run there. They use a
     # model the test writes itself unless one is given.
@@ -308,6 +322,11 @@ if (LLAMADART_BUILD_TESTS)
                 COMMAND llamadart_exit_teardown_test model-speculative-process
                     "${LLAMADART_EXIT_TEARDOWN_TEST_MODEL}")
         endif()
+        add_test(NAME llamadart_exit_teardown_model-barrier
+            COMMAND llamadart_exit_teardown_test model-barrier
+                "${exit_teardown_vocabulary_model}")
+        set_tests_properties(llamadart_exit_teardown_model-barrier PROPERTIES
+            FIXTURES_REQUIRED llamadart_exit_teardown_vocabulary_model)
         # llama_encode needs an encoder, which the test also writes.
         set(exit_teardown_encoder
             "${CMAKE_CURRENT_BINARY_DIR}/exit_teardown_test_encoder.gguf")

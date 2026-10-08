@@ -170,6 +170,62 @@ struct llama_dart_speculative_params {
 // Sets the log level for llama.cpp
 LLAMADART_API void llama_dart_set_log_level(int level);
 
+// Exception barrier
+//
+// llama.cpp reports some failures by throwing a C++ exception, which must not
+// cross the C ABI: in a Dart FFI caller it ends the process. Every function in
+// this header that calls llama.cpp or allocates catches the exception instead,
+// records its message for the calling thread and returns a failure value:
+//
+// - a function that returns a pointer returns NULL;
+// - a function that returns bool returns false;
+// - a function that returns an int32_t status or count returns
+//   LLAMA_DART_STATUS_EXCEPTION, which none of them returns otherwise;
+// - llama_dart_sampler_sample returns LLAMA_TOKEN_NULL, which it does not
+//   return otherwise;
+// - a function that returns size_t returns 0;
+// - llama_dart_ggml_backend_sched_graph_compute returns GGML_STATUS_FAILED;
+// - a function that returns llama_dart_tts_status returns
+//   LLAMA_DART_TTS_STATUS_UPSTREAM_ERROR and fails the task;
+// - a function that returns nothing only records the message.
+//
+// Where the failure value is also what llama.cpp returns for a failure of its
+// own, llama_dart_last_error tells the two apart: each of these functions
+// clears the calling thread's last error when it is called, so after it
+// returns, llama_dart_last_error is non-NULL only if it caught an exception.
+//
+// The functions without a barrier are llama_dart_last_error,
+// llama_dart_clear_last_error, llama_dart_set_log_level, the
+// llama_dart_exit_ functions other than llama_dart_exit_track and
+// llama_dart_exit_free, the draft context and need_embd getters,
+// llama_dart_tts_eval_callback, and the llama_dart_tts_ functions that only
+// read or set fields of the task (api_version, request_default, cancel,
+// get_output_info, read_pcm, last_error). They leave the last error
+// unchanged.
+//
+// After a caught exception, the objects that were passed to the call may be
+// partly updated. Free them, or reset a sampler, instead of continuing the
+// generation they were used for. A function that creates an object frees
+// what it had created before the exception, so there is nothing to free for
+// a NULL result. A call in flight has ended when the function returns.
+//
+// The barrier does not cover a failed GGML_ASSERT or GGML_ABORT in llama.cpp,
+// which abort the process, or a signal such as SIGSEGV.
+
+// Returned instead of an int32_t status or count after a caught exception.
+enum llama_dart_status {
+    LLAMA_DART_STATUS_EXCEPTION = INT32_MIN,
+};
+
+// Message of the exception that the calling thread's last function with a
+// barrier caught, or NULL when it caught none. The string is truncated to 511
+// bytes and stays valid until the same thread calls another function with a
+// barrier. Each thread has its own.
+LLAMADART_API const char * llama_dart_last_error(void);
+
+// Clears the calling thread's last error.
+LLAMADART_API void llama_dart_clear_last_error(void);
+
 // Exit teardown
 //
 // libllamadart keeps a registry of live native objects and frees what is left
@@ -305,6 +361,13 @@ LLAMADART_API llama_token llama_dart_sampler_sample(
     struct llama_sampler * smpl,
     struct llama_context * ctx,
     int32_t idx);
+
+// llama_sampler_accept as a call in flight. Returns false after a caught
+// exception, such as the one a grammar sampler throws for a token that its
+// grammar rejects, and true otherwise. Blocks after teardown.
+LLAMADART_API bool llama_dart_sampler_accept(
+    struct llama_sampler * smpl,
+    llama_token token);
 
 LLAMADART_API bool llama_dart_state_save_file(
     struct llama_context * ctx,

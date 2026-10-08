@@ -18,10 +18,13 @@
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <exception>
 #include <iterator>
 #include <limits>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -57,6 +60,45 @@ static int llama_dart_common_log_verbosity(int level) {
   default:
     return LOG_LEVEL_ERROR;
   }
+}
+
+// The calling thread's last caught exception. It has no destructor and needs
+// no allocation, so recording std::bad_alloc cannot fail and nothing is left
+// to destroy when the thread or the process ends.
+struct llama_dart_error_state {
+  bool set;
+  char message[512];
+};
+
+static thread_local llama_dart_error_state llama_dart_error = {};
+
+static void llama_dart_error_record(const char *message) noexcept {
+  snprintf(llama_dart_error.message, sizeof(llama_dart_error.message), "%s",
+           message != nullptr ? message : "unknown C++ exception");
+  llama_dart_error.set = true;
+}
+
+// Runs call so that no C++ exception leaves libllamadart: an exception unwinds
+// call, is recorded as the thread's last error, and failure is returned.
+template <typename Result, typename Call>
+static Result llama_dart_barrier(Result failure, Call &&call) noexcept {
+  llama_dart_error.set = false;
+  try {
+    return call();
+  } catch (const std::exception &error) {
+    llama_dart_error_record(error.what());
+  } catch (...) {
+    llama_dart_error_record(nullptr);
+  }
+  return failure;
+}
+
+template <typename Call>
+static void llama_dart_void_barrier(Call &&call) noexcept {
+  llama_dart_barrier(false, [&call] {
+    call();
+    return true;
+  });
 }
 
 struct llama_dart_ngram {
@@ -167,6 +209,27 @@ static void llama_dart_tts_release_task_resources(llama_dart_tts *tts) {
     tts->owns_sequence = false;
   }
   tts->cancel_flag = nullptr;
+}
+
+// A TTS call behind the barrier. An exception fails the task like any other
+// upstream error, so that the next step does not continue it.
+template <typename Call>
+static llama_dart_tts_status llama_dart_tts_barrier(llama_dart_tts *tts,
+                                                    Call &&call) noexcept {
+  const llama_dart_tts_status status =
+      llama_dart_barrier(LLAMA_DART_TTS_STATUS_UPSTREAM_ERROR, call);
+  if (tts != nullptr && llama_dart_error.set) {
+    // Releasing the task's resources calls llama.cpp again.
+    llama_dart_exit_call_begin();
+    try {
+      llama_dart_tts_fail(tts, LLAMA_DART_TTS_STATUS_UPSTREAM_ERROR,
+                          llama_dart_error.message);
+    } catch (...) {
+      tts->state = LLAMA_DART_TTS_STATE_FAILED;
+    }
+    llama_dart_exit_call_end();
+  }
+  return status;
 }
 
 static llama_dart_tts_status llama_dart_tts_mark_cancelled(
@@ -938,12 +1001,18 @@ static void llama_dart_exit_release(void *object,
     // either the object or its free.
     ++registry.freeing_calls;
   }
+  // Ends the free also when free_fn throws.
+  struct freeing_call {
+    llama_dart_exit_registry &registry;
+    ~freeing_call() {
+      {
+        std::lock_guard<std::mutex> lock(registry.mutex);
+        --registry.freeing_calls;
+      }
+      llama_dart_exit_call_end();
+    }
+  } freeing{registry};
   free_fn(object);
-  {
-    std::lock_guard<std::mutex> lock(registry.mutex);
-    --registry.freeing_calls;
-  }
-  llama_dart_exit_call_end();
 }
 
 // Begins a call in flight on this thread. A creating call is counted as one
@@ -992,23 +1061,51 @@ struct llama_dart_exit_creating_call {
   operator=(const llama_dart_exit_creating_call &) = delete;
 };
 
-// A call in flight that decodes or encodes on a context. A backend may still
-// be computing when llama_decode or llama_encode returns, and the next read of
-// the context then waits for it. That wait must be part of the call in flight,
-// or teardown frees the context under it, so the call ends only after it.
-struct llama_dart_exit_evaluating_call {
-  explicit llama_dart_exit_evaluating_call(llama_context *context)
-      : ctx(context) {}
-  ~llama_dart_exit_evaluating_call() { llama_synchronize(ctx); }
-  llama_dart_exit_evaluating_call(const llama_dart_exit_evaluating_call &) =
-      delete;
-  llama_dart_exit_evaluating_call &
-  operator=(const llama_dart_exit_evaluating_call &) = delete;
+// Runs call, which decodes or encodes on ctx, as a call in flight behind the
+// barrier. A backend may still be computing when llama_decode or llama_encode
+// returns, and the next read of the context then waits for it. That wait must
+// be part of the call in flight, or teardown frees the context under it, so
+// the call in flight ends only after it, also when call throws.
+template <typename Call>
+static int32_t llama_dart_exit_evaluate(llama_context *ctx, Call &&call) {
+  return llama_dart_barrier<int32_t>(
+      LLAMA_DART_STATUS_EXCEPTION, [ctx, &call]() -> int32_t {
+        llama_dart_exit_call in_flight;
+        int32_t status;
+        try {
+          status = call();
+        } catch (...) {
+          // The exception of the call is the one to report.
+          try {
+            llama_synchronize(ctx);
+          } catch (...) {
+          }
+          throw;
+        }
+        llama_synchronize(ctx);
+        return status;
+      });
+}
 
-  // Declared first, so that it ends after the destructor has waited.
-  llama_dart_exit_call call;
-  llama_context *ctx;
-};
+// Tracks an object that a creating call just made and returns it. An object
+// that cannot be tracked is freed, so that an exception leaves nothing behind
+// that exit teardown does not know.
+template <typename Object>
+static Object *llama_dart_exit_track_created(Object *object,
+                                             void (*free_fn)(void *),
+                                             int32_t stage,
+                                             void *uses_first = nullptr,
+                                             void *uses_second = nullptr) {
+  try {
+    llama_dart_exit_insert(object, free_fn, stage, uses_first, uses_second);
+  } catch (...) {
+    if (object != nullptr) {
+      free_fn(object);
+    }
+    throw;
+  }
+  return object;
+}
 
 struct llama_dart_exit_load_progress {
   llama_progress_callback callback;
@@ -1060,9 +1157,19 @@ LLAMADART_API void llama_dart_set_log_level(int level) {
   ggml_log_set(llama_dart_native_log_callback, nullptr);
 }
 
+LLAMADART_API const char *llama_dart_last_error(void) {
+  return llama_dart_error.set ? llama_dart_error.message : nullptr;
+}
+
+LLAMADART_API void llama_dart_clear_last_error(void) {
+  llama_dart_error.set = false;
+}
+
 LLAMADART_API bool llama_dart_exit_track(void *object, void (*free_fn)(void *),
                                         int32_t stage) {
-  return llama_dart_exit_insert(object, free_fn, stage);
+  return llama_dart_barrier(false, [object, free_fn, stage] {
+    return llama_dart_exit_insert(object, free_fn, stage);
+  });
 }
 
 LLAMADART_API bool llama_dart_exit_untrack(void *object) {
@@ -1075,7 +1182,8 @@ LLAMADART_API bool llama_dart_exit_untrack(void *object) {
 }
 
 LLAMADART_API void llama_dart_exit_free(void *object) {
-  llama_dart_exit_release(object, nullptr);
+  llama_dart_void_barrier(
+      [object] { llama_dart_exit_release(object, nullptr); });
 }
 
 LLAMADART_API int32_t llama_dart_exit_tracked_count(void) {
@@ -1150,32 +1258,39 @@ LLAMADART_API void llama_dart_exit_teardown(void) {
       std::lock_guard<std::mutex> lock(registry.mutex);
       registry.objects.erase(object);
     }
-    entry.free_fn(object);
+    // An exception here would end the process in std::terminate, the abort
+    // at exit that teardown exists to prevent.
+    try {
+      entry.free_fn(object);
+    } catch (...) {
+    }
   }
 }
 
 LLAMADART_API struct llama_model *
 llama_dart_model_load_from_file(const char *path_model,
                                 struct llama_model_params params) {
-  llama_dart_exit_creating_call call;
-  llama_dart_exit_load_progress progress{params.progress_callback,
-                                         params.progress_callback_user_data};
-  params.progress_callback = llama_dart_exit_load_progress_callback;
-  params.progress_callback_user_data = &progress;
-  llama_model *model = llama_model_load_from_file(path_model, params);
-  llama_dart_exit_insert(model, llama_dart_exit_free_model,
-                         LLAMA_DART_EXIT_STAGE_MODEL);
-  return model;
+  return llama_dart_barrier<llama_model *>(nullptr, [path_model, &params] {
+    llama_dart_exit_creating_call call;
+    llama_dart_exit_load_progress progress{params.progress_callback,
+                                           params.progress_callback_user_data};
+    params.progress_callback = llama_dart_exit_load_progress_callback;
+    params.progress_callback_user_data = &progress;
+    return llama_dart_exit_track_created(
+        llama_model_load_from_file(path_model, params),
+        llama_dart_exit_free_model, LLAMA_DART_EXIT_STAGE_MODEL);
+  });
 }
 
 LLAMADART_API struct llama_context *
 llama_dart_init_from_model(struct llama_model *model,
                            struct llama_context_params params) {
-  llama_dart_exit_creating_call call;
-  llama_context *context = llama_init_from_model(model, params);
-  llama_dart_exit_insert(context, llama_dart_exit_free_context,
-                         LLAMA_DART_EXIT_STAGE_CONTEXT);
-  return context;
+  return llama_dart_barrier<llama_context *>(nullptr, [model, &params] {
+    llama_dart_exit_creating_call call;
+    return llama_dart_exit_track_created(
+        llama_init_from_model(model, params), llama_dart_exit_free_context,
+        LLAMA_DART_EXIT_STAGE_CONTEXT);
+  });
 }
 
 LLAMADART_API struct mtmd_context *llama_dart_mtmd_init_from_file(
@@ -1184,44 +1299,60 @@ LLAMADART_API struct mtmd_context *llama_dart_mtmd_init_from_file(
   if (ctx_params == nullptr) {
     return nullptr;
   }
-  llama_dart_exit_creating_call call;
-  mtmd_context *context =
-      mtmd_init_from_file(mmproj_fname, text_model, *ctx_params);
-  llama_dart_exit_insert(context, llama_dart_exit_free_mtmd,
-                         LLAMA_DART_EXIT_STAGE_MODEL_USER);
-  return context;
+  return llama_dart_barrier<mtmd_context *>(
+      nullptr, [mmproj_fname, text_model, ctx_params] {
+        llama_dart_exit_creating_call call;
+        return llama_dart_exit_track_created(
+            mtmd_init_from_file(mmproj_fname, text_model, *ctx_params),
+            llama_dart_exit_free_mtmd, LLAMA_DART_EXIT_STAGE_MODEL_USER);
+      });
 }
 
 LLAMADART_API int32_t llama_dart_decode(struct llama_context *ctx,
                                         struct llama_batch batch) {
-  llama_dart_exit_evaluating_call call(ctx);
-  return llama_decode(ctx, batch);
+  return llama_dart_exit_evaluate(
+      ctx, [ctx, &batch] { return llama_decode(ctx, batch); });
 }
 
 LLAMADART_API int32_t llama_dart_encode(struct llama_context *ctx,
                                         struct llama_batch batch) {
-  llama_dart_exit_evaluating_call call(ctx);
-  return llama_encode(ctx, batch);
+  return llama_dart_exit_evaluate(
+      ctx, [ctx, &batch] { return llama_encode(ctx, batch); });
 }
 
 LLAMADART_API void llama_dart_synchronize(struct llama_context *ctx) {
-  llama_dart_exit_call call;
-  llama_synchronize(ctx);
+  llama_dart_void_barrier([ctx] {
+    llama_dart_exit_call call;
+    llama_synchronize(ctx);
+  });
 }
 
 LLAMADART_API llama_token llama_dart_sampler_sample(struct llama_sampler *smpl,
                                                     struct llama_context *ctx,
                                                     int32_t idx) {
-  llama_dart_exit_call call;
-  return llama_sampler_sample(smpl, ctx, idx);
+  return llama_dart_barrier<llama_token>(LLAMA_TOKEN_NULL, [smpl, ctx, idx] {
+    llama_dart_exit_call call;
+    return llama_sampler_sample(smpl, ctx, idx);
+  });
+}
+
+LLAMADART_API bool llama_dart_sampler_accept(struct llama_sampler *smpl,
+                                             llama_token token) {
+  return llama_dart_barrier(false, [smpl, token] {
+    llama_dart_exit_call call;
+    llama_sampler_accept(smpl, token);
+    return true;
+  });
 }
 
 LLAMADART_API bool llama_dart_state_save_file(struct llama_context *ctx,
                                               const char *path_session,
                                               const llama_token *tokens,
                                               size_t n_token_count) {
-  llama_dart_exit_call call;
-  return llama_state_save_file(ctx, path_session, tokens, n_token_count);
+  return llama_dart_barrier(false, [=] {
+    llama_dart_exit_call call;
+    return llama_state_save_file(ctx, path_session, tokens, n_token_count);
+  });
 }
 
 LLAMADART_API bool llama_dart_state_load_file(struct llama_context *ctx,
@@ -1229,51 +1360,65 @@ LLAMADART_API bool llama_dart_state_load_file(struct llama_context *ctx,
                                               llama_token *tokens_out,
                                               size_t n_token_capacity,
                                               size_t *n_token_count_out) {
-  llama_dart_exit_call call;
-  return llama_state_load_file(ctx, path_session, tokens_out, n_token_capacity,
-                               n_token_count_out);
+  return llama_dart_barrier(false, [=] {
+    llama_dart_exit_call call;
+    return llama_state_load_file(ctx, path_session, tokens_out,
+                                 n_token_capacity, n_token_count_out);
+  });
 }
 
 LLAMADART_API size_t llama_dart_state_seq_get_size_ext(
     struct llama_context *ctx, llama_seq_id seq_id, uint32_t flags) {
-  llama_dart_exit_call call;
-  return llama_state_seq_get_size_ext(ctx, seq_id, flags);
+  return llama_dart_barrier<size_t>(0, [=] {
+    llama_dart_exit_call call;
+    return llama_state_seq_get_size_ext(ctx, seq_id, flags);
+  });
 }
 
 LLAMADART_API size_t llama_dart_state_seq_get_data_ext(
     struct llama_context *ctx, uint8_t *dst, size_t size, llama_seq_id seq_id,
     uint32_t flags) {
-  llama_dart_exit_call call;
-  return llama_state_seq_get_data_ext(ctx, dst, size, seq_id, flags);
+  return llama_dart_barrier<size_t>(0, [=] {
+    llama_dart_exit_call call;
+    return llama_state_seq_get_data_ext(ctx, dst, size, seq_id, flags);
+  });
 }
 
 LLAMADART_API size_t llama_dart_state_seq_set_data_ext(
     struct llama_context *ctx, const uint8_t *src, size_t size,
     llama_seq_id dest_seq_id, uint32_t flags) {
-  llama_dart_exit_call call;
-  return llama_state_seq_set_data_ext(ctx, src, size, dest_seq_id, flags);
+  return llama_dart_barrier<size_t>(0, [=] {
+    llama_dart_exit_call call;
+    return llama_state_seq_set_data_ext(ctx, src, size, dest_seq_id, flags);
+  });
 }
 
 LLAMADART_API struct llama_adapter_lora *
 llama_dart_adapter_lora_init(struct llama_model *model,
                              const char *path_lora) {
-  llama_dart_exit_call call;
-  return llama_adapter_lora_init(model, path_lora);
+  return llama_dart_barrier<llama_adapter_lora *>(nullptr, [=] {
+    llama_dart_exit_call call;
+    return llama_adapter_lora_init(model, path_lora);
+  });
 }
 
 LLAMADART_API int32_t llama_dart_mtmd_tokenize(
     const struct mtmd_context *ctx, struct mtmd_input_chunks *output,
     const struct mtmd_input_text *text,
     const struct mtmd_bitmap *const *bitmaps, size_t n_bitmaps) {
-  llama_dart_exit_call call;
-  return mtmd_tokenize(ctx, output, text, bitmaps, n_bitmaps);
+  return llama_dart_barrier<int32_t>(LLAMA_DART_STATUS_EXCEPTION, [=] {
+    llama_dart_exit_call call;
+    return mtmd_tokenize(ctx, output, text, bitmaps, n_bitmaps);
+  });
 }
 
 LLAMADART_API int32_t
 llama_dart_mtmd_encode_chunk(struct mtmd_context *ctx,
                              const struct mtmd_input_chunk *chunk) {
-  llama_dart_exit_call call;
-  return mtmd_encode_chunk(ctx, chunk);
+  return llama_dart_barrier<int32_t>(LLAMA_DART_STATUS_EXCEPTION, [=] {
+    llama_dart_exit_call call;
+    return mtmd_encode_chunk(ctx, chunk);
+  });
 }
 
 LLAMADART_API int32_t llama_dart_mtmd_helper_eval_chunks(
@@ -1281,9 +1426,10 @@ LLAMADART_API int32_t llama_dart_mtmd_helper_eval_chunks(
     const struct mtmd_input_chunks *chunks, llama_pos n_past,
     llama_seq_id seq_id, int32_t n_batch, bool logits_last,
     llama_pos *new_n_past) {
-  llama_dart_exit_evaluating_call call(lctx);
-  return mtmd_helper_eval_chunks(ctx, lctx, chunks, n_past, seq_id, n_batch,
-                                 logits_last, new_n_past);
+  return llama_dart_exit_evaluate(lctx, [=] {
+    return mtmd_helper_eval_chunks(ctx, lctx, chunks, n_past, seq_id, n_batch,
+                                   logits_last, new_n_past);
+  });
 }
 
 LLAMADART_API int32_t llama_dart_mtmd_helper_eval_chunk_single(
@@ -1291,9 +1437,10 @@ LLAMADART_API int32_t llama_dart_mtmd_helper_eval_chunk_single(
     const struct mtmd_input_chunk *chunk, llama_pos n_past,
     llama_seq_id seq_id, int32_t n_batch, bool logits_last,
     llama_pos *new_n_past) {
-  llama_dart_exit_evaluating_call call(lctx);
-  return mtmd_helper_eval_chunk_single(ctx, lctx, chunk, n_past, seq_id,
-                                       n_batch, logits_last, new_n_past);
+  return llama_dart_exit_evaluate(lctx, [=] {
+    return mtmd_helper_eval_chunk_single(ctx, lctx, chunk, n_past, seq_id,
+                                         n_batch, logits_last, new_n_past);
+  });
 }
 
 LLAMADART_API int32_t llama_dart_mtmd_helper_decode_image_chunk(
@@ -1303,17 +1450,20 @@ LLAMADART_API int32_t llama_dart_mtmd_helper_decode_image_chunk(
     llama_pos *new_n_past,
     int32_t (*callback)(struct llama_batch batch, void *user_data),
     void *user_data) {
-  llama_dart_exit_evaluating_call call(lctx);
-  return llama_dart_decode_image_chunk_compat(
-      ctx, lctx, chunk, encoded_embd, n_past, seq_id, n_batch, new_n_past,
-      callback, user_data);
+  return llama_dart_exit_evaluate(lctx, [=] {
+    return llama_dart_decode_image_chunk_compat(
+        ctx, lctx, chunk, encoded_embd, n_past, seq_id, n_batch, new_n_past,
+        callback, user_data);
+  });
 }
 
 LLAMADART_API enum ggml_status
 llama_dart_ggml_backend_sched_graph_compute(ggml_backend_sched_t sched,
                                             struct ggml_cgraph *graph) {
-  llama_dart_exit_call call;
-  return ggml_backend_sched_graph_compute(sched, graph);
+  return llama_dart_barrier(GGML_STATUS_FAILED, [sched, graph] {
+    llama_dart_exit_call call;
+    return ggml_backend_sched_graph_compute(sched, graph);
+  });
 }
 
 LLAMADART_API uint32_t llama_dart_tts_api_version(void) {
@@ -1335,7 +1485,7 @@ llama_dart_tts_request_default(void) {
   return request;
 }
 
-LLAMADART_API enum llama_dart_tts_status llama_dart_tts_get_info(
+static enum llama_dart_tts_status llama_dart_tts_get_info_impl(
     const struct mtmd_context *mtmd, struct llama_dart_tts_info *out_info) {
   if (mtmd == nullptr || out_info == nullptr ||
       out_info->struct_size < sizeof(*out_info)) {
@@ -1354,7 +1504,14 @@ LLAMADART_API enum llama_dart_tts_status llama_dart_tts_get_info(
              : LLAMA_DART_TTS_STATUS_OK;
 }
 
-LLAMADART_API struct llama_dart_tts *llama_dart_tts_init(
+LLAMADART_API enum llama_dart_tts_status llama_dart_tts_get_info(
+    const struct mtmd_context *mtmd, struct llama_dart_tts_info *out_info) {
+  return llama_dart_barrier(LLAMA_DART_TTS_STATUS_UPSTREAM_ERROR, [=] {
+    return llama_dart_tts_get_info_impl(mtmd, out_info);
+  });
+}
+
+static struct llama_dart_tts *llama_dart_tts_init_impl(
     struct llama_context *llama, struct mtmd_context *mtmd,
     enum llama_dart_tts_status *out_status) {
   llama_dart_exit_creating_call call;
@@ -1378,20 +1535,39 @@ LLAMADART_API struct llama_dart_tts *llama_dart_tts_init(
     }
     return nullptr;
   }
-  auto *tts = new llama_dart_tts();
+  llama_dart_tts *tts = nullptr;
+  try {
+    tts = new llama_dart_tts();
+  } catch (...) {
+    mtmd_helper_gen_audio_free(generator);
+    throw;
+  }
   tts->llama = llama;
   tts->mtmd = mtmd;
   tts->generator = generator;
+  llama_dart_exit_track_created(tts, llama_dart_tts_free_object,
+                                LLAMA_DART_EXIT_STAGE_SESSION, llama, mtmd);
   if (out_status != nullptr) {
     *out_status = LLAMA_DART_TTS_STATUS_OK;
   }
-  llama_dart_exit_insert(tts, llama_dart_tts_free_object,
-                         LLAMA_DART_EXIT_STAGE_SESSION, llama, mtmd);
+  return tts;
+}
+
+LLAMADART_API struct llama_dart_tts *llama_dart_tts_init(
+    struct llama_context *llama, struct mtmd_context *mtmd,
+    enum llama_dart_tts_status *out_status) {
+  llama_dart_tts *tts = llama_dart_barrier<llama_dart_tts *>(nullptr, [=] {
+    return llama_dart_tts_init_impl(llama, mtmd, out_status);
+  });
+  if (tts == nullptr && llama_dart_error.set && out_status != nullptr) {
+    *out_status = LLAMA_DART_TTS_STATUS_UPSTREAM_ERROR;
+  }
   return tts;
 }
 
 LLAMADART_API void llama_dart_tts_free(struct llama_dart_tts *tts) {
-  llama_dart_exit_release(tts, llama_dart_tts_free_object);
+  llama_dart_void_barrier(
+      [tts] { llama_dart_exit_release(tts, llama_dart_tts_free_object); });
 }
 
 static void llama_dart_tts_free_object(void *object) {
@@ -1402,7 +1578,7 @@ static void llama_dart_tts_free_object(void *object) {
   delete tts;
 }
 
-LLAMADART_API enum llama_dart_tts_status llama_dart_tts_start(
+static enum llama_dart_tts_status llama_dart_tts_start_impl(
     struct llama_dart_tts *tts,
     const struct llama_dart_tts_request *request) {
   llama_dart_exit_call call;
@@ -1482,7 +1658,14 @@ LLAMADART_API enum llama_dart_tts_status llama_dart_tts_start(
   return LLAMA_DART_TTS_STATUS_OK;
 }
 
-LLAMADART_API enum llama_dart_tts_status llama_dart_tts_step(
+LLAMADART_API enum llama_dart_tts_status llama_dart_tts_start(
+    struct llama_dart_tts *tts,
+    const struct llama_dart_tts_request *request) {
+  return llama_dart_tts_barrier(
+      tts, [=] { return llama_dart_tts_start_impl(tts, request); });
+}
+
+static enum llama_dart_tts_status llama_dart_tts_step_impl(
     struct llama_dart_tts *tts,
     struct llama_dart_tts_progress *out_progress) {
   llama_dart_exit_call call;
@@ -1582,6 +1765,13 @@ LLAMADART_API enum llama_dart_tts_status llama_dart_tts_step(
              : LLAMA_DART_TTS_STATUS_INVALID_STATE;
 }
 
+LLAMADART_API enum llama_dart_tts_status llama_dart_tts_step(
+    struct llama_dart_tts *tts,
+    struct llama_dart_tts_progress *out_progress) {
+  return llama_dart_tts_barrier(
+      tts, [=] { return llama_dart_tts_step_impl(tts, out_progress); });
+}
+
 LLAMADART_API void llama_dart_tts_cancel(struct llama_dart_tts *tts) {
   if (tts != nullptr) {
     tts->cancel_requested.store(true, std::memory_order_release);
@@ -1596,8 +1786,10 @@ llama_dart_tts_set_cancel_flag(struct llama_dart_tts *tts,
   }
   if (tts->state != LLAMA_DART_TTS_STATE_PROCESSING_PROMPT &&
       tts->state != LLAMA_DART_TTS_STATE_GENERATING) {
-    return llama_dart_tts_error(tts, LLAMA_DART_TTS_STATUS_INVALID_STATE,
-                                "no TTS task is active");
+    return llama_dart_barrier(LLAMA_DART_TTS_STATUS_UPSTREAM_ERROR, [tts] {
+      return llama_dart_tts_error(tts, LLAMA_DART_TTS_STATUS_INVALID_STATE,
+                                  "no TTS task is active");
+    });
   }
   tts->cancel_flag = flag;
   return LLAMA_DART_TTS_STATUS_OK;
@@ -1614,8 +1806,8 @@ LLAMADART_API bool llama_dart_tts_eval_callback(struct ggml_tensor *tensor,
                                     llama_dart_tts_cancelled(scope->tts));
 }
 
-LLAMADART_API enum llama_dart_tts_status
-llama_dart_tts_reset(struct llama_dart_tts *tts) {
+static enum llama_dart_tts_status
+llama_dart_tts_reset_impl(struct llama_dart_tts *tts) {
   llama_dart_exit_call call;
   if (tts == nullptr) {
     return LLAMA_DART_TTS_STATUS_INVALID_ARGUMENT;
@@ -1632,6 +1824,12 @@ llama_dart_tts_reset(struct llama_dart_tts *tts) {
   tts->language.clear();
   tts->error.clear();
   return LLAMA_DART_TTS_STATUS_OK;
+}
+
+LLAMADART_API enum llama_dart_tts_status
+llama_dart_tts_reset(struct llama_dart_tts *tts) {
+  return llama_dart_tts_barrier(
+      tts, [=] { return llama_dart_tts_reset_impl(tts); });
 }
 
 LLAMADART_API enum llama_dart_tts_status llama_dart_tts_get_output_info(
@@ -1685,7 +1883,7 @@ llama_dart_tts_last_error(const struct llama_dart_tts *tts) {
   return tts == nullptr ? "invalid TTS handle" : tts->error.c_str();
 }
 
-LLAMADART_API struct llama_sampler *llama_dart_sampler_init_reasoning_budget(
+static struct llama_sampler *llama_dart_sampler_init_reasoning_budget_impl(
     const struct llama_vocab *vocab, const char *start_tag, const char *end_tag,
     const char *forced_message, int32_t budget_tokens,
     bool pause_grammar_while_reasoning,
@@ -1711,31 +1909,49 @@ LLAMADART_API struct llama_sampler *llama_dart_sampler_init_reasoning_budget(
 
   const auto initial_state = llama_dart_reasoning_budget_initial_state(
       start_tokens, end_tokens, prompt_tokens, prompt_token_count);
-  auto *budget_sampler = llama_dart_reasoning_budget_init_compat(
-      &common_reasoning_budget_init, vocab, start_tokens, end_tokens,
-      forced_tokens, budget_tokens, initial_state);
+  // Keep grammar_sampler owned by the caller on initialization failure, also
+  // when it fails with an exception. The Dart bridge frees it when this
+  // function returns nullptr; ownership moves to the composite sampler only
+  // after a non-null result is returned.
+  std::unique_ptr<llama_sampler, void (*)(llama_sampler *)> budget_sampler(
+      llama_dart_reasoning_budget_init_compat(
+          &common_reasoning_budget_init, vocab, start_tokens, end_tokens,
+          forced_tokens, budget_tokens, initial_state),
+      llama_sampler_free);
   if (budget_sampler == nullptr) {
     return nullptr;
   }
 
-  auto *context = new llama_dart_reasoning_budget{
-      /* .budget                        = */ budget_sampler,
-      /* .grammar                       = */ grammar_sampler,
-      /* .pause_grammar_while_reasoning = */ pause_grammar_while_reasoning,
-  };
+  std::unique_ptr<llama_dart_reasoning_budget> context(
+      new llama_dart_reasoning_budget{
+          /* .budget                        = */ budget_sampler.get(),
+          /* .grammar                       = */ grammar_sampler,
+          /* .pause_grammar_while_reasoning = */ pause_grammar_while_reasoning,
+      });
   auto *result =
-      llama_sampler_init(&llama_dart_reasoning_budget_interface, context);
-  if (result == nullptr) {
-    llama_sampler_free(context->budget);
-    // Keep grammar_sampler owned by the caller on initialization failure. The
-    // Dart bridge frees it when this function returns nullptr; ownership moves
-    // to the composite sampler only after a non-null result is returned.
-    delete context;
+      llama_sampler_init(&llama_dart_reasoning_budget_interface, context.get());
+  if (result != nullptr) {
+    budget_sampler.release();
+    context.release();
   }
   return result;
 }
 
-LLAMADART_API struct llama_dart_speculative *llama_dart_speculative_init(
+LLAMADART_API struct llama_sampler *llama_dart_sampler_init_reasoning_budget(
+    const struct llama_vocab *vocab, const char *start_tag, const char *end_tag,
+    const char *forced_message, int32_t budget_tokens,
+    bool pause_grammar_while_reasoning,
+    struct llama_sampler *grammar_sampler, const llama_token *prompt_tokens,
+    int32_t prompt_token_count) {
+  return llama_dart_barrier<llama_sampler *>(nullptr, [=] {
+    return llama_dart_sampler_init_reasoning_budget_impl(
+        vocab, start_tag, end_tag, forced_message, budget_tokens,
+        pause_grammar_while_reasoning, grammar_sampler, prompt_tokens,
+        prompt_token_count);
+  });
+}
+
+static struct llama_dart_speculative *llama_dart_speculative_init_impl(
     struct llama_model *target_model, struct llama_model *draft_model,
     struct llama_context *target_context,
     struct llama_context_params context_params,
@@ -1755,10 +1971,10 @@ LLAMADART_API struct llama_dart_speculative *llama_dart_speculative_init(
   } catch (const std::exception &e) {
     LOG_WRN("%s: failed to resolve speculative types: %s\n", __func__,
             e.what());
-    return nullptr;
+    throw;
   } catch (...) {
     LOG_WRN("%s: failed to resolve speculative types\n", __func__);
-    return nullptr;
+    throw;
   }
   const uint32_t type_mask = llama_dart_type_mask_from_types(types);
   if (type_mask == 0 ||
@@ -1777,7 +1993,16 @@ LLAMADART_API struct llama_dart_speculative *llama_dart_speculative_init(
       llama_dart_build_speculative_params(params_input, target_context,
                                           nullptr);
 
-  llama_context *ctx_dft = nullptr;
+  // Owns what is created from here on, so that neither a failure nor an
+  // exception leaves a draft context behind that nothing frees.
+  struct deleter {
+    void operator()(llama_dart_speculative *created) const {
+      llama_dart_speculative_free_object(created);
+    }
+  };
+  std::unique_ptr<llama_dart_speculative, deleter> speculative(
+      new llama_dart_speculative());
+
   if (llama_dart_type_mask_has_draft_context(type_mask)) {
     const bool has_mtp =
         llama_dart_type_mask_has(type_mask, COMMON_SPECULATIVE_TYPE_DRAFT_MTP);
@@ -1805,53 +2030,63 @@ LLAMADART_API struct llama_dart_speculative *llama_dart_speculative_init(
     context_params.embeddings = false;
     context_params.ctx_other = target_context;
 
-    ctx_dft = llama_init_from_model(resolved_draft_model, context_params);
-    if (ctx_dft == nullptr) {
+    speculative->ctx_dft =
+        llama_init_from_model(resolved_draft_model, context_params);
+    if (speculative->ctx_dft == nullptr) {
       LOG_WRN("%s: failed to create speculative draft context\n", __func__);
       return nullptr;
     }
   }
 
+  llama_context *ctx_dft = speculative->ctx_dft;
   params.draft.ctx_dft = ctx_dft;
-  const auto target_output_layer_ids =
+  speculative->target_output_layer_ids =
       llama_dart_speculative_target_output_layer_ids(
           target_model, ctx_dft == nullptr ? nullptr : llama_get_model(ctx_dft));
 
-  common_speculative *spec = nullptr;
+  // Initialization may change the target's outputs. Freeing resets them once
+  // the target is set.
+  speculative->ctx_tgt = target_context;
   try {
-    spec = common_speculative_init(params, 1);
+    speculative->spec = common_speculative_init(params, 1);
   } catch (const std::exception &e) {
     LOG_WRN("%s: failed to initialize common_speculative: %s\n", __func__,
             e.what());
+    throw;
   } catch (...) {
     LOG_WRN("%s: failed to initialize common_speculative\n", __func__);
+    throw;
   }
-  if (spec == nullptr) {
-    if (ctx_dft != nullptr) {
-      llama_free(ctx_dft);
-    }
-    llama_dart_reset_speculative_target_outputs(target_context,
-                                                 target_output_layer_ids);
+  if (speculative->spec == nullptr) {
     return nullptr;
   }
 
-  auto *speculative = new llama_dart_speculative();
-  speculative->ctx_tgt = target_context;
-  speculative->ctx_dft = ctx_dft;
-  speculative->spec = spec;
-  speculative->target_output_layer_ids = target_output_layer_ids;
   speculative->embedding_requirements =
       llama_dart_speculative_embedding_requirements_for(types);
   speculative->caps_draft_process_outputs =
       llama_dart_type_mask_has(type_mask, COMMON_SPECULATIVE_TYPE_DRAFT_SIMPLE);
-  llama_dart_exit_insert(speculative, llama_dart_speculative_free_object,
-                         LLAMA_DART_EXIT_STAGE_SESSION, target_context);
-  return speculative;
+  return llama_dart_exit_track_created(
+      speculative.release(), llama_dart_speculative_free_object,
+      LLAMA_DART_EXIT_STAGE_SESSION, target_context);
+}
+
+LLAMADART_API struct llama_dart_speculative *llama_dart_speculative_init(
+    struct llama_model *target_model, struct llama_model *draft_model,
+    struct llama_context *target_context,
+    struct llama_context_params context_params,
+    const struct llama_dart_speculative_params *dart_params) {
+  return llama_dart_barrier<llama_dart_speculative *>(nullptr, [=] {
+    return llama_dart_speculative_init_impl(target_model, draft_model,
+                                            target_context, context_params,
+                                            dart_params);
+  });
 }
 
 LLAMADART_API void
 llama_dart_speculative_free(struct llama_dart_speculative *speculative) {
-  llama_dart_exit_release(speculative, llama_dart_speculative_free_object);
+  llama_dart_void_barrier([speculative] {
+    llama_dart_exit_release(speculative, llama_dart_speculative_free_object);
+  });
 }
 
 static void llama_dart_speculative_free_object(void *object) {
@@ -1892,7 +2127,7 @@ LLAMADART_API bool llama_dart_speculative_need_embd_nextn(
          speculative->embedding_requirements.need_embd_nextn;
 }
 
-LLAMADART_API bool llama_dart_speculative_begin(
+static bool llama_dart_speculative_begin_impl(
     struct llama_dart_speculative *speculative, llama_seq_id seq_id,
     const llama_token *prompt, int32_t prompt_count) {
   llama_dart_exit_call call;
@@ -1911,7 +2146,16 @@ LLAMADART_API bool llama_dart_speculative_begin(
   return true;
 }
 
-LLAMADART_API bool llama_dart_speculative_process_batch(
+LLAMADART_API bool llama_dart_speculative_begin(
+    struct llama_dart_speculative *speculative, llama_seq_id seq_id,
+    const llama_token *prompt, int32_t prompt_count) {
+  return llama_dart_barrier<bool>(false, [=] {
+    return llama_dart_speculative_begin_impl(speculative, seq_id, prompt,
+                                             prompt_count);
+  });
+}
+
+static bool llama_dart_speculative_process_batch_impl(
     struct llama_dart_speculative *speculative, struct llama_batch batch) {
   llama_dart_exit_call call;
   if (speculative == nullptr || speculative->spec == nullptr) {
@@ -1925,7 +2169,14 @@ LLAMADART_API bool llama_dart_speculative_process_batch(
                                               speculative->ctx_dft);
 }
 
-LLAMADART_API int32_t llama_dart_speculative_draft(
+LLAMADART_API bool llama_dart_speculative_process_batch(
+    struct llama_dart_speculative *speculative, struct llama_batch batch) {
+  return llama_dart_barrier<bool>(false, [=] {
+    return llama_dart_speculative_process_batch_impl(speculative, batch);
+  });
+}
+
+static int32_t llama_dart_speculative_draft_impl(
     struct llama_dart_speculative *speculative, llama_seq_id seq_id,
     llama_pos n_past, llama_token id_last, const llama_token *prompt,
     int32_t prompt_count, int32_t draft_token_max, llama_token *out_tokens,
@@ -1969,7 +2220,19 @@ LLAMADART_API int32_t llama_dart_speculative_draft(
   return count;
 }
 
-LLAMADART_API void llama_dart_speculative_accept(
+LLAMADART_API int32_t llama_dart_speculative_draft(
+    struct llama_dart_speculative *speculative, llama_seq_id seq_id,
+    llama_pos n_past, llama_token id_last, const llama_token *prompt,
+    int32_t prompt_count, int32_t draft_token_max, llama_token *out_tokens,
+    int32_t out_capacity) {
+  return llama_dart_barrier<int32_t>(LLAMA_DART_STATUS_EXCEPTION, [=] {
+    return llama_dart_speculative_draft_impl(
+        speculative, seq_id, n_past, id_last, prompt, prompt_count,
+        draft_token_max, out_tokens, out_capacity);
+  });
+}
+
+static void llama_dart_speculative_accept_impl(
     struct llama_dart_speculative *speculative, llama_seq_id seq_id,
     uint16_t accepted_count) {
   llama_dart_exit_call call;
@@ -1981,6 +2244,14 @@ LLAMADART_API void llama_dart_speculative_accept(
   }
   common_speculative_accept(speculative->spec, seq_id, accepted_count);
   speculative->has_last_draft = false;
+}
+
+LLAMADART_API void llama_dart_speculative_accept(
+    struct llama_dart_speculative *speculative, llama_seq_id seq_id,
+    uint16_t accepted_count) {
+  llama_dart_void_barrier([=] {
+    llama_dart_speculative_accept_impl(speculative, seq_id, accepted_count);
+  });
 }
 
 static struct llama_dart_mtp *llama_dart_mtp_init_impl(
@@ -2014,7 +2285,11 @@ static struct llama_dart_mtp *llama_dart_mtp_init_impl(
   ctx_params.embeddings = false;
   ctx_params.ctx_other = ctx_tgt;
 
-  llama_context *ctx_dft = llama_init_from_model(draft_model, ctx_params);
+  // Owns the draft context until the handle does, so that neither a failure
+  // nor an exception leaves it behind.
+  std::unique_ptr<llama_context, void (*)(llama_context *)> draft_context(
+      llama_init_from_model(draft_model, ctx_params), llama_free);
+  llama_context *ctx_dft = draft_context.get();
   if (ctx_dft == nullptr) {
     LOG_WRN("%s: failed to create MTP draft context\n", __func__);
     return nullptr;
@@ -2031,7 +2306,6 @@ static struct llama_dart_mtp *llama_dart_mtp_init_impl(
   if (!tgt_can_rollback || !dft_can_rollback) {
     LOG_WRN("%s: unsupported seq_rm type for first MTP implementation: target=%d, draft=%d\n",
             __func__, (int) tgt_seq_rm_type, (int) dft_seq_rm_type);
-    llama_free(ctx_dft);
     return nullptr;
   }
 
@@ -2044,43 +2318,47 @@ static struct llama_dart_mtp *llama_dart_mtp_init_impl(
   params.draft.p_min = min_probability;
   params.draft.backend_sampling = backend_sampling;
 
-  common_speculative *spec = common_speculative_init(params, 1);
+  std::unique_ptr<common_speculative, void (*)(common_speculative *)> spec(
+      common_speculative_init(params, 1), common_speculative_free);
   if (spec == nullptr) {
     LOG_WRN("%s: failed to initialize common_speculative draft-mtp state\n",
             __func__);
-    llama_free(ctx_dft);
     return nullptr;
   }
 
   auto *mtp = new llama_dart_mtp();
   mtp->ctx_tgt = ctx_tgt;
-  mtp->ctx_dft = ctx_dft;
-  mtp->spec = spec;
-  llama_dart_exit_insert(mtp, llama_dart_mtp_free_object,
-                         LLAMA_DART_EXIT_STAGE_SESSION, ctx_tgt);
-  return mtp;
+  mtp->ctx_dft = draft_context.release();
+  mtp->spec = spec.release();
+  return llama_dart_exit_track_created(mtp, llama_dart_mtp_free_object,
+                                       LLAMA_DART_EXIT_STAGE_SESSION, ctx_tgt);
 }
 
 LLAMADART_API struct llama_dart_mtp *llama_dart_mtp_init(
     struct llama_model *model, struct llama_context *ctx_tgt,
     struct llama_context_params ctx_params, int32_t draft_token_max,
     int32_t draft_token_min, float min_probability, bool backend_sampling) {
-  return llama_dart_mtp_init_impl(model, ctx_tgt, ctx_params, draft_token_max,
-                                  draft_token_min, min_probability,
-                                  backend_sampling);
+  return llama_dart_barrier<llama_dart_mtp *>(nullptr, [=] {
+    return llama_dart_mtp_init_impl(model, ctx_tgt, ctx_params,
+                                    draft_token_max, draft_token_min,
+                                    min_probability, backend_sampling);
+  });
 }
 
 LLAMADART_API struct llama_dart_mtp *llama_dart_mtp_init_with_draft_model(
     struct llama_model *draft_model, struct llama_context *ctx_tgt,
     struct llama_context_params ctx_params, int32_t draft_token_max,
     int32_t draft_token_min, float min_probability, bool backend_sampling) {
-  return llama_dart_mtp_init_impl(draft_model, ctx_tgt, ctx_params,
-                                  draft_token_max, draft_token_min,
-                                  min_probability, backend_sampling);
+  return llama_dart_barrier<llama_dart_mtp *>(nullptr, [=] {
+    return llama_dart_mtp_init_impl(draft_model, ctx_tgt, ctx_params,
+                                    draft_token_max, draft_token_min,
+                                    min_probability, backend_sampling);
+  });
 }
 
 LLAMADART_API void llama_dart_mtp_free(struct llama_dart_mtp *mtp) {
-  llama_dart_exit_release(mtp, llama_dart_mtp_free_object);
+  llama_dart_void_barrier(
+      [mtp] { llama_dart_exit_release(mtp, llama_dart_mtp_free_object); });
 }
 
 static void llama_dart_mtp_free_object(void *object) {
@@ -2107,10 +2385,10 @@ llama_dart_mtp_get_draft_context(struct llama_dart_mtp *mtp) {
   return mtp->ctx_dft;
 }
 
-LLAMADART_API bool llama_dart_mtp_begin(struct llama_dart_mtp *mtp,
-                                        llama_seq_id seq_id,
-                                        const llama_token *prompt,
-                                        int32_t prompt_count) {
+static bool llama_dart_mtp_begin_impl(struct llama_dart_mtp *mtp,
+                                      llama_seq_id seq_id,
+                                      const llama_token *prompt,
+                                      int32_t prompt_count) {
   llama_dart_exit_call call;
   if (mtp == nullptr || mtp->spec == nullptr || prompt_count < 0 ||
       !llama_dart_mtp_valid_seq_id(seq_id)) {
@@ -2127,9 +2405,18 @@ LLAMADART_API bool llama_dart_mtp_begin(struct llama_dart_mtp *mtp,
   return true;
 }
 
-LLAMADART_API bool
-llama_dart_mtp_process_batch(struct llama_dart_mtp *mtp,
-                             struct llama_batch batch) {
+LLAMADART_API bool llama_dart_mtp_begin(struct llama_dart_mtp *mtp,
+                                        llama_seq_id seq_id,
+                                        const llama_token *prompt,
+                                        int32_t prompt_count) {
+  return llama_dart_barrier<bool>(false, [=] {
+    return llama_dart_mtp_begin_impl(mtp, seq_id, prompt, prompt_count);
+  });
+}
+
+static bool
+llama_dart_mtp_process_batch_impl(struct llama_dart_mtp *mtp,
+                                  struct llama_batch batch) {
   llama_dart_exit_call call;
   if (mtp == nullptr || mtp->spec == nullptr) {
     return false;
@@ -2138,7 +2425,15 @@ llama_dart_mtp_process_batch(struct llama_dart_mtp *mtp,
                                               mtp->ctx_dft);
 }
 
-LLAMADART_API int32_t llama_dart_mtp_draft(
+LLAMADART_API bool
+llama_dart_mtp_process_batch(struct llama_dart_mtp *mtp,
+                             struct llama_batch batch) {
+  return llama_dart_barrier<bool>(false, [=] {
+    return llama_dart_mtp_process_batch_impl(mtp, batch);
+  });
+}
+
+static int32_t llama_dart_mtp_draft_impl(
     struct llama_dart_mtp *mtp, llama_seq_id seq_id, llama_pos n_past,
     llama_token id_last, const llama_token *prompt, int32_t prompt_count,
     int32_t draft_token_max, llama_token *out_tokens, int32_t out_capacity) {
@@ -2180,9 +2475,20 @@ LLAMADART_API int32_t llama_dart_mtp_draft(
   return count;
 }
 
-LLAMADART_API void llama_dart_mtp_accept(struct llama_dart_mtp *mtp,
-                                         llama_seq_id seq_id,
-                                         uint16_t accepted_count) {
+LLAMADART_API int32_t llama_dart_mtp_draft(
+    struct llama_dart_mtp *mtp, llama_seq_id seq_id, llama_pos n_past,
+    llama_token id_last, const llama_token *prompt, int32_t prompt_count,
+    int32_t draft_token_max, llama_token *out_tokens, int32_t out_capacity) {
+  return llama_dart_barrier<int32_t>(LLAMA_DART_STATUS_EXCEPTION, [=] {
+    return llama_dart_mtp_draft_impl(mtp, seq_id, n_past, id_last, prompt,
+                                     prompt_count, draft_token_max, out_tokens,
+                                     out_capacity);
+  });
+}
+
+static void llama_dart_mtp_accept_impl(struct llama_dart_mtp *mtp,
+                                       llama_seq_id seq_id,
+                                       uint16_t accepted_count) {
   llama_dart_exit_call call;
   if (mtp == nullptr || mtp->spec == nullptr) {
     return;
@@ -2194,8 +2500,15 @@ LLAMADART_API void llama_dart_mtp_accept(struct llama_dart_mtp *mtp,
   common_speculative_accept(mtp->spec, seq_id, accepted_count);
 }
 
-LLAMADART_API struct llama_dart_ngram *
-llama_dart_ngram_simple_init(int32_t ngram_size, int32_t draft_token_max) {
+LLAMADART_API void llama_dart_mtp_accept(struct llama_dart_mtp *mtp,
+                                         llama_seq_id seq_id,
+                                         uint16_t accepted_count) {
+  llama_dart_void_barrier(
+      [=] { llama_dart_mtp_accept_impl(mtp, seq_id, accepted_count); });
+}
+
+static struct llama_dart_ngram *
+llama_dart_ngram_simple_init_impl(int32_t ngram_size, int32_t draft_token_max) {
   llama_dart_exit_creating_call call;
   common_params_speculative params;
   params.types = {COMMON_SPECULATIVE_TYPE_NGRAM_SIMPLE};
@@ -2203,7 +2516,8 @@ llama_dart_ngram_simple_init(int32_t ngram_size, int32_t draft_token_max) {
   params.ngram_simple.size_m =
       llama_dart_uint16_or_default(draft_token_max, 48);
 
-  common_speculative *spec = common_speculative_init(params, 1);
+  std::unique_ptr<common_speculative, void (*)(common_speculative *)> spec(
+      common_speculative_init(params, 1), common_speculative_free);
   if (spec == nullptr) {
     LOG_WRN("%s: failed to initialize common_speculative ngram-simple state\n",
             __func__);
@@ -2211,14 +2525,22 @@ llama_dart_ngram_simple_init(int32_t ngram_size, int32_t draft_token_max) {
   }
 
   auto *ngram = new llama_dart_ngram();
-  ngram->spec = spec;
-  llama_dart_exit_insert(ngram, llama_dart_ngram_free_object,
-                         LLAMA_DART_EXIT_STAGE_SESSION);
-  return ngram;
+  ngram->spec = spec.release();
+  return llama_dart_exit_track_created(ngram, llama_dart_ngram_free_object,
+                                       LLAMA_DART_EXIT_STAGE_SESSION);
+}
+
+LLAMADART_API struct llama_dart_ngram *
+llama_dart_ngram_simple_init(int32_t ngram_size, int32_t draft_token_max) {
+  return llama_dart_barrier<struct llama_dart_ngram *>(nullptr, [=] {
+    return llama_dart_ngram_simple_init_impl(ngram_size, draft_token_max);
+  });
 }
 
 LLAMADART_API void llama_dart_ngram_free(struct llama_dart_ngram *ngram) {
-  llama_dart_exit_release(ngram, llama_dart_ngram_free_object);
+  llama_dart_void_barrier([ngram] {
+    llama_dart_exit_release(ngram, llama_dart_ngram_free_object);
+  });
 }
 
 static void llama_dart_ngram_free_object(void *object) {
@@ -2230,10 +2552,10 @@ static void llama_dart_ngram_free_object(void *object) {
   delete ngram;
 }
 
-LLAMADART_API bool llama_dart_ngram_begin(struct llama_dart_ngram *ngram,
-                                          llama_seq_id seq_id,
-                                          const llama_token *prompt,
-                                          int32_t prompt_count) {
+static bool llama_dart_ngram_begin_impl(struct llama_dart_ngram *ngram,
+                                        llama_seq_id seq_id,
+                                        const llama_token *prompt,
+                                        int32_t prompt_count) {
   llama_dart_exit_call call;
   if (ngram == nullptr || ngram->spec == nullptr || prompt_count < 0) {
     return false;
@@ -2252,9 +2574,18 @@ LLAMADART_API bool llama_dart_ngram_begin(struct llama_dart_ngram *ngram,
   return true;
 }
 
-LLAMADART_API bool
-llama_dart_ngram_process_batch(struct llama_dart_ngram *ngram,
-                               struct llama_batch batch) {
+LLAMADART_API bool llama_dart_ngram_begin(struct llama_dart_ngram *ngram,
+                                          llama_seq_id seq_id,
+                                          const llama_token *prompt,
+                                          int32_t prompt_count) {
+  return llama_dart_barrier<bool>(false, [=] {
+    return llama_dart_ngram_begin_impl(ngram, seq_id, prompt, prompt_count);
+  });
+}
+
+static bool
+llama_dart_ngram_process_batch_impl(struct llama_dart_ngram *ngram,
+                                    struct llama_batch batch) {
   llama_dart_exit_call call;
   if (ngram == nullptr || ngram->spec == nullptr) {
     return false;
@@ -2262,7 +2593,15 @@ llama_dart_ngram_process_batch(struct llama_dart_ngram *ngram,
   return llama_dart_speculative_process_compat(ngram->spec, batch, nullptr);
 }
 
-LLAMADART_API int32_t llama_dart_ngram_draft(
+LLAMADART_API bool
+llama_dart_ngram_process_batch(struct llama_dart_ngram *ngram,
+                               struct llama_batch batch) {
+  return llama_dart_barrier<bool>(false, [=] {
+    return llama_dart_ngram_process_batch_impl(ngram, batch);
+  });
+}
+
+static int32_t llama_dart_ngram_draft_impl(
     struct llama_dart_ngram *ngram, llama_seq_id seq_id, llama_pos n_past,
     llama_token id_last, const llama_token *prompt, int32_t prompt_count,
     int32_t draft_token_max, llama_token *out_tokens, int32_t out_capacity) {
@@ -2305,9 +2644,20 @@ LLAMADART_API int32_t llama_dart_ngram_draft(
   return count;
 }
 
-LLAMADART_API void llama_dart_ngram_accept(struct llama_dart_ngram *ngram,
-                                           llama_seq_id seq_id,
-                                           uint16_t accepted_count) {
+LLAMADART_API int32_t llama_dart_ngram_draft(
+    struct llama_dart_ngram *ngram, llama_seq_id seq_id, llama_pos n_past,
+    llama_token id_last, const llama_token *prompt, int32_t prompt_count,
+    int32_t draft_token_max, llama_token *out_tokens, int32_t out_capacity) {
+  return llama_dart_barrier<int32_t>(LLAMA_DART_STATUS_EXCEPTION, [=] {
+    return llama_dart_ngram_draft_impl(ngram, seq_id, n_past, id_last, prompt,
+                                       prompt_count, draft_token_max,
+                                       out_tokens, out_capacity);
+  });
+}
+
+static void llama_dart_ngram_accept_impl(struct llama_dart_ngram *ngram,
+                                         llama_seq_id seq_id,
+                                         uint16_t accepted_count) {
   llama_dart_exit_call call;
   if (ngram == nullptr || ngram->spec == nullptr) {
     return;
@@ -2319,7 +2669,14 @@ LLAMADART_API void llama_dart_ngram_accept(struct llama_dart_ngram *ngram,
   ngram->has_last_draft = false;
 }
 
-LLAMADART_API int32_t llama_dart_sampler_sample_and_accept_n(
+LLAMADART_API void llama_dart_ngram_accept(struct llama_dart_ngram *ngram,
+                                           llama_seq_id seq_id,
+                                           uint16_t accepted_count) {
+  llama_dart_void_barrier(
+      [=] { llama_dart_ngram_accept_impl(ngram, seq_id, accepted_count); });
+}
+
+static int32_t llama_dart_sampler_sample_and_accept_n_impl(
     struct llama_sampler *sampler, struct llama_context *ctx,
     const int32_t *idxs, int32_t idx_count, const llama_token *draft_tokens,
     int32_t draft_count, llama_token *out_tokens, int32_t out_capacity) {
@@ -2358,5 +2715,16 @@ LLAMADART_API int32_t llama_dart_sampler_sample_and_accept_n(
   }
 
   return count;
+}
+
+LLAMADART_API int32_t llama_dart_sampler_sample_and_accept_n(
+    struct llama_sampler *sampler, struct llama_context *ctx,
+    const int32_t *idxs, int32_t idx_count, const llama_token *draft_tokens,
+    int32_t draft_count, llama_token *out_tokens, int32_t out_capacity) {
+  return llama_dart_barrier<int32_t>(LLAMA_DART_STATUS_EXCEPTION, [=] {
+    return llama_dart_sampler_sample_and_accept_n_impl(
+        sampler, ctx, idxs, idx_count, draft_tokens, draft_count, out_tokens,
+        out_capacity);
+  });
 }
 }

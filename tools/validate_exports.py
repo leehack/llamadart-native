@@ -11,6 +11,8 @@ from pathlib import Path
 
 
 DEFAULT_REQUIRED_SYMBOLS = [
+    "llama_dart_last_error",
+    "llama_dart_clear_last_error",
     "llama_dart_exit_track",
     "llama_dart_exit_untrack",
     "llama_dart_exit_free",
@@ -26,6 +28,7 @@ DEFAULT_REQUIRED_SYMBOLS = [
     "llama_dart_encode",
     "llama_dart_synchronize",
     "llama_dart_sampler_sample",
+    "llama_dart_sampler_accept",
     "llama_dart_state_save_file",
     "llama_dart_state_load_file",
     "llama_dart_state_seq_get_size_ext",

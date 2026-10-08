@@ -315,6 +315,38 @@ build/exit-teardown/llamadart_exit_teardown_test model-idle-untracked model.gguf
 
 The last one exits with a model that is not tracked, and aborts on Metal.
 
+## Exception Barrier
+
+llama.cpp reports some failures by throwing a C++ exception, for example
+`Unexpected empty grammar stack after accepting piece` when a grammar sampler
+accepts a token that its grammar rejects. An exception that crosses the C ABI
+into a Dart FFI caller ends the process, so every `llama_dart_` function that
+calls llama.cpp or allocates catches it, returns a failure value and keeps the
+message for the calling thread:
+
+| Return type | After a caught exception |
+| --- | --- |
+| pointer | `NULL` |
+| `bool` | `false` |
+| `int32_t` status or count | `LLAMA_DART_STATUS_EXCEPTION` (`INT32_MIN`) |
+| `llama_token` (`llama_dart_sampler_sample`) | `LLAMA_TOKEN_NULL` |
+| `size_t` | `0` |
+| `enum ggml_status` | `GGML_STATUS_FAILED` |
+| `enum llama_dart_tts_status` | `LLAMA_DART_TTS_STATUS_UPSTREAM_ERROR`, and the task fails |
+| `void` | nothing; only the message is kept |
+
+`llama_dart_last_error` returns the message, or `NULL` when the thread's last
+such call caught nothing: each of them clears it on entry, which tells a caught
+exception from a failure that llama.cpp reports through the same value.
+`llama_dart_sampler_accept` is `llama_sampler_accept` behind the barrier. A
+failed `GGML_ASSERT` still aborts. `src/llama_dart_wrapper.h` lists the
+functions without a barrier and what a caller may do with the objects of a
+call that failed.
+
+`llamadart_exit_teardown_test` covers it with the `barrier-free`,
+`barrier-grammar` and, on macOS, `model-barrier` scenarios. The grammar ones
+use a model with a vocabulary that the test writes.
+
 ## Experimental TTS Wrapper
 
 `libllamadart` exposes a versioned, opaque C symbol contract around llama.cpp's
