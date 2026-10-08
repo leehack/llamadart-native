@@ -16,7 +16,7 @@
 namespace {
 
 std::string recorded(const std::string &message) {
-  llama_dart_error.set = false;
+  llama_dart_error_begin();
   llama_dart_error_record(message.c_str());
   assert(llama_dart_error.set);
   return llama_dart_error.message;
