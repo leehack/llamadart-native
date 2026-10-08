@@ -201,6 +201,12 @@ endif()
 target_include_directories(llamadart_lib SYSTEM PRIVATE
     "${LLAMADART_VULKAN_HEADERS_INCLUDE}")
 target_link_libraries(llamadart_lib PRIVATE ${CMAKE_DL_LIBS})
+if (MSVC)
+    # /EHsc lets the compiler assume that an extern "C" function never throws,
+    # and it then drops the wrapper's catch around every llama.cpp call. With
+    # /EHsc- (/EHs without that assumption) the exception barrier is kept.
+    target_compile_options(llamadart_lib PRIVATE /EHsc-)
+endif()
 target_compile_definitions(llamadart_lib PRIVATE
     LLAMADART_MTMD_HELPER_HAS_EMBD_BATCH=$<BOOL:${LLAMADART_MTMD_HELPER_HAS_EMBD_BATCH}>
     LLAMADART_SPECULATIVE_HAS_COMMON_BATCH=$<BOOL:${LLAMADART_SPECULATIVE_HAS_COMMON_BATCH}>
