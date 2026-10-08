@@ -201,6 +201,9 @@ resolves every entry point through `vkGetInstanceProcAddr` and checks it before
 use, calls `vkGetPhysicalDeviceProperties2` and `vkGetPhysicalDeviceFeatures2`
 only when both the loader and the device are at least Vulkan 1.1, and creates
 an instance but no logical device. The result is read once per process.
+Creating the instance loads the system's GPU drivers and layers into the
+process, as registering ggml-vulkan does; a driver that crashes there cannot
+be caught, so a caller asks only when it is considering Vulkan.
 
 Device order at `d81235049` (`ggml_vk_instance_init`,
 `ggml/src/ggml-vulkan/ggml-vulkan.cpp`), which the probe mirrors so that index

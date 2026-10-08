@@ -368,7 +368,9 @@ on the subgroup size.
 They read the Vulkan loader directly (`vulkan-1.dll`, `libvulkan.so.1`, or
 `libvulkan.so` on Android), which `libllamadart` opens at run time and does
 not link. They create a Vulkan instance and no logical device, and do not load
-ggml-vulkan. Device `N` is ggml's device `VulkanN`: the selection of
+ggml-vulkan. Creating the instance loads the system's GPU drivers into the
+process, and a driver crash there cannot be caught, so call them only when
+the Vulkan backend is being considered. Device `N` is ggml's device `VulkanN`: the selection of
 `ggml_vk_instance_init` is mirrored, including `GGML_VK_VISIBLE_DEVICES`.
 Without a usable loader they return a negative `llama_dart_vulkan_status`,
 and on Apple platforms always `LLAMA_DART_VULKAN_STATUS_UNSUPPORTED`.

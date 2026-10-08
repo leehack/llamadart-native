@@ -284,10 +284,16 @@ LLAMADART_API void llama_dart_clear_last_error(void);
 // The devices that ggml-vulkan registers on this system, read from the Vulkan
 // loader directly: the same devices in the same order, so index N here is
 // ggml's device "VulkanN". The functions create a Vulkan instance and destroy
-// it again. They do not load ggml-vulkan and create no logical device, so they
-// are safe to call before deciding whether to use the Vulkan backend at all,
-// and they work in a libllamadart whose bundle has no ggml-vulkan. The result
-// is read once per process. GGML_VK_VISIBLE_DEVICES is honored as ggml does.
+// it again. They do not load ggml-vulkan and create no logical device, and
+// they work in a libllamadart whose bundle has no ggml-vulkan. The result is
+// read once per process. GGML_VK_VISIBLE_DEVICES is honored as ggml does.
+//
+// Creating the instance makes the Vulkan loader load the system's GPU drivers
+// and layers into the process, as registering ggml-vulkan does. A driver that
+// crashes there takes the process down, and nothing here can catch that. Call
+// these functions only when the Vulkan backend is being considered, not as a
+// general probe, and not on a device where Vulkan is ruled out for other
+// reasons.
 //
 // ggml-vulkan requires Vulkan 1.2. It registers no device when
 // instance_api_version is below 1.2; the devices are still listed here. It
