@@ -1563,6 +1563,8 @@ int test_model_tts(const char *path, const char *mmproj_path) {
 
 void throw_on_free(void *) { throw std::runtime_error("free failed"); }
 
+void throw_number_on_free(void *) { throw 42; }
+
 // A message as llama.cpp builds it around the piece of a token: part of a
 // character, and more text than the last error holds.
 void throw_undecodable_on_free(void *) {
@@ -1613,74 +1615,17 @@ bool calls_in_flight_ended() {
 
 // A free that threw has finished like any other: with nothing left to free,
 // it does not hold up an exit that a call in flight would otherwise delay.
-#define TRACE(step)                                                           \
-  do {                                                                         \
-    fprintf(stderr, "trace: %s\n", step);                                      \
-    fflush(stderr);                                                            \
-  } while (0)
-
-void throw_number_on_free(void *) { throw 42; }
-
-// Temporary: tells apart where an exception of this executable is lost on
-// Windows ARM64.
-int test_diagnose(const std::string &which) {
-  static char object[] = "object";
-  ggml_backend_device device{};
-  device.iface.init_backend = throw_on_init;
-  TRACE(which.c_str());
-  if (which == "exe") {
-    try {
-      throw_on_free(nullptr);
-    } catch (const std::exception &error) {
-      TRACE(error.what());
-    }
-  } else if (which == "exe-ggml") {
-    try {
-      ggml_backend_dev_init(&device, nullptr);
-    } catch (const std::exception &error) {
-      TRACE(error.what());
-    }
-  } else if (which == "dll-device") {
-    assert(llama_dart_ggml_backend_dev_init(&device, nullptr) == nullptr);
-    TRACE(llama_dart_last_error());
-  } else if (which == "dll-free-number") {
-    assert(llama_dart_exit_track(object, throw_number_on_free,
-                                 LLAMA_DART_EXIT_STAGE_SESSION));
-    llama_dart_exit_free(object);
-    TRACE(llama_dart_last_error());
-  } else if (which == "dll-free") {
-    assert(llama_dart_exit_track(object, throw_on_free,
-                                 LLAMA_DART_EXIT_STAGE_SESSION));
-    llama_dart_exit_free(object);
-    TRACE(llama_dart_last_error());
-  } else if (which == "dll-free-thread") {
-    assert(llama_dart_exit_track(object, throw_on_free,
-                                 LLAMA_DART_EXIT_STAGE_SESSION));
-    std::thread([] { llama_dart_exit_free(object); }).join();
-    TRACE("joined");
-  }
-  TRACE("done");
-  return 0;
-}
-
 int test_barrier_free_idle() {
   static char object[] = "object";
-  TRACE("track");
   assert(llama_dart_exit_track(object, throw_on_free,
                                LLAMA_DART_EXIT_STAGE_SESSION));
-  TRACE("free");
   llama_dart_exit_free(object);
-  TRACE("freed");
   assert(llama_dart_last_error() != nullptr);
-  TRACE(llama_dart_last_error());
   std::thread([] { llama_dart_exit_call_begin(); }).join();
-  TRACE("joined");
   llama_dart_exit_set_wait_ms(30000);
   const auto started = std::chrono::steady_clock::now();
   llama_dart_exit_teardown();
-  TRACE("torn down");
   assert(elapsed_ms(started) < 5000);
-  TRACE("done");
   return 0;
 }
 
@@ -1839,6 +1784,12 @@ int test_barrier_free() {
   assert(llama_dart_last_error() != nullptr);
   llama_dart_clear_last_error();
   assert(llama_dart_last_error() == nullptr);
+
+  // An exception that is no std::exception has no message of its own.
+  assert(llama_dart_exit_track(object, throw_number_on_free,
+                               LLAMA_DART_EXIT_STAGE_SESSION));
+  llama_dart_exit_free(object);
+  assert(std::string(llama_dart_last_error()) == "unknown C++ exception");
 
   // The last error is valid UTF-8 and bounded whatever the message was.
   assert(llama_dart_exit_track(object, throw_undecodable_on_free,
@@ -2342,9 +2293,6 @@ int main(int argc, char **argv) {
   }
   if (scenario == "barrier-free-idle") {
     return test_barrier_free_idle();
-  }
-  if (scenario.rfind("diagnose-", 0) == 0) {
-    return test_diagnose(scenario.substr(9));
   }
   if (first != nullptr) {
     if (scenario == "make-model") {
