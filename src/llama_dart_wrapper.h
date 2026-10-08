@@ -255,13 +255,41 @@ LLAMADART_API void llama_dart_set_log_level(int level);
 // unchanged.
 //
 // After a caught exception, the objects that were passed to the call may be
-// partly updated. Free them, or reset a sampler, instead of continuing the
-// generation they were used for. A function that creates an object frees
-// what it had created before the exception, so there is nothing to free for
-// a NULL result. A call in flight has ended when the function returns.
+// partly updated. What a caller may still do with each of them:
+// - A sampler or sampler chain (llama_dart_sampler_sample, _accept and
+//   _sample_and_accept_n): free it, or call llama_sampler_reset on it and
+//   start the generation over. The context it sampled from is unchanged.
+// - A llama context (llama_dart_decode, llama_dart_encode,
+//   llama_dart_synchronize, llama_dart_memory_clear, the state functions and
+//   the mtmd evaluation helpers): free it. Its memory and its outputs are in
+//   no defined state.
+// - An mtmd context (llama_dart_mtmd_tokenize, llama_dart_mtmd_encode_chunk
+//   and the evaluation helpers): free it.
+// - A model whose adapter failed to load (llama_dart_adapter_lora_init): free
+//   it.
+// - Speculative, MTP and n-gram state: free it.
+// - A TTS task: it is FAILED. Free it and the llama context it ran on.
+// - A ggml backend, scheduler or buffer (the llama_dart_ggml_backend_
+//   functions other than the two device queries): free it.
+// - Nothing changes for the model or vocabulary of llama_dart_tokenize,
+//   llama_dart_token_to_piece and the grammar constructor, for the mtmd
+//   context of the bitmap constructors, or for the device of the two device
+//   queries: these calls only read them, and they stay usable.
+// A function that creates an object frees what it had created before the
+// exception, so there is nothing to free for a NULL result. A call in flight
+// has ended when the function returns.
+//
+// On Windows the rule is stricter. llama.cpp's own libraries are compiled
+// with /EHsc, so while an exception unwinds through one of their extern "C"
+// functions the destructors of that function's locals may not run, and memory
+// or a lock may stay held. After a caught exception there, free every object
+// that was passed to the call, a sampler, a model and an mtmd context
+// included, and neither reset nor reuse it.
 //
 // The barrier does not cover a failed GGML_ASSERT or GGML_ABORT in llama.cpp,
-// which abort the process, or a signal such as SIGSEGV.
+// which abort the process, or a signal such as SIGSEGV. Do not cancel a
+// thread that is inside libllamadart: glibc cancels by a forced unwind, which
+// the barrier would catch without rethrowing, and that ends the process.
 
 // Returned instead of an int32_t status or count after a caught exception.
 enum llama_dart_status {

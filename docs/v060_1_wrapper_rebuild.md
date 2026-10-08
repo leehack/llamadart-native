@@ -90,13 +90,27 @@ creating function owns its draft context, speculative state and handle until
 the handle is tracked, so an exception leaves no untracked context, which on
 Metal would abort at exit.
 
+Object state after a caught exception, as the header states it per object: a
+sampler may be reset or freed and the context it sampled from is unchanged; a
+llama or mtmd context, speculative state, a TTS task and a ggml backend,
+scheduler or buffer may only be freed; the model or vocabulary of
+`llama_dart_tokenize`, `llama_dart_token_to_piece` and the grammar constructor
+is only read and stays usable.
+
 Windows: the presets compile with `/EHsc`, under which MSVC and clang-cl
 assume that an `extern "C"` function never throws and remove a `catch` around
 a call to one, which is every llama.cpp call the wrapper makes. `libllamadart`
-is therefore compiled with `/EHsc-`. llama.cpp itself keeps `/EHsc`, so a
-frame of one of its `extern "C"` functions between the throw and the barrier
-may skip the destructors of its locals; the exception still reaches the
-barrier.
+is therefore compiled with `/EHsc-`. llama.cpp's own libraries keep `/EHsc`,
+so while an exception unwinds through one of their `extern "C"` functions the
+destructors of that function's locals may be skipped: the exception still
+reaches the barrier, but memory or a lock may stay held. After
+`LLAMA_DART_STATUS_EXCEPTION` or any other caught exception on Windows, every
+object that was passed to the call must be freed and not reused, a sampler and
+a model included.
+
+glibc cancels a thread by a forced unwind, which the barrier's `catch (...)`
+would swallow and glibc then ends the process: a thread inside libllamadart
+must not be cancelled.
 
 Not covered: `GGML_ASSERT` and `GGML_ABORT` call `abort`, and a signal is not
 an exception.
