@@ -1690,20 +1690,10 @@ int test_model_barrier(const char *path) {
   assert(is_grammar_stack_error(llama_dart_last_error()));
   llama_sampler_free(chain);
 
-  // The context is still usable, and a call that succeeds clears the error.
+  // A sampler's exception leaves the context usable, and a call that
+  // succeeds clears the error.
   assert(llama_dart_sampler_sample(greedy, fixture.context, -1) == sampled);
   assert(llama_dart_last_error() == nullptr);
-
-  clear_memory(fixture);
-  g_eval_failure.store(1);
-  assert(llama_dart_decode(fixture.context, prompt(fixture)) ==
-         LLAMA_DART_STATUS_EXCEPTION);
-  assert(std::string(llama_dart_last_error()) == "evaluation failed");
-  clear_memory(fixture);
-  g_eval_failure.store(2);
-  assert(llama_dart_decode(fixture.context, prompt(fixture)) ==
-         LLAMA_DART_STATUS_EXCEPTION);
-  assert(std::string(llama_dart_last_error()) == "unknown C++ exception");
 
   // A failure that llama.cpp reports itself is not an exception: it keeps
   // its own return value and leaves no last error.
@@ -1718,9 +1708,20 @@ int test_model_barrier(const char *path) {
   assert(llama_dart_init_from_model(fixture.model, context_params) == nullptr);
   assert(llama_dart_last_error() == nullptr);
   assert(llama_dart_exit_tracked_count() == 2);
-
   assert(decode_and_sample(fixture, greedy) == sampled);
   llama_sampler_free(greedy);
+
+  // An exception from inside a decode. The context is only freed afterwards.
+  clear_memory(fixture);
+  g_eval_failure.store(1);
+  assert(llama_dart_decode(fixture.context, prompt(fixture)) ==
+         LLAMA_DART_STATUS_EXCEPTION);
+  assert(std::string(llama_dart_last_error()) == "evaluation failed");
+  g_eval_failure.store(2);
+  assert(llama_dart_decode(fixture.context, prompt(fixture)) ==
+         LLAMA_DART_STATUS_EXCEPTION);
+  assert(std::string(llama_dart_last_error()) == "unknown C++ exception");
+
   assert(calls_in_flight_ended());
   return 0;
 }
