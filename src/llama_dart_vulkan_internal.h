@@ -11,6 +11,8 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <sstream>
+#include <string>
 #include <vector>
 
 // The devices that ggml-vulkan selects, in its order, as
@@ -88,24 +90,19 @@ static inline std::vector<uint32_t> llama_dart_vulkan_select_devices(
     const char *visible_devices) {
   std::vector<uint32_t> selected;
   if (visible_devices != nullptr) {
-    // ggml reads unsigned numbers separated by commas or spaces, stops at the
-    // first thing that is not one, and registers no device at all when an
-    // index is out of range.
-    const char *cursor = visible_devices;
-    for (;;) {
-      while (*cursor == ',') {
-        ++cursor;
-      }
-      char *end = nullptr;
-      const unsigned long long index = strtoull(cursor, &end, 10);
-      if (end == cursor) {
-        break;
-      }
+    // Read as ggml reads it, with the same standard library calls, so that
+    // white space, signs, and numbers that do not fit are treated alike: a
+    // value that cannot be read ends the list, and ggml registers no device
+    // at all when an index is out of range.
+    std::string indices(visible_devices);
+    std::replace(indices.begin(), indices.end(), ',', ' ');
+    std::stringstream stream(indices);
+    size_t index;
+    while (stream >> index) {
       if (index >= candidates.size()) {
         return {};
       }
       selected.push_back(static_cast<uint32_t>(index));
-      cursor = end;
     }
     return selected;
   }

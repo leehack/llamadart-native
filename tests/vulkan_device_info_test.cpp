@@ -389,12 +389,34 @@ void test_visible_devices() {
   assert(names(probe(devices, "0")) == list({"llvmpipe"}));
   assert(names(probe(devices, "2,0")) == list({"b", "llvmpipe"}));
   assert(names(probe(devices, "2 1")) == list({"b", "a"}));
+  // ggml turns commas into spaces and reads numbers from a stream until one
+  // cannot be read: white space and commas mix freely, a sign is allowed, and
+  // anything else ends the list.
+  assert(names(probe(devices, "1 ,2")) == list({"a", "b"}));
+  assert(names(probe(devices, " \t1\n,\r2 ,")) == list({"a", "b"}));
+  assert(names(probe(devices, "1,,2")) == list({"a", "b"}));
+  assert(names(probe(devices, "+1,+2")) == list({"a", "b"}));
+  assert(names(probe(devices, "-0")) == list({"llvmpipe"}));
   assert(names(probe(devices, "1,x,2")) == list({"a"}));
+  assert(names(probe(devices, "1;2")) == list({"a"}));
+  assert(names(probe(devices, "0x1")) == list({"llvmpipe"}));
+  assert(names(probe(devices, "1.5")) == list({"a"}));
+  assert(names(probe(devices, "1,+")) == list({"a"}));
+  assert(names(probe(devices, "x")).empty());
+  // A number that does not fit ends the list like any other that cannot be
+  // read, and keeps what was read before it.
+  assert(names(probe(devices, "0,99999999999999999999999")) ==
+         list({"llvmpipe"}));
+  assert(names(probe(devices, "18446744073709551616,1")).empty());
   // An index out of range leaves ggml without devices, and so does an empty
-  // value.
+  // value. A negative number is read as a very large one.
   assert(names(probe(devices, "1,3")).empty());
+  assert(names(probe(devices, "3,1")).empty());
   assert(names(probe(devices, "-1")).empty());
+  assert(names(probe(devices, "1,-2")).empty());
+  assert(names(probe(devices, "18446744073709551615")).empty());
   assert(names(probe(devices, "")).empty());
+  assert(names(probe(devices, " , ")).empty());
 }
 
 void test_capacity() {
