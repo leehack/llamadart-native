@@ -35,6 +35,9 @@ struct fake_loader {
   uint32_t instance_version = VK_API_VERSION_1_3;
   std::vector<fake_device> devices;
   std::string missing;
+  // A loader that hands out the 1.1 queries although it reports an older
+  // version. They are not valid to call then.
+  bool exposes_1_1_queries = false;
   VkResult create_result = VK_SUCCESS;
   uint32_t requested_api_version = 0;
   std::string application;
@@ -168,7 +171,9 @@ fake_get_instance_proc_addr(VkInstance instance, const char *name) {
     return nullptr;
   }
   assert(instance == fake_instance());
-  const bool has_version_1_1 = g_loader.instance_version >= VK_API_VERSION_1_1;
+  const bool has_version_1_1 =
+      g_loader.instance_version >= VK_API_VERSION_1_1 ||
+      g_loader.exposes_1_1_queries;
   if (entry == "vkDestroyInstance") {
     return as_void(fake_destroy_instance);
   }
@@ -296,6 +301,20 @@ void test_loader_1_0() {
   assert(result.devices[0].subgroup_size == 0);
   assert(g_loader.requested_api_version == VK_API_VERSION_1_0);
   assert(g_loader.properties2_calls == 0);
+
+  // The loader's version decides, not whether it resolves the 1.1 queries: a
+  // device that reports 1.1 under a 1.0 instance is not asked through them.
+  for (const uint32_t instance_version : {0u, VK_API_VERSION_1_0}) {
+    g_loader = fake_loader();
+    g_loader.instance_version = instance_version;
+    g_loader.exposes_1_1_queries = true;
+    const auto newer_device =
+        probe({gpu("gpu", VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU, 1)});
+    assert(names(newer_device) == list({"gpu"}));
+    assert(newer_device.devices[0].instance_api_version == VK_API_VERSION_1_0);
+    assert(newer_device.devices[0].subgroup_size == 0);
+    assert(g_loader.properties2_calls == 0);
+  }
 }
 
 // A 1.0 device under a current loader is not asked for 1.1 properties.
@@ -448,7 +467,8 @@ void test_exports() {
   assert(count == llama_dart_vulkan_get_device_count());
   const char *expected = getenv("LLAMADART_TEST_VULKAN_DEVICES");
 #if defined(__APPLE__)
-  assert(count == LLAMA_DART_VULKAN_STATUS_UNSUPPORTED);
+  // The value a binding compares against.
+  assert(count == -2);
 #endif
   if (count < 0) {
     assert(count == LLAMA_DART_VULKAN_STATUS_UNSUPPORTED ||

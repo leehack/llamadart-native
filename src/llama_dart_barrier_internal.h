@@ -122,3 +122,20 @@ static void llama_dart_free_barrier(Call &&call) noexcept {
     return true;
   });
 }
+
+// Runs track for an object that a creating call just made and returns the
+// object. When track throws, the object is freed first, so that an exception
+// leaves nothing behind that exit teardown does not know.
+template <typename Object, typename Track>
+static Object *llama_dart_track_or_free(Object *object, void (*free_fn)(void *),
+                                        Track &&track) {
+  try {
+    track();
+  } catch (...) {
+    if (object != nullptr) {
+      free_fn(object);
+    }
+    throw;
+  }
+  return object;
+}

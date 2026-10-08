@@ -65,6 +65,5 @@ int main(void) {
     assert(llama_dart_last_error() == NULL);
     llama_dart_clear_last_error();
     assert(llama_dart_last_error() == NULL);
-    assert(LLAMA_DART_STATUS_EXCEPTION == INT32_MIN);
     return 0;
 }

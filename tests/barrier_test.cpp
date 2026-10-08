@@ -3,6 +3,7 @@
 #endif
 
 #include "llama_dart_barrier_internal.h"
+#include "llama_dart_tts_internal.h"
 
 #include <cassert>
 #include <new>
@@ -87,10 +88,80 @@ void test_barrier() {
   assert(!llama_dart_error.set);
 }
 
+int g_freed = 0;
+
+void count_free(void *object) {
+  assert(object != nullptr);
+  ++g_freed;
+}
+
+// A creating function frees what it made when tracking it throws, and only
+// then.
+void test_track_or_free() {
+  int object = 0;
+  const auto fail = [] { throw std::bad_alloc(); };
+
+  g_freed = 0;
+  assert(llama_dart_track_or_free(&object, count_free, [] {}) == &object);
+  assert(g_freed == 0);
+
+  bool thrown = false;
+  try {
+    llama_dart_track_or_free(&object, count_free, fail);
+  } catch (const std::bad_alloc &) {
+    thrown = true;
+  }
+  assert(thrown && g_freed == 1);
+
+  // A call that created nothing has nothing to free.
+  thrown = false;
+  try {
+    llama_dart_track_or_free(static_cast<int *>(nullptr), count_free, fail);
+  } catch (const std::bad_alloc &) {
+    thrown = true;
+  }
+  assert(thrown && g_freed == 1);
+}
+
+// An exception fails the TTS task, so that the next step does not continue
+// it. A task without a generator, sampler or sequence has nothing to release
+// and needs no model.
+void test_tts_barrier() {
+  llama_dart_tts task;
+  task.state = LLAMA_DART_TTS_STATE_GENERATING;
+  const int8_t flag = 0;
+  task.cancel_flag = &flag;
+  assert(llama_dart_tts_barrier(&task, []() -> llama_dart_tts_status {
+           throw std::runtime_error("generation failed");
+         }) == LLAMA_DART_TTS_STATUS_UPSTREAM_ERROR);
+  assert(task.state == LLAMA_DART_TTS_STATE_FAILED);
+  assert(task.error == "generation failed");
+  assert(task.cancel_flag == nullptr);
+  assert(llama_dart_error.set);
+
+  // A status that the call returns itself leaves the task as the call left
+  // it.
+  task.state = LLAMA_DART_TTS_STATE_GENERATING;
+  task.error.clear();
+  assert(llama_dart_tts_barrier(&task, [] {
+           return LLAMA_DART_TTS_STATUS_INVALID_STATE;
+         }) == LLAMA_DART_TTS_STATUS_INVALID_STATE);
+  assert(task.state == LLAMA_DART_TTS_STATE_GENERATING && task.error.empty());
+  assert(!llama_dart_error.set);
+
+  // Without a task there is nothing to fail.
+  assert(llama_dart_tts_barrier(nullptr, []() -> llama_dart_tts_status {
+           throw std::runtime_error("no task");
+         }) == LLAMA_DART_TTS_STATUS_UPSTREAM_ERROR);
+  assert(std::string(llama_dart_error.message) == "no task");
+}
+
 } // namespace
 
 int main() {
   test_message_encoding();
   test_barrier();
+  test_track_or_free();
+  test_tts_barrier();
   return 0;
 }

@@ -14,6 +14,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <mutex>
 #include <stdexcept>
 #include <string>
@@ -537,6 +538,10 @@ std::string vocabulary_piece(llama_token token) {
   return {static_cast<char>('a' + token % 26),
           static_cast<char>('a' + token / 26)};
 }
+
+// The value that a binding compares a status or count against, spelled as it
+// is on the wire and not through the header's enumerator.
+const int32_t kExceptionStatus = std::numeric_limits<int32_t>::min();
 
 const llama_token kGrammarToken = 3;
 const llama_token kRejectedToken = 4;
@@ -1606,6 +1611,22 @@ bool calls_in_flight_ended() {
   return !freed.empty() && freed.front() == "probe";
 }
 
+// A free that threw has finished like any other: with nothing left to free,
+// it does not hold up an exit that a call in flight would otherwise delay.
+int test_barrier_free_idle() {
+  static char object[] = "object";
+  assert(llama_dart_exit_track(object, throw_on_free,
+                               LLAMA_DART_EXIT_STAGE_SESSION));
+  llama_dart_exit_free(object);
+  assert(llama_dart_last_error() != nullptr);
+  std::thread([] { llama_dart_exit_call_begin(); }).join();
+  llama_dart_exit_set_wait_ms(30000);
+  const auto started = std::chrono::steady_clock::now();
+  llama_dart_exit_teardown();
+  assert(elapsed_ms(started) < 5000);
+  return 0;
+}
+
 // Every function with a barrier starts without a last error, also when it
 // returns for an argument it rejects before it calls anything: its caller
 // reads the last error to learn whether this call caught an exception.
@@ -1857,7 +1878,7 @@ void test_barrier_tokens(const llama_vocab *vocab) {
          -2);
   assert(llama_dart_last_error() == nullptr);
   assert(llama_dart_token_to_piece(vocab, LLAMA_TOKEN_NULL, text, sizeof(text),
-                                   0, false) == LLAMA_DART_STATUS_EXCEPTION);
+                                   0, false) == kExceptionStatus);
   assert(llama_dart_last_error() != nullptr);
 
   llama_token tokens[4] = {};
@@ -1869,7 +1890,7 @@ void test_barrier_tokens(const llama_vocab *vocab) {
                              false) == -2);
   assert(llama_dart_last_error() == nullptr);
   assert(llama_dart_tokenize(vocab, "!", 1, tokens, 4, false, false) ==
-         LLAMA_DART_STATUS_EXCEPTION);
+         kExceptionStatus);
   assert(llama_dart_last_error() != nullptr);
 }
 
@@ -2001,8 +2022,7 @@ int test_model_barrier(const char *path) {
     return chain;
   };
   llama_sampler *chain = rejecting_chain();
-  assert(llama_dart_sampler_sample(chain, fixture.context, -1) ==
-         LLAMA_TOKEN_NULL);
+  assert(llama_dart_sampler_sample(chain, fixture.context, -1) == -1);
   assert(is_grammar_stack_error(llama_dart_last_error()));
   llama_sampler_free(chain);
 
@@ -2012,7 +2032,7 @@ int test_model_barrier(const char *path) {
   llama_token accepted = 0;
   assert(llama_dart_sampler_sample_and_accept_n(
              chain, fixture.context, &index, 1, &draft, 0, &accepted, 1) ==
-         LLAMA_DART_STATUS_EXCEPTION);
+         kExceptionStatus);
   assert(is_grammar_stack_error(llama_dart_last_error()));
   llama_sampler_free(chain);
 
@@ -2041,7 +2061,7 @@ int test_model_barrier(const char *path) {
   clear_memory(fixture);
   g_eval_failure.store(1);
   assert(llama_dart_decode(fixture.context, prompt(fixture)) ==
-         LLAMA_DART_STATUS_EXCEPTION);
+         kExceptionStatus);
   assert(std::string(llama_dart_last_error()) == "evaluation failed");
   g_eval_failure.store(2);
   assert(llama_dart_decode(fixture.context, prompt(fixture)) ==
@@ -2262,6 +2282,9 @@ int main(int argc, char **argv) {
   }
   if (scenario == "barrier-free") {
     return test_barrier_free();
+  }
+  if (scenario == "barrier-free-idle") {
+    return test_barrier_free_idle();
   }
   if (first != nullptr) {
     if (scenario == "make-model") {

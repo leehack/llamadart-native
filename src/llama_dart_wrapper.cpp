@@ -965,23 +965,16 @@ static int32_t llama_dart_exit_evaluate(llama_context *ctx, Call &&call) {
 }
 
 // Tracks an object that a creating call just made and returns it. An object
-// that cannot be tracked is freed, so that an exception leaves nothing behind
-// that exit teardown does not know.
+// that cannot be tracked because tracking throws is freed.
 template <typename Object>
 static Object *llama_dart_exit_track_created(Object *object,
                                              void (*free_fn)(void *),
                                              int32_t stage,
                                              void *uses_first = nullptr,
                                              void *uses_second = nullptr) {
-  try {
+  return llama_dart_track_or_free(object, free_fn, [=] {
     llama_dart_exit_insert(object, free_fn, stage, uses_first, uses_second);
-  } catch (...) {
-    if (object != nullptr) {
-      free_fn(object);
-    }
-    throw;
-  }
-  return object;
+  });
 }
 
 struct llama_dart_exit_load_progress {
