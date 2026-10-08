@@ -300,6 +300,13 @@ def android_base_cmake_args(abi: str, ndk: Path) -> list[str]:
         f"-DCMAKE_TOOLCHAIN_FILE={ndk / 'build/cmake/android.toolchain.cmake'}",
         f"-DANDROID_ABI={abi}",
         "-DANDROID_PLATFORM=android-28",
+        # The NDK default, named so that it cannot change unnoticed. The
+        # libraries share one copy of the C++ runtime because libggml-base.so
+        # exports it and the others link against that library, which
+        # validate_android_artifacts.py checks. c++_shared would add
+        # libc++_shared.so to the bundle, where it clashes with the copy of
+        # another plugin or NDK in the same app.
+        "-DANDROID_STL=c++_static",
         ANDROID_FLEXIBLE_PAGE_SIZES_ARG,
         "-DCMAKE_BUILD_TYPE=Release",
         "-DBUILD_SHARED_LIBS=ON",
