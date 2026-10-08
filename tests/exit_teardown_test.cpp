@@ -1578,6 +1578,131 @@ bool calls_in_flight_ended() {
   return !freed.empty() && freed.front() == "probe";
 }
 
+// Every function with a barrier starts without a last error, also when it
+// returns for an argument it rejects before it calls anything: its caller
+// reads the last error to learn whether this call caught an exception.
+void test_barrier_clears_stale_error() {
+  const auto stale = [] {
+    ggml_backend_device device{};
+    device.iface.init_backend = throw_on_init;
+    assert(llama_dart_ggml_backend_dev_init(&device, nullptr) == nullptr);
+    assert(llama_dart_last_error() != nullptr);
+  };
+  const auto cleared = [] { return llama_dart_last_error() == nullptr; };
+  llama_batch batch{};
+  llama_token token = 0;
+  int32_t index = 0;
+  llama_dart_tts_request request = llama_dart_tts_request_default();
+  llama_dart_tts_progress progress{};
+  progress.struct_size = sizeof(progress);
+  llama_dart_tts_info info{};
+  info.struct_size = sizeof(info);
+  llama_dart_tts_status status = LLAMA_DART_TTS_STATUS_OK;
+  const int8_t flag = 0;
+
+  stale();
+  assert(llama_dart_mtmd_init_from_file("missing.gguf", nullptr, nullptr) ==
+         nullptr);
+  assert(cleared());
+  stale();
+  assert(llama_dart_tts_set_cancel_flag(nullptr, &flag) ==
+         LLAMA_DART_TTS_STATUS_INVALID_ARGUMENT);
+  assert(cleared());
+  stale();
+  assert(llama_dart_tts_get_info(nullptr, &info) ==
+         LLAMA_DART_TTS_STATUS_INVALID_ARGUMENT);
+  assert(cleared());
+  stale();
+  assert(llama_dart_tts_init(nullptr, nullptr, &status) == nullptr);
+  assert(cleared());
+  stale();
+  assert(llama_dart_tts_start(nullptr, &request) ==
+         LLAMA_DART_TTS_STATUS_INVALID_ARGUMENT);
+  assert(cleared());
+  stale();
+  assert(llama_dart_tts_step(nullptr, &progress) ==
+         LLAMA_DART_TTS_STATUS_INVALID_ARGUMENT);
+  assert(cleared());
+  stale();
+  assert(llama_dart_tts_reset(nullptr) ==
+         LLAMA_DART_TTS_STATUS_INVALID_ARGUMENT);
+  assert(cleared());
+
+  stale();
+  assert(llama_dart_speculative_init(nullptr, nullptr, nullptr,
+                                     llama_context_default_params(),
+                                     nullptr) == nullptr);
+  assert(cleared());
+  stale();
+  assert(!llama_dart_speculative_begin(nullptr, 0, nullptr, 0));
+  assert(cleared());
+  stale();
+  assert(!llama_dart_speculative_process_batch(nullptr, batch));
+  assert(cleared());
+  stale();
+  assert(llama_dart_speculative_draft(nullptr, 0, 0, 0, nullptr, 0, 1, &token,
+                                      1) == -1);
+  assert(cleared());
+  stale();
+  llama_dart_speculative_accept(nullptr, 0, 0);
+  assert(cleared());
+
+  stale();
+  assert(llama_dart_mtp_init(nullptr, nullptr, llama_context_default_params(),
+                             1, 0, 0.0f, false) == nullptr);
+  assert(cleared());
+  stale();
+  assert(llama_dart_mtp_init_with_draft_model(nullptr, nullptr,
+                                              llama_context_default_params(),
+                                              1, 0, 0.0f, false) == nullptr);
+  assert(cleared());
+  stale();
+  assert(!llama_dart_mtp_begin(nullptr, 0, nullptr, 0));
+  assert(cleared());
+  stale();
+  assert(!llama_dart_mtp_process_batch(nullptr, batch));
+  assert(cleared());
+  stale();
+  assert(llama_dart_mtp_draft(nullptr, 0, 0, 0, nullptr, 0, 1, &token, 1) ==
+         -1);
+  assert(cleared());
+  stale();
+  llama_dart_mtp_accept(nullptr, 0, 0);
+  assert(cleared());
+
+  stale();
+  assert(!llama_dart_ngram_begin(nullptr, 0, nullptr, 0));
+  assert(cleared());
+  stale();
+  assert(!llama_dart_ngram_process_batch(nullptr, batch));
+  assert(cleared());
+  stale();
+  assert(llama_dart_ngram_draft(nullptr, 0, 0, 0, nullptr, 0, 1, &token, 1) ==
+         -1);
+  assert(cleared());
+  stale();
+  llama_dart_ngram_accept(nullptr, 0, 0);
+  assert(cleared());
+
+  stale();
+  assert(llama_dart_sampler_sample_and_accept_n(nullptr, nullptr, &index, 1,
+                                                &token, 0, &token, 1) == -1);
+  assert(cleared());
+  stale();
+  assert(llama_dart_sampler_init_reasoning_budget(nullptr, "<think>",
+                                                  "</think>", nullptr, 1, false,
+                                                  nullptr, nullptr, 0) ==
+         nullptr);
+  assert(cleared());
+  stale();
+  assert(llama_dart_memory_clear(nullptr, true));
+  assert(cleared());
+  stale();
+  assert(!llama_dart_exit_track(nullptr, nullptr,
+                                LLAMA_DART_EXIT_STAGE_SESSION));
+  assert(cleared());
+}
+
 // An exception from a tracked object's free function stays inside
 // libllamadart and is reported as the calling thread's last error.
 int test_barrier_free() {
@@ -1614,6 +1739,8 @@ int test_barrier_free() {
   device.iface.init_backend = throw_on_init;
   assert(llama_dart_ggml_backend_dev_init(&device, nullptr) == nullptr);
   assert(std::string(llama_dart_last_error()) == "Unsupported device");
+
+  test_barrier_clears_stale_error();
 
   assert(calls_in_flight_ended());
   return 0;

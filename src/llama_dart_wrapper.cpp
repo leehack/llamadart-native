@@ -1173,11 +1173,11 @@ llama_dart_init_from_model(struct llama_model *model,
 LLAMADART_API struct mtmd_context *llama_dart_mtmd_init_from_file(
     const char *mmproj_fname, const struct llama_model *text_model,
     const struct mtmd_context_params *ctx_params) {
-  if (ctx_params == nullptr) {
-    return nullptr;
-  }
   return llama_dart_barrier<mtmd_context *>(
-      nullptr, [mmproj_fname, text_model, ctx_params] {
+      nullptr, [mmproj_fname, text_model, ctx_params]() -> mtmd_context * {
+        if (ctx_params == nullptr) {
+          return nullptr;
+        }
         llama_dart_exit_creating_call call;
         return llama_dart_exit_track_created(
             mtmd_init_from_file(mmproj_fname, text_model, *ctx_params),
@@ -1785,18 +1785,18 @@ LLAMADART_API void llama_dart_tts_cancel(struct llama_dart_tts *tts) {
 LLAMADART_API enum llama_dart_tts_status
 llama_dart_tts_set_cancel_flag(struct llama_dart_tts *tts,
                                const int8_t *flag) {
-  if (tts == nullptr || flag == nullptr) {
-    return LLAMA_DART_TTS_STATUS_INVALID_ARGUMENT;
-  }
-  if (tts->state != LLAMA_DART_TTS_STATE_PROCESSING_PROMPT &&
-      tts->state != LLAMA_DART_TTS_STATE_GENERATING) {
-    return llama_dart_barrier(LLAMA_DART_TTS_STATUS_UPSTREAM_ERROR, [tts] {
+  return llama_dart_barrier(LLAMA_DART_TTS_STATUS_UPSTREAM_ERROR, [tts, flag] {
+    if (tts == nullptr || flag == nullptr) {
+      return LLAMA_DART_TTS_STATUS_INVALID_ARGUMENT;
+    }
+    if (tts->state != LLAMA_DART_TTS_STATE_PROCESSING_PROMPT &&
+        tts->state != LLAMA_DART_TTS_STATE_GENERATING) {
       return llama_dart_tts_error(tts, LLAMA_DART_TTS_STATUS_INVALID_STATE,
                                   "no TTS task is active");
-    });
-  }
-  tts->cancel_flag = flag;
-  return LLAMA_DART_TTS_STATUS_OK;
+    }
+    tts->cancel_flag = flag;
+    return LLAMA_DART_TTS_STATUS_OK;
+  });
 }
 
 LLAMADART_API bool llama_dart_tts_eval_callback(struct ggml_tensor *tensor,
