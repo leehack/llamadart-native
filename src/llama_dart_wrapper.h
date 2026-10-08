@@ -133,6 +133,47 @@ struct llama_dart_tts_output_info {
     int64_t sample_count;
 };
 
+enum llama_dart_vulkan_status {
+    LLAMA_DART_VULKAN_STATUS_OK = 0,
+    LLAMA_DART_VULKAN_STATUS_INVALID_ARGUMENT = -1,
+    // This libllamadart is built for a platform without ggml-vulkan, such as
+    // the Apple platforms, and never looks for a Vulkan loader.
+    LLAMA_DART_VULKAN_STATUS_UNSUPPORTED = -2,
+    // The system has no Vulkan loader, or the loader lacks an entry point
+    // that every Vulkan version has.
+    LLAMA_DART_VULKAN_STATUS_NO_LOADER = -3,
+    // The loader could not create an instance or list its devices, as when
+    // no Vulkan driver is installed.
+    LLAMA_DART_VULKAN_STATUS_LOADER_ERROR = -4,
+    // There is no device with this index.
+    LLAMA_DART_VULKAN_STATUS_NO_DEVICE = -5,
+};
+
+struct llama_dart_vulkan_device_info {
+    // Set to sizeof(struct llama_dart_vulkan_device_info) before calling.
+    uint32_t struct_size;
+    // vkEnumerateInstanceVersion, or Vulkan 1.0 where the loader predates
+    // that function. Versions are encoded as VK_MAKE_API_VERSION does: major
+    // in bits 22-28, minor in bits 12-21.
+    uint32_t instance_api_version;
+    // Index of the device in vkEnumeratePhysicalDevices.
+    uint32_t physical_device_index;
+    // VkPhysicalDeviceProperties: apiVersion, driverVersion, vendorID,
+    // deviceID and deviceType (a VkPhysicalDeviceType).
+    uint32_t api_version;
+    uint32_t driver_version;
+    uint32_t vendor_id;
+    uint32_t device_id;
+    uint32_t device_type;
+    // VkPhysicalDeviceSubgroupProperties.subgroupSize, which is what
+    // ggml-vulkan uses as the device's subgroup size. 0 when it cannot be
+    // read: the loader or the device is older than Vulkan 1.1.
+    uint32_t subgroup_size;
+    // VkPhysicalDeviceProperties.deviceName, which is also the description
+    // of the ggml device.
+    char device_name[256];
+};
+
 // Primitive C mirror of the upstream common_params_speculative knobs used by
 // libllamadart. Most positive integer controls override upstream defaults.
 // Fields that accept zero as a meaningful override use negative values as
@@ -170,6 +211,140 @@ struct llama_dart_speculative_params {
 // Sets the log level for llama.cpp
 LLAMADART_API void llama_dart_set_log_level(int level);
 
+// Exception barrier
+//
+// llama.cpp reports some failures by throwing a C++ exception, which must not
+// cross the C ABI: in a Dart FFI caller it ends the process. Every function in
+// this header that calls llama.cpp or allocates catches the exception instead,
+// records its message for the calling thread and returns a failure value:
+//
+// - a function that returns a pointer returns NULL;
+// - a function that returns bool returns false;
+// - a function that returns an int32_t status or count returns
+//   LLAMA_DART_STATUS_EXCEPTION, which none of them but llama_dart_tokenize
+//   returns otherwise;
+// - llama_dart_sampler_sample returns LLAMA_TOKEN_NULL, which it does not
+//   return otherwise;
+// - a function that returns size_t returns 0;
+// - llama_dart_ggml_backend_sched_graph_compute returns GGML_STATUS_FAILED;
+// - a function that returns llama_dart_tts_status returns
+//   LLAMA_DART_TTS_STATUS_UPSTREAM_ERROR and fails the task;
+// - a function that returns nothing only records the message.
+//
+// Where the failure value is also what llama.cpp returns for a failure of its
+// own, llama_dart_last_error tells the two apart: each of these functions
+// clears the calling thread's last error when it is called, so after it
+// returns, llama_dart_last_error is non-NULL only if it caught an exception.
+// Read it from the same thread before anything else runs there.
+//
+// The functions that free an object (llama_dart_exit_free and the
+// llama_dart_tts, speculative, mtp and ngram free functions) are the
+// exception: they set the last error when they catch an exception and do not
+// clear it otherwise, because a Dart finalizer may run one on a thread
+// between a call that failed there and the read of its error. Call
+// llama_dart_clear_last_error first to learn whether a free threw.
+//
+// The functions without a barrier are llama_dart_last_error,
+// llama_dart_clear_last_error, llama_dart_set_log_level, the
+// llama_dart_exit_ functions other than llama_dart_exit_track and
+// llama_dart_exit_free, the draft context and need_embd getters,
+// llama_dart_tts_eval_callback, the llama_dart_vulkan_ functions, which
+// report through their own status, and the llama_dart_tts_ functions that only
+// read or set fields of the task (api_version, request_default, cancel,
+// get_output_info, read_pcm, last_error). They leave the last error
+// unchanged.
+//
+// After a caught exception, the objects that were passed to the call may be
+// partly updated. What a caller may still do with each of them:
+// - A sampler or sampler chain (llama_dart_sampler_sample, _accept and
+//   _sample_and_accept_n): free it, or call llama_sampler_reset on it and
+//   start the generation over. The context it sampled from is unchanged.
+// - A llama context (llama_dart_decode, llama_dart_encode,
+//   llama_dart_synchronize, llama_dart_memory_clear, the state functions and
+//   the mtmd evaluation helpers): free it. Its memory and its outputs are in
+//   no defined state.
+// - An mtmd context (llama_dart_mtmd_tokenize, llama_dart_mtmd_encode_chunk
+//   and the evaluation helpers): free it.
+// - A model whose adapter failed to load (llama_dart_adapter_lora_init): free
+//   it.
+// - Speculative, MTP and n-gram state: free it.
+// - A TTS task: it is FAILED. Free it and the llama context it ran on.
+// - A ggml backend, scheduler or buffer (the llama_dart_ggml_backend_
+//   functions other than the two device queries): free it.
+// - Nothing changes for the model or vocabulary of llama_dart_tokenize,
+//   llama_dart_token_to_piece and the grammar constructor, for the mtmd
+//   context of the bitmap constructors, or for the device of the two device
+//   queries: these calls only read them, and they stay usable.
+// A function that creates an object frees what it had created before the
+// exception, so there is nothing to free for a NULL result. A call in flight
+// has ended when the function returns.
+//
+// On Windows the rule is stricter. llama.cpp's own libraries are compiled
+// with /EHsc, so while an exception unwinds through one of their extern "C"
+// functions the destructors of that function's locals may not run, and memory
+// or a lock may stay held. After a caught exception there, free every object
+// that was passed to the call, a sampler, a model and an mtmd context
+// included, and neither reset nor reuse it.
+//
+// The barrier does not cover a failed GGML_ASSERT or GGML_ABORT in llama.cpp,
+// which abort the process, or a signal such as SIGSEGV. Do not cancel a
+// thread that is inside libllamadart: glibc cancels by a forced unwind, which
+// the barrier would catch without rethrowing, and that ends the process.
+
+// Returned instead of an int32_t status or count after a caught exception.
+enum llama_dart_status {
+    LLAMA_DART_STATUS_EXCEPTION = INT32_MIN,
+};
+
+// Message of the exception that the calling thread's last function with a
+// barrier caught, or NULL when it caught none. The string is valid UTF-8 of
+// at most 511 bytes: a byte of the exception's message that is not part of a
+// well-formed sequence is replaced by U+FFFD, and a longer message is cut
+// between characters. It stays valid until the same thread calls another
+// function with a barrier. Each thread has its own.
+LLAMADART_API const char * llama_dart_last_error(void);
+
+// Clears the calling thread's last error.
+LLAMADART_API void llama_dart_clear_last_error(void);
+
+// Vulkan device facts
+//
+// The devices that ggml-vulkan registers on this system, read from the Vulkan
+// loader directly: the same devices in the same order, so index N here is
+// ggml's device "VulkanN". The functions create a Vulkan instance and destroy
+// it again. They do not load ggml-vulkan and create no logical device, and
+// they work in a libllamadart whose bundle has no ggml-vulkan. The result is
+// read once per process. GGML_VK_VISIBLE_DEVICES is honored as ggml does.
+//
+// Creating the instance makes the Vulkan loader load the system's GPU drivers
+// and layers into the process, as registering ggml-vulkan does. A driver that
+// crashes there takes the process down, and nothing here can catch that. Call
+// these functions only when the Vulkan backend is being considered, not as a
+// general probe, and not on a device where Vulkan is ruled out for other
+// reasons.
+//
+// ggml-vulkan requires Vulkan 1.2. It registers no device when
+// instance_api_version is below 1.2; the devices are still listed here. It
+// does register a device whose own api_version is below 1.2, and then calls
+// Vulkan 1.2 functions that such a driver does not have, so check both.
+//
+// The order mirrors llama.cpp v0.6.0. Two cases can differ: a device below
+// Vulkan 1.2 next to other GPUs, where ggml reads the 16-bit storage feature
+// from a structure that such a driver does not fill in, and more than 16
+// devices. device_name and the ids identify the device either way.
+
+// Number of devices, or a negative llama_dart_vulkan_status when Vulkan
+// cannot be queried. 0 when the loader works and ggml would use no device,
+// as with only a CPU implementation such as lavapipe.
+LLAMADART_API int32_t llama_dart_vulkan_get_device_count(void);
+
+// Describes device index. Returns LLAMA_DART_VULKAN_STATUS_OK, the negative
+// status that llama_dart_vulkan_get_device_count returns, or NO_DEVICE or
+// INVALID_ARGUMENT. out_info is written only for OK.
+LLAMADART_API int32_t llama_dart_vulkan_get_device_info(
+    int32_t index,
+    struct llama_dart_vulkan_device_info * out_info);
+
 // Exit teardown
 //
 // libllamadart keeps a registry of live native objects and frees what is left
@@ -199,7 +374,8 @@ LLAMADART_API void llama_dart_set_log_level(int level);
 // - the three llama_dart creating functions named above and
 //   llama_dart_exit_free;
 // - llama_dart_decode, llama_dart_encode and the other llama_dart functions
-//   below that wrap an upstream function of the same name;
+//   below that wrap an upstream function of the same name, and the three
+//   llama_dart_mtmd_bitmap_init functions;
 // - the libllamadart functions that create, free, or run a task, draft or
 //   batch on, TTS, speculative, MTP or n-gram state;
 // - llama_dart_sampler_sample_and_accept_n;
@@ -306,6 +482,57 @@ LLAMADART_API llama_token llama_dart_sampler_sample(
     struct llama_context * ctx,
     int32_t idx);
 
+// llama_sampler_accept as a call in flight. Returns false after a caught
+// exception, such as the one a grammar sampler throws for a token that its
+// grammar rejects, and true otherwise. Blocks after teardown.
+LLAMADART_API bool llama_dart_sampler_accept(
+    struct llama_sampler * smpl,
+    llama_token token);
+
+// The grammar constructor that compiles caller-supplied trigger patterns,
+// which throws for a pattern that is not a valid regular expression. NULL
+// after a caught exception, and for a grammar that does not parse.
+// llama_sampler_init_grammar needs no wrapper: it reports a grammar that does
+// not parse by returning NULL.
+LLAMADART_API struct llama_sampler * llama_dart_sampler_init_grammar_lazy_patterns(
+    const struct llama_vocab * vocab,
+    const char * grammar_str,
+    const char * grammar_root,
+    const char ** trigger_patterns,
+    size_t num_trigger_patterns,
+    const llama_token * trigger_tokens,
+    size_t num_trigger_tokens);
+
+// Returns what llama_tokenize returns: the number of tokens, or the negated
+// number needed when n_tokens_max is too small. After a caught exception it
+// returns LLAMA_DART_STATUS_EXCEPTION, which is also llama_tokenize's own
+// value for a result of more than INT32_MAX tokens, so only
+// llama_dart_last_error tells the two apart.
+LLAMADART_API int32_t llama_dart_tokenize(
+    const struct llama_vocab * vocab,
+    const char * text,
+    int32_t text_len,
+    llama_token * tokens,
+    int32_t n_tokens_max,
+    bool add_special,
+    bool parse_special);
+
+// Returns what llama_token_to_piece returns: the number of bytes, or the
+// negated number needed when length is too small. LLAMA_DART_STATUS_EXCEPTION
+// after a caught exception and in no other case. llama.cpp throws for a token
+// that is not in the vocabulary, which includes LLAMA_TOKEN_NULL.
+LLAMADART_API int32_t llama_dart_token_to_piece(
+    const struct llama_vocab * vocab,
+    llama_token token,
+    char * buf,
+    int32_t length,
+    int32_t lstrip,
+    bool special);
+
+// llama_memory_clear, which clears the backend's buffers when data is true.
+// Returns false after a caught exception and true otherwise.
+LLAMADART_API bool llama_dart_memory_clear(llama_memory_t mem, bool data);
+
 LLAMADART_API bool llama_dart_state_save_file(
     struct llama_context * ctx,
     const char * path_session,
@@ -342,6 +569,25 @@ LLAMADART_API size_t llama_dart_state_seq_set_data_ext(
 LLAMADART_API struct llama_adapter_lora * llama_dart_adapter_lora_init(
     struct llama_model * model,
     const char * path_lora);
+
+// The mtmd constructors of an audio or image input, which allocate what they
+// decode. Each returns the bitmap, or NULL when the input cannot be decoded
+// or after a caught exception. Free it with mtmd_bitmap_free.
+// llama_dart_mtmd_bitmap_init_from_buf and _from_file are
+// mtmd_helper_bitmap_init_from_buf and _from_file with upstream's default
+// options and without a placeholder; they return the bitmap of the result.
+LLAMADART_API struct mtmd_bitmap * llama_dart_mtmd_bitmap_init_from_audio(
+    size_t n_samples,
+    const float * data);
+
+LLAMADART_API struct mtmd_bitmap * llama_dart_mtmd_bitmap_init_from_buf(
+    struct mtmd_context * ctx,
+    const unsigned char * buf,
+    size_t len);
+
+LLAMADART_API struct mtmd_bitmap * llama_dart_mtmd_bitmap_init_from_file(
+    struct mtmd_context * ctx,
+    const char * fname);
 
 LLAMADART_API int32_t llama_dart_mtmd_tokenize(
     const struct mtmd_context * ctx,
@@ -389,6 +635,50 @@ LLAMADART_API int32_t llama_dart_mtmd_helper_decode_image_chunk(
 LLAMADART_API enum ggml_status llama_dart_ggml_backend_sched_graph_compute(
     ggml_backend_sched_t sched,
     struct ggml_cgraph * graph);
+
+// The ggml functions that reach a backend, which a GPU backend may answer
+// with an exception: ggml-vulkan throws for a device it does not support and
+// for a Vulkan error. A function that returns a pointer returns NULL after a
+// caught exception. The others return false after one; where upstream
+// returns nothing they return true otherwise.
+LLAMADART_API ggml_backend_t llama_dart_ggml_backend_dev_init(
+    ggml_backend_dev_t device,
+    const char * params);
+
+// Both queries ask the backend again: ggml-vulkan lists the physical devices
+// each time. After a caught exception they return false and the outputs are
+// zero.
+LLAMADART_API bool llama_dart_ggml_backend_dev_memory(
+    ggml_backend_dev_t device,
+    size_t * free,
+    size_t * total);
+
+LLAMADART_API bool llama_dart_ggml_backend_dev_get_props(
+    ggml_backend_dev_t device,
+    struct ggml_backend_dev_props * props);
+
+LLAMADART_API ggml_backend_buffer_t llama_dart_ggml_backend_alloc_ctx_tensors(
+    struct ggml_context * ctx,
+    ggml_backend_t backend);
+
+LLAMADART_API bool llama_dart_ggml_backend_tensor_set(
+    struct ggml_tensor * tensor,
+    const void * data,
+    size_t offset,
+    size_t size);
+
+LLAMADART_API bool llama_dart_ggml_backend_tensor_get(
+    const struct ggml_tensor * tensor,
+    void * data,
+    size_t offset,
+    size_t size);
+
+LLAMADART_API bool llama_dart_ggml_backend_sched_alloc_graph(
+    ggml_backend_sched_t sched,
+    struct ggml_cgraph * graph);
+
+LLAMADART_API bool llama_dart_ggml_backend_sched_synchronize(
+    ggml_backend_sched_t sched);
 
 // Returns the version of libllamadart's stable symbol contract around
 // experimental upstream audio-generation internals.

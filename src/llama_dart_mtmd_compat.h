@@ -61,3 +61,13 @@ llama_dart_bitmap_from_buffer(mtmd_context *ctx, const unsigned char *buffer,
   return mtmd_helper_bitmap_init_from_buf(ctx, buffer, size, false);
 #endif
 }
+
+static inline mtmd_helper_bitmap_wrapper
+llama_dart_bitmap_from_file(mtmd_context *ctx, const char *fname) {
+#if LLAMADART_MTMD_HELPER_HAS_OPTIONS
+  return mtmd_helper_bitmap_init_from_file(ctx, fname, false,
+                                           mtmd_helper_init_opt_default());
+#else
+  return mtmd_helper_bitmap_init_from_file(ctx, fname, false);
+#endif
+}

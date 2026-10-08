@@ -48,6 +48,8 @@ See `docs/post_v040_qualification.md` for the exact nonpublishing correctness
 candidate, its separate pinned lanes, and remaining artifact/hardware gates.
 See `docs/v060_qualification.md` for the v0.6.0 wrapper adapters, candidate lanes
 and the Android ISA evidence required before publication or downstream adoption.
+See `docs/v060_1_wrapper_rebuild.md` for the `v0.6.0-1` header additions and
+what each export returns after a caught exception.
 
 - `.github/workflows/native_release.yml`
   - Exact native build + release workflow, used by manual dispatch and the

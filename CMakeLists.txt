@@ -188,7 +188,25 @@ endif()
 
 llamadart_attach_android_cpu_backend_score(ggml-cpu)
 
-add_library(llamadart_lib SHARED "src/llama_dart_wrapper.cpp")
+add_library(llamadart_lib SHARED
+    "src/llama_dart_wrapper.cpp"
+    "src/llama_dart_vulkan_device_info.cpp")
+# The Vulkan device facts need only the Vulkan types: the loader is opened at
+# run time, so libllamadart links no Vulkan library and loads without one.
+set(LLAMADART_VULKAN_HEADERS_INCLUDE
+    "${CMAKE_CURRENT_SOURCE_DIR}/third_party/Vulkan-Headers/include")
+if (NOT EXISTS "${LLAMADART_VULKAN_HEADERS_INCLUDE}/vulkan/vulkan_core.h")
+    message(FATAL_ERROR "Missing submodule: third_party/Vulkan-Headers. Run: git submodule update --init --recursive")
+endif()
+target_include_directories(llamadart_lib SYSTEM PRIVATE
+    "${LLAMADART_VULKAN_HEADERS_INCLUDE}")
+target_link_libraries(llamadart_lib PRIVATE ${CMAKE_DL_LIBS})
+if (MSVC)
+    # /EHsc lets the compiler assume that an extern "C" function never throws,
+    # and it then drops the wrapper's catch around every llama.cpp call. With
+    # /EHsc- (/EHs without that assumption) the exception barrier is kept.
+    target_compile_options(llamadart_lib PRIVATE /EHsc-)
+endif()
 target_compile_definitions(llamadart_lib PRIVATE
     LLAMADART_MTMD_HELPER_HAS_EMBD_BATCH=$<BOOL:${LLAMADART_MTMD_HELPER_HAS_EMBD_BATCH}>
     LLAMADART_SPECULATIVE_HAS_COMMON_BATCH=$<BOOL:${LLAMADART_SPECULATIVE_HAS_COMMON_BATCH}>
@@ -258,20 +276,55 @@ if (LLAMADART_BUILD_TESTS)
     target_link_libraries(llamadart_mtmd_compat_test PRIVATE mtmd)
     add_test(NAME llamadart_mtmd_compat_test COMMAND llamadart_mtmd_compat_test)
 
+    add_executable(llamadart_barrier_test tests/barrier_test.cpp)
+    target_compile_features(llamadart_barrier_test PRIVATE cxx_std_17)
+    target_link_libraries(llamadart_barrier_test PRIVATE llamadart_lib)
+    target_include_directories(llamadart_barrier_test PRIVATE
+        third_party/llama.cpp/tools/mtmd
+        src
+    )
+    add_test(NAME llamadart_barrier_test COMMAND llamadart_barrier_test)
+
+    add_executable(llamadart_vulkan_device_info_test
+        tests/vulkan_device_info_test.cpp)
+    target_compile_features(llamadart_vulkan_device_info_test PRIVATE cxx_std_17)
+    target_link_libraries(llamadart_vulkan_device_info_test PRIVATE
+        llamadart_lib)
+    target_include_directories(llamadart_vulkan_device_info_test SYSTEM PRIVATE
+        "${LLAMADART_VULKAN_HEADERS_INCLUDE}")
+    target_include_directories(llamadart_vulkan_device_info_test PRIVATE src)
+    add_test(NAME llamadart_vulkan_device_info_test
+        COMMAND llamadart_vulkan_device_info_test)
+
     add_executable(llamadart_exit_teardown_test tests/exit_teardown_test.cpp)
     target_compile_features(llamadart_exit_teardown_test PRIVATE cxx_std_17)
     target_link_libraries(llamadart_exit_teardown_test PRIVATE
         llamadart_lib Threads::Threads)
     target_include_directories(llamadart_exit_teardown_test PRIVATE
         third_party/llama.cpp/tools/mtmd
+        third_party/llama.cpp/ggml/src
         src
     )
     foreach(scenario dispose order repeat in-flight nested settle timeout
             idle-wait own-call blocked exit late-static free-in-flight
-            free-timeout)
+            free-timeout barrier-free barrier-free-idle)
         add_test(NAME llamadart_exit_teardown_${scenario}
             COMMAND llamadart_exit_teardown_test ${scenario})
     endforeach()
+    # A grammar sampler needs a vocabulary, which loads without a backend, so
+    # this scenario runs on every platform. The test writes the model.
+    set(exit_teardown_vocabulary_model
+        "${CMAKE_CURRENT_BINARY_DIR}/exit_teardown_test_vocabulary_model.gguf")
+    add_test(NAME llamadart_exit_teardown_make-vocabulary-model
+        COMMAND llamadart_exit_teardown_test make-vocabulary-model
+            "${exit_teardown_vocabulary_model}")
+    set_tests_properties(llamadart_exit_teardown_make-vocabulary-model
+        PROPERTIES FIXTURES_SETUP llamadart_exit_teardown_vocabulary_model)
+    add_test(NAME llamadart_exit_teardown_barrier-grammar
+        COMMAND llamadart_exit_teardown_test barrier-grammar
+            "${exit_teardown_vocabulary_model}")
+    set_tests_properties(llamadart_exit_teardown_barrier-grammar PROPERTIES
+        FIXTURES_REQUIRED llamadart_exit_teardown_vocabulary_model)
     # Teardown runs at exit on Apple only, and only there are the backends part
     # of libllamadart, so the scenarios that load a model run there. They use a
     # model the test writes itself unless one is given.
@@ -308,6 +361,14 @@ if (LLAMADART_BUILD_TESTS)
                 COMMAND llamadart_exit_teardown_test model-speculative-process
                     "${LLAMADART_EXIT_TEARDOWN_TEST_MODEL}")
         endif()
+        foreach(scenario model-barrier model-sample-accept)
+            add_test(NAME llamadart_exit_teardown_${scenario}
+                COMMAND llamadart_exit_teardown_test ${scenario}
+                    "${exit_teardown_vocabulary_model}")
+            set_tests_properties(llamadart_exit_teardown_${scenario}
+                PROPERTIES
+                FIXTURES_REQUIRED llamadart_exit_teardown_vocabulary_model)
+        endforeach()
         # llama_encode needs an encoder, which the test also writes.
         set(exit_teardown_encoder
             "${CMAKE_CURRENT_BINARY_DIR}/exit_teardown_test_encoder.gguf")
@@ -334,7 +395,8 @@ if (LLAMADART_BUILD_TESTS)
 
     # Contract assertions must execute against optimized Release libraries too.
     foreach(test_target llamadart_speculative_api_test llamadart_tts_api_test
-            llamadart_tts_eval_test llamadart_exit_teardown_test llamadart_mtmd_compat_test)
+            llamadart_tts_eval_test llamadart_exit_teardown_test llamadart_mtmd_compat_test
+            llamadart_vulkan_device_info_test llamadart_barrier_test)
         if (MSVC)
             target_compile_options(${test_target} PRIVATE /UNDEBUG)
         else()

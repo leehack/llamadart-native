@@ -315,6 +315,77 @@ build/exit-teardown/llamadart_exit_teardown_test model-idle-untracked model.gguf
 
 The last one exits with a model that is not tracked, and aborts on Metal.
 
+## Exception Barrier
+
+llama.cpp reports some failures by throwing a C++ exception, for example
+`Unexpected empty grammar stack after accepting piece` when a grammar sampler
+accepts a token that its grammar rejects. An exception that crosses the C ABI
+into a Dart FFI caller ends the process, so every `llama_dart_` function that
+calls llama.cpp or allocates catches it, returns a failure value and keeps the
+message for the calling thread:
+
+| Return type | After a caught exception |
+| --- | --- |
+| pointer | `NULL` |
+| `bool` | `false` |
+| `int32_t` status or count | `LLAMA_DART_STATUS_EXCEPTION` (`INT32_MIN`) |
+| `llama_token` (`llama_dart_sampler_sample`) | `LLAMA_TOKEN_NULL` |
+| `size_t` | `0` |
+| `enum ggml_status` | `GGML_STATUS_FAILED` |
+| `enum llama_dart_tts_status` | `LLAMA_DART_TTS_STATUS_UPSTREAM_ERROR`, and the task fails |
+| `void` | nothing; only the message is kept |
+
+`llama_dart_last_error` returns the message as valid UTF-8, or `NULL` when the
+thread's last such call caught nothing: each of them clears it on entry, which
+tells a caught exception from a failure that llama.cpp reports through the
+same value. The functions that free an object only set it, since a Dart
+finalizer may run one between a failed call and the read of its error.
+The upstream functions that can throw and that a caller would otherwise call
+directly have a wrapper too: `llama_dart_sampler_accept`,
+`llama_dart_sampler_init_grammar_lazy_patterns`, `llama_dart_tokenize`,
+`llama_dart_token_to_piece`, `llama_dart_memory_clear`, the three
+`llama_dart_mtmd_bitmap_init_` functions and the `llama_dart_ggml_backend_`
+functions that reach a backend. `docs/v060_1_wrapper_rebuild.md` classifies
+every upstream function that `llamadart` calls. A failed `GGML_ASSERT` still
+aborts. `src/llama_dart_wrapper.h` lists the functions without a barrier and
+what a caller may do with the objects of a call that failed.
+
+`llamadart_exit_teardown_test` covers it with the `barrier-free`,
+`barrier-free-idle`, `barrier-grammar` and, on macOS, `model-barrier` and
+`model-sample-accept` scenarios. The grammar ones use a model with a
+vocabulary that the test writes. `llamadart_barrier_test` calls the helpers
+behind the barrier directly.
+
+## Vulkan Device Facts
+
+`llama_dart_vulkan_get_device_count` and `llama_dart_vulkan_get_device_info`
+report, for each device that ggml-vulkan registers, the Vulkan API version of
+the loader and of the device, the subgroup size, the vendor and device ids,
+the device type, the driver version and the name. A caller needs them before
+it uses the Vulkan backend: ggml-vulkan requires Vulkan 1.2 but still
+registers a device whose driver stops at 1.1, and some of its shaders depend
+on the subgroup size.
+
+They read the Vulkan loader directly (`vulkan-1.dll`, `libvulkan.so.1`, or
+`libvulkan.so` on Android), which `libllamadart` opens at run time and does
+not link. They create a Vulkan instance and no logical device, and do not load
+ggml-vulkan. Creating the instance loads the system's GPU drivers into the
+process, and a driver crash there cannot be caught, so call them only when
+the Vulkan backend is being considered. Device `N` is ggml's device `VulkanN`: the selection of
+`ggml_vk_instance_init` is mirrored, including `GGML_VK_VISIBLE_DEVICES`.
+Without a usable loader they return a negative `llama_dart_vulkan_status`,
+and on Apple platforms always `LLAMA_DART_VULKAN_STATUS_UNSUPPORTED`.
+`src/llama_dart_wrapper.h` documents the fields and the two cases where the
+order can differ from ggml's.
+
+`llamadart_vulkan_device_info_test` runs the probe against a table-driven
+loader, and against the machine's own loader. To require a device there:
+
+```bash
+GGML_VK_VISIBLE_DEVICES=0 LLAMADART_TEST_VULKAN_DEVICES=1 \
+  build/wrapper-contract/llamadart_vulkan_device_info_test
+```
+
 ## Experimental TTS Wrapper
 
 `libllamadart` exposes a versioned, opaque C symbol contract around llama.cpp's

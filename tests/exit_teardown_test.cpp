@@ -4,6 +4,7 @@
 
 #include "llama_dart_wrapper.h"
 
+#include "ggml-backend-impl.h"
 #include "gguf.h"
 #include "mtmd.h"
 
@@ -13,7 +14,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <mutex>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <vector>
@@ -529,10 +532,28 @@ void add_tensor(gguf_context *gguf, ggml_context *ggml, const std::string &name,
   gguf_add_tensor(gguf, tensor);
 }
 
-// Writes a two-layer model with random weights and no tokenizer: a llama
-// decoder, or a bert encoder for llama_encode, which a decoder cannot run. It
-// is large enough to load, offload and evaluate, and needs no download.
-int make_model(const char *path, bool is_encoder) {
+// The text of a token of the model that make_model writes with a vocabulary:
+// two lowercase letters, which a grammar can name without escaping.
+std::string vocabulary_piece(llama_token token) {
+  return {static_cast<char>('a' + token % 26),
+          static_cast<char>('a' + token / 26)};
+}
+
+// The value that a binding compares a status or count against, spelled as it
+// is on the wire and not through the header's enumerator.
+const int32_t kExceptionStatus = std::numeric_limits<int32_t>::min();
+
+const llama_token kGrammarToken = 3;
+const llama_token kRejectedToken = 4;
+const llama_token kSpaceToken = 5;
+const llama_token kNewlineToken = 6;
+
+// Writes a two-layer model with random weights: a llama decoder, or a bert
+// encoder for llama_encode, which a decoder cannot run. It is large enough to
+// load, offload and evaluate, and needs no download. It has no tokenizer
+// unless with_vocabulary asks for one, which a grammar sampler needs.
+int make_model(const char *path, bool is_encoder,
+               bool with_vocabulary = false) {
   const uint32_t vocab_size = 256;
   const uint32_t context_length = 512;
   const uint32_t embedding_length = 128;
@@ -557,7 +578,34 @@ int make_model(const char *path, bool is_encoder) {
                                        : ".attention.layer_norm_rms_epsilon"))
                        .c_str(),
                    1e-5f);
-  gguf_set_val_str(gguf, "tokenizer.ggml.model", "no_vocab");
+  if (with_vocabulary) {
+    std::vector<std::string> pieces = {"<unk>", "<s>", "</s>"};
+    std::vector<float> scores(vocab_size, 0.0f);
+    std::vector<int32_t> types(vocab_size, LLAMA_TOKEN_TYPE_NORMAL);
+    types[0] = LLAMA_TOKEN_TYPE_UNKNOWN;
+    types[1] = types[2] = LLAMA_TOKEN_TYPE_CONTROL;
+    while (pieces.size() < vocab_size) {
+      pieces.push_back(
+          vocabulary_piece(static_cast<llama_token>(pieces.size())));
+    }
+    // The space that the tokenizer puts in front of a text, and the newline
+    // that llama.cpp looks up when it loads the vocabulary.
+    pieces[kSpaceToken] = "\xe2\x96\x81";
+    pieces[kNewlineToken] = "\n";
+    std::vector<const char *> texts;
+    for (const std::string &piece : pieces) {
+      texts.push_back(piece.c_str());
+    }
+    gguf_set_val_str(gguf, "tokenizer.ggml.model", "llama");
+    gguf_set_arr_str(gguf, "tokenizer.ggml.tokens", texts.data(),
+                     texts.size());
+    gguf_set_arr_data(gguf, "tokenizer.ggml.scores", GGUF_TYPE_FLOAT32,
+                      scores.data(), scores.size());
+    gguf_set_arr_data(gguf, "tokenizer.ggml.token_type", GGUF_TYPE_INT32,
+                      types.data(), types.size());
+  } else {
+    gguf_set_val_str(gguf, "tokenizer.ggml.model", "no_vocab");
+  }
   if (is_encoder) {
     gguf_set_val_u32(gguf, "tokenizer.ggml.token_type_count", 1);
   }
@@ -655,11 +703,7 @@ llama_batch prompt(model_fixture &fixture) {
 }
 
 void clear_memory(model_fixture &fixture) {
-  // llama_memory_clear has no wrapper. Bracketing it keeps the scenarios free
-  // of calls that only the settle time covers.
-  llama_dart_exit_call_begin();
-  llama_memory_clear(llama_get_memory(fixture.context), true);
-  llama_dart_exit_call_end();
+  assert(llama_dart_memory_clear(llama_get_memory(fixture.context), true));
 }
 
 llama_sampler *greedy_sampler() {
@@ -795,8 +839,8 @@ int test_model_wrappers(const char *path) {
 
 int test_graph() {
   llama_backend_init();
-  ggml_backend_t backend =
-      ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_CPU, nullptr);
+  ggml_backend_t backend = llama_dart_ggml_backend_dev_init(
+      ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU), nullptr);
   assert(backend != nullptr);
   ggml_backend_sched_t sched =
       ggml_backend_sched_new(&backend, nullptr, 1, 16, false, true);
@@ -810,17 +854,36 @@ int test_graph() {
   ggml_tensor *sum = ggml_add(ggml, left, right);
   ggml_cgraph *graph = ggml_new_graph_custom(ggml, 16, false);
   ggml_build_forward_expand(graph, sum);
-  assert(ggml_backend_sched_alloc_graph(sched, graph));
+  assert(llama_dart_ggml_backend_sched_alloc_graph(sched, graph));
   const float left_values[2] = {1.0f, 2.0f};
   const float right_values[2] = {10.0f, 20.0f};
-  ggml_backend_tensor_set(left, left_values, 0, sizeof(left_values));
-  ggml_backend_tensor_set(right, right_values, 0, sizeof(right_values));
+  assert(llama_dart_ggml_backend_tensor_set(left, left_values, 0,
+                                            sizeof(left_values)));
+  assert(llama_dart_ggml_backend_tensor_set(right, right_values, 0,
+                                            sizeof(right_values)));
 
   assert(llama_dart_ggml_backend_sched_graph_compute(sched, graph) ==
          GGML_STATUS_SUCCESS);
+  assert(llama_dart_ggml_backend_sched_synchronize(sched));
   float sum_values[2] = {};
-  ggml_backend_tensor_get(sum, sum_values, 0, sizeof(sum_values));
+  assert(llama_dart_ggml_backend_tensor_get(sum, sum_values, 0,
+                                            sizeof(sum_values)));
   assert(sum_values[0] == 11.0f && sum_values[1] == 22.0f);
+  assert(llama_dart_last_error() == nullptr);
+
+  // Weights are allocated on the backend the same way.
+  ggml_context *weights = ggml_init(params);
+  ggml_tensor *weight = ggml_new_tensor_1d(weights, GGML_TYPE_F32, 2);
+  ggml_backend_buffer_t buffer =
+      llama_dart_ggml_backend_alloc_ctx_tensors(weights, backend);
+  assert(buffer != nullptr);
+  assert(llama_dart_ggml_backend_tensor_set(weight, left_values, 0,
+                                            sizeof(left_values)));
+  assert(llama_dart_ggml_backend_tensor_get(weight, sum_values, 0,
+                                            sizeof(sum_values)));
+  assert(sum_values[0] == 1.0f && sum_values[1] == 2.0f);
+  ggml_backend_buffer_free(buffer);
+  ggml_free(weights);
 
   ggml_backend_sched_free(sched);
   ggml_free(ggml);
@@ -1498,6 +1561,692 @@ int test_model_tts(const char *path, const char *mmproj_path) {
   return 0;
 }
 
+void throw_on_free(void *) { throw std::runtime_error("free failed"); }
+
+void throw_number_on_free(void *) { throw 42; }
+
+// A message as llama.cpp builds it around the piece of a token: part of a
+// character, and more text than the last error holds.
+void throw_undecodable_on_free(void *) {
+  throw std::runtime_error("piece: \xE2\x96 " + std::string(600, 'x'));
+}
+
+// What ggml-vulkan does for a device it does not support.
+ggml_backend_t throw_on_init(ggml_backend_dev_t, const char *) {
+  throw std::runtime_error("Unsupported device");
+}
+
+// And for a query of a device when the loader cannot list its devices.
+void throw_on_memory(ggml_backend_dev_t, size_t *free, size_t *total) {
+  *free = 1;
+  *total = 2;
+  throw std::runtime_error("no devices");
+}
+
+void throw_on_props(ggml_backend_dev_t, ggml_backend_dev_props *props) {
+  props->memory_total = 2;
+  throw std::runtime_error("no properties");
+}
+
+void report_memory(ggml_backend_dev_t, size_t *free, size_t *total) {
+  *free = 3;
+  *total = 4;
+}
+
+void report_props(ggml_backend_dev_t, ggml_backend_dev_props *props) {
+  props->name = "device";
+  props->memory_total = 4;
+}
+
+// Whether a thread that holds no call in flight sees the registry idle, which
+// it is only when every call that threw also ended its call in flight.
+// Teardown frees a tracked object only then. It is the last use of the
+// registry in a scenario.
+bool calls_in_flight_ended() {
+  static char probe[] = "probe";
+  g_log.clear();
+  assert(llama_dart_exit_track(probe, free_named,
+                               LLAMA_DART_EXIT_STAGE_SESSION));
+  llama_dart_exit_set_wait_ms(100);
+  std::thread([] { llama_dart_exit_teardown(); }).join();
+  const std::vector<std::string> freed = recorded();
+  return !freed.empty() && freed.front() == "probe";
+}
+
+// A free that threw has finished like any other: with nothing left to free,
+// it does not hold up an exit that a call in flight would otherwise delay.
+int test_barrier_free_idle() {
+  static char object[] = "object";
+  assert(llama_dart_exit_track(object, throw_on_free,
+                               LLAMA_DART_EXIT_STAGE_SESSION));
+  llama_dart_exit_free(object);
+  assert(llama_dart_last_error() != nullptr);
+  std::thread([] { llama_dart_exit_call_begin(); }).join();
+  llama_dart_exit_set_wait_ms(30000);
+  const auto started = std::chrono::steady_clock::now();
+  llama_dart_exit_teardown();
+  assert(elapsed_ms(started) < 5000);
+  return 0;
+}
+
+// Every function with a barrier starts without a last error, also when it
+// returns for an argument it rejects before it calls anything: its caller
+// reads the last error to learn whether this call caught an exception.
+void test_barrier_clears_stale_error() {
+  const auto stale = [] {
+    ggml_backend_device device{};
+    device.iface.init_backend = throw_on_init;
+    assert(llama_dart_ggml_backend_dev_init(&device, nullptr) == nullptr);
+    assert(llama_dart_last_error() != nullptr);
+  };
+  const auto cleared = [] { return llama_dart_last_error() == nullptr; };
+  llama_batch batch{};
+  llama_token token = 0;
+  int32_t index = 0;
+  llama_dart_tts_request request = llama_dart_tts_request_default();
+  llama_dart_tts_progress progress{};
+  progress.struct_size = sizeof(progress);
+  llama_dart_tts_info info{};
+  info.struct_size = sizeof(info);
+  llama_dart_tts_status status = LLAMA_DART_TTS_STATUS_OK;
+  const int8_t flag = 0;
+
+  stale();
+  assert(llama_dart_mtmd_init_from_file("missing.gguf", nullptr, nullptr) ==
+         nullptr);
+  assert(cleared());
+  stale();
+  assert(llama_dart_tts_set_cancel_flag(nullptr, &flag) ==
+         LLAMA_DART_TTS_STATUS_INVALID_ARGUMENT);
+  assert(cleared());
+  stale();
+  assert(llama_dart_tts_get_info(nullptr, &info) ==
+         LLAMA_DART_TTS_STATUS_INVALID_ARGUMENT);
+  assert(cleared());
+  stale();
+  assert(llama_dart_tts_init(nullptr, nullptr, &status) == nullptr);
+  assert(cleared());
+  stale();
+  assert(llama_dart_tts_start(nullptr, &request) ==
+         LLAMA_DART_TTS_STATUS_INVALID_ARGUMENT);
+  assert(cleared());
+  stale();
+  assert(llama_dart_tts_step(nullptr, &progress) ==
+         LLAMA_DART_TTS_STATUS_INVALID_ARGUMENT);
+  assert(cleared());
+  stale();
+  assert(llama_dart_tts_reset(nullptr) ==
+         LLAMA_DART_TTS_STATUS_INVALID_ARGUMENT);
+  assert(cleared());
+
+  stale();
+  assert(llama_dart_speculative_init(nullptr, nullptr, nullptr,
+                                     llama_context_default_params(),
+                                     nullptr) == nullptr);
+  assert(cleared());
+  stale();
+  assert(!llama_dart_speculative_begin(nullptr, 0, nullptr, 0));
+  assert(cleared());
+  stale();
+  assert(!llama_dart_speculative_process_batch(nullptr, batch));
+  assert(cleared());
+  stale();
+  assert(llama_dart_speculative_draft(nullptr, 0, 0, 0, nullptr, 0, 1, &token,
+                                      1) == -1);
+  assert(cleared());
+  stale();
+  llama_dart_speculative_accept(nullptr, 0, 0);
+  assert(cleared());
+
+  stale();
+  assert(llama_dart_mtp_init(nullptr, nullptr, llama_context_default_params(),
+                             1, 0, 0.0f, false) == nullptr);
+  assert(cleared());
+  stale();
+  assert(llama_dart_mtp_init_with_draft_model(nullptr, nullptr,
+                                              llama_context_default_params(),
+                                              1, 0, 0.0f, false) == nullptr);
+  assert(cleared());
+  stale();
+  assert(!llama_dart_mtp_begin(nullptr, 0, nullptr, 0));
+  assert(cleared());
+  stale();
+  assert(!llama_dart_mtp_process_batch(nullptr, batch));
+  assert(cleared());
+  stale();
+  assert(llama_dart_mtp_draft(nullptr, 0, 0, 0, nullptr, 0, 1, &token, 1) ==
+         -1);
+  assert(cleared());
+  stale();
+  llama_dart_mtp_accept(nullptr, 0, 0);
+  assert(cleared());
+
+  stale();
+  assert(!llama_dart_ngram_begin(nullptr, 0, nullptr, 0));
+  assert(cleared());
+  stale();
+  assert(!llama_dart_ngram_process_batch(nullptr, batch));
+  assert(cleared());
+  stale();
+  assert(llama_dart_ngram_draft(nullptr, 0, 0, 0, nullptr, 0, 1, &token, 1) ==
+         -1);
+  assert(cleared());
+  stale();
+  llama_dart_ngram_accept(nullptr, 0, 0);
+  assert(cleared());
+
+  stale();
+  assert(llama_dart_sampler_sample_and_accept_n(nullptr, nullptr, &index, 1,
+                                                &token, 0, &token, 1) == -1);
+  assert(cleared());
+  stale();
+  assert(llama_dart_sampler_init_reasoning_budget(nullptr, "<think>",
+                                                  "</think>", nullptr, 1, false,
+                                                  nullptr, nullptr, 0) ==
+         nullptr);
+  assert(cleared());
+  stale();
+  assert(llama_dart_memory_clear(nullptr, true));
+  assert(cleared());
+  stale();
+  assert(!llama_dart_exit_track(nullptr, nullptr,
+                                LLAMA_DART_EXIT_STAGE_SESSION));
+  assert(cleared());
+}
+
+// An exception from a tracked object's free function stays inside
+// libllamadart and is reported as the calling thread's last error.
+int test_barrier_free() {
+  static char object[] = "object";
+  static char other[] = "other";
+  assert(llama_dart_last_error() == nullptr);
+  assert(llama_dart_exit_track(other, free_named,
+                               LLAMA_DART_EXIT_STAGE_SESSION));
+  assert(llama_dart_exit_track(object, throw_on_free,
+                               LLAMA_DART_EXIT_STAGE_SESSION));
+  llama_dart_exit_free(object);
+  assert(llama_dart_last_error() != nullptr);
+  assert(std::string(llama_dart_last_error()) == "free failed");
+  // A free that catches nothing keeps the error: a finalizer may run it
+  // before the caller of the failed call has read the error.
+  llama_dart_exit_free(other);
+  assert(recorded() == std::vector<std::string>({"other"}));
+  assert(std::string(llama_dart_last_error()) == "free failed");
+  assert(llama_dart_exit_tracked_count() == 0);
+
+  // Any other call that catches nothing clears it, and so does the caller.
+  assert(llama_dart_exit_track(object, free_named,
+                               LLAMA_DART_EXIT_STAGE_SESSION));
+  assert(llama_dart_last_error() == nullptr);
+  assert(llama_dart_exit_track(object, throw_on_free,
+                               LLAMA_DART_EXIT_STAGE_SESSION));
+  llama_dart_exit_free(object);
+  assert(llama_dart_last_error() != nullptr);
+  llama_dart_clear_last_error();
+  assert(llama_dart_last_error() == nullptr);
+
+  // An exception that is no std::exception has no message of its own.
+  assert(llama_dart_exit_track(object, throw_number_on_free,
+                               LLAMA_DART_EXIT_STAGE_SESSION));
+  llama_dart_exit_free(object);
+  assert(std::string(llama_dart_last_error()) == "unknown C++ exception");
+
+  // The last error is valid UTF-8 and bounded whatever the message was.
+  assert(llama_dart_exit_track(object, throw_undecodable_on_free,
+                               LLAMA_DART_EXIT_STAGE_SESSION));
+  llama_dart_exit_free(object);
+  const std::string undecodable = llama_dart_last_error();
+  assert(undecodable ==
+         "piece: \xEF\xBF\xBD\xEF\xBF\xBD " + std::string(511 - 14, 'x'));
+
+  // llama.cpp throws for a speculative type it does not know. The creating
+  // function logs that and passes the exception on to its barrier before it
+  // has touched the target context.
+  int target = 0;
+  llama_dart_speculative_params speculative_params{};
+  speculative_params.type_names = "no-such-type";
+  assert(llama_dart_speculative_init(
+             nullptr, nullptr, reinterpret_cast<llama_context *>(&target),
+             llama_context_default_params(), &speculative_params) == nullptr);
+  assert(std::string(llama_dart_last_error()) ==
+         "unknown speculative type: no-such-type");
+
+  // A backend that throws while it is created yields no backend.
+  ggml_backend_device device{};
+  device.iface.init_backend = throw_on_init;
+  assert(llama_dart_ggml_backend_dev_init(&device, nullptr) == nullptr);
+  assert(std::string(llama_dart_last_error()) == "Unsupported device");
+
+  // So do the queries of a device, which leave nothing half written.
+  size_t memory_free = 9;
+  size_t memory_total = 9;
+  ggml_backend_dev_props props{};
+  device.iface.get_memory = throw_on_memory;
+  device.iface.get_props = throw_on_props;
+  assert(!llama_dart_ggml_backend_dev_memory(&device, &memory_free,
+                                             &memory_total));
+  assert(std::string(llama_dart_last_error()) == "no devices");
+  assert(memory_free == 0 && memory_total == 0);
+  assert(!llama_dart_ggml_backend_dev_get_props(&device, &props));
+  assert(std::string(llama_dart_last_error()) == "no properties");
+  assert(props.memory_total == 0 && props.name == nullptr);
+  device.iface.get_memory = report_memory;
+  device.iface.get_props = report_props;
+  assert(llama_dart_ggml_backend_dev_memory(&device, &memory_free,
+                                            &memory_total));
+  assert(memory_free == 3 && memory_total == 4);
+  assert(llama_dart_ggml_backend_dev_get_props(&device, &props));
+  assert(std::string(props.name) == "device" && props.memory_total == 4);
+  assert(llama_dart_last_error() == nullptr);
+
+  test_barrier_clears_stale_error();
+
+  assert(calls_in_flight_ended());
+  return 0;
+}
+
+llama_sampler *grammar_sampler(const llama_vocab *vocab, llama_token token) {
+  const std::string grammar =
+      "root ::= \"" + vocabulary_piece(token) + "\"";
+  llama_sampler *sampler =
+      llama_sampler_init_grammar(vocab, grammar.c_str(), "root");
+  assert(sampler != nullptr);
+  return sampler;
+}
+
+bool is_grammar_stack_error(const char *error) {
+  return error != nullptr &&
+         strstr(error, "Unexpected empty grammar stack") != nullptr;
+}
+
+// A trigger pattern of a lazy grammar is compiled as a regular expression,
+// which throws for one that is not valid.
+void test_barrier_lazy_grammar(const llama_vocab *vocab) {
+  const std::string grammar =
+      "root ::= \"" + vocabulary_piece(kGrammarToken) + "\"";
+  const char *invalid_pattern = "(";
+  assert(llama_dart_sampler_init_grammar_lazy_patterns(
+             vocab, grammar.c_str(), "root", &invalid_pattern, 1, nullptr,
+             0) == nullptr);
+  assert(llama_dart_last_error() != nullptr);
+
+  const char *pattern = "[\\s\\S]*";
+  llama_sampler *lazy = llama_dart_sampler_init_grammar_lazy_patterns(
+      vocab, grammar.c_str(), "root", &pattern, 1, nullptr, 0);
+  assert(lazy != nullptr);
+  assert(llama_dart_last_error() == nullptr);
+  llama_sampler_free(lazy);
+
+  // A grammar that does not parse is a failure of llama.cpp's own.
+  assert(llama_dart_sampler_init_grammar_lazy_patterns(
+             vocab, "root ::= \"", "root", &pattern, 1, nullptr, 0) ==
+         nullptr);
+  assert(llama_dart_last_error() == nullptr);
+}
+
+// llama.cpp throws for a token that is not in the vocabulary, such as the
+// LLAMA_TOKEN_NULL of a failed sample, and for a text with a byte that the
+// vocabulary has no token for.
+void test_barrier_tokens(const llama_vocab *vocab) {
+  const std::string piece = vocabulary_piece(kGrammarToken);
+  char text[8] = {};
+  assert(llama_dart_token_to_piece(vocab, kGrammarToken, text, sizeof(text), 0,
+                                   false) == 2);
+  assert(piece == text);
+  assert(llama_dart_last_error() == nullptr);
+  assert(llama_dart_token_to_piece(vocab, kGrammarToken, text, 1, 0, false) ==
+         -2);
+  assert(llama_dart_last_error() == nullptr);
+  assert(llama_dart_token_to_piece(vocab, LLAMA_TOKEN_NULL, text, sizeof(text),
+                                   0, false) == kExceptionStatus);
+  assert(llama_dart_last_error() != nullptr);
+
+  llama_token tokens[4] = {};
+  assert(llama_dart_tokenize(vocab, piece.c_str(), 2, tokens, 4, false,
+                             false) == 2);
+  assert(tokens[0] == kSpaceToken && tokens[1] == kGrammarToken);
+  assert(llama_dart_last_error() == nullptr);
+  assert(llama_dart_tokenize(vocab, piece.c_str(), 2, tokens, 1, false,
+                             false) == -2);
+  assert(llama_dart_last_error() == nullptr);
+  assert(llama_dart_tokenize(vocab, "!", 1, tokens, 4, false, false) ==
+         kExceptionStatus);
+  assert(llama_dart_last_error() != nullptr);
+}
+
+// The bitmap constructors pass a decoded input through and report one that
+// cannot be decoded as llama.cpp does, which is no exception. An image needs
+// no mtmd context.
+void test_barrier_bitmaps(const char *model_path) {
+  // A red pixel as a 24-bit BMP file.
+  const unsigned char image[58] = {
+      'B', 'M', 58, 0, 0, 0, 0,  0,    0,  0, 54, 0, 0,    0,  40,
+      0,   0,   0,  1, 0, 0, 0,  1,    0,  0, 0,  1, 0,    24, 0,
+      0,   0,   0,  0, 4, 0, 0,  0,    19, 11, 0, 0, 19,   11, 0,
+      0,   0,   0,  0, 0, 0, 0,  0,    0,  0, 0,  255, 0};
+  mtmd_bitmap *bitmap =
+      llama_dart_mtmd_bitmap_init_from_buf(nullptr, image, sizeof(image));
+  assert(bitmap != nullptr);
+  assert(mtmd_bitmap_get_nx(bitmap) == 1 && mtmd_bitmap_get_ny(bitmap) == 1);
+  assert(llama_dart_last_error() == nullptr);
+  mtmd_bitmap_free(bitmap);
+
+  const unsigned char garbage[] = "not an image";
+  assert(llama_dart_mtmd_bitmap_init_from_buf(nullptr, garbage,
+                                              sizeof(garbage)) == nullptr);
+  assert(llama_dart_last_error() == nullptr);
+
+  const std::string image_path = std::string(model_path) + ".bmp";
+  FILE *file = fopen(image_path.c_str(), "wb");
+  assert(file != nullptr);
+  assert(fwrite(image, 1, sizeof(image), file) == sizeof(image));
+  fclose(file);
+  bitmap = llama_dart_mtmd_bitmap_init_from_file(nullptr, image_path.c_str());
+  assert(bitmap != nullptr);
+  mtmd_bitmap_free(bitmap);
+  assert(llama_dart_mtmd_bitmap_init_from_file(
+             nullptr, (image_path + ".missing").c_str()) == nullptr);
+  assert(llama_dart_last_error() == nullptr);
+
+  const float samples[4] = {0.0f, 0.5f, -0.5f, 0.0f};
+  bitmap = llama_dart_mtmd_bitmap_init_from_audio(4, samples);
+  assert(bitmap != nullptr);
+  assert(mtmd_bitmap_is_audio(bitmap));
+  mtmd_bitmap_free(bitmap);
+}
+
+// llama.cpp throws when a grammar sampler accepts a token that its grammar
+// rejects. The wrapper reports that as a failure with a message, on the
+// thread that made the call only, and the process goes on. Only the
+// vocabulary is loaded, which needs no backend.
+int test_barrier_grammar(const char *path) {
+  llama_backend_init();
+  auto model_params = llama_model_default_params();
+  model_params.vocab_only = true;
+  llama_model *model = llama_dart_model_load_from_file(path, model_params);
+  assert(model != nullptr);
+  assert(llama_dart_last_error() == nullptr);
+  const llama_vocab *vocab = llama_model_get_vocab(model);
+
+  llama_sampler *rejecting = grammar_sampler(vocab, kGrammarToken);
+  assert(!llama_dart_sampler_accept(rejecting, kRejectedToken));
+  assert(is_grammar_stack_error(llama_dart_last_error()));
+  const std::string error = llama_dart_last_error();
+  llama_sampler_free(rejecting);
+
+  // Another thread has no error of its own until it catches one, and neither
+  // its error nor clearing it changes this thread's.
+  std::thread([vocab] {
+    assert(llama_dart_last_error() == nullptr);
+    llama_sampler *sampler = grammar_sampler(vocab, kRejectedToken);
+    assert(!llama_dart_sampler_accept(sampler, kGrammarToken));
+    assert(is_grammar_stack_error(llama_dart_last_error()));
+    assert(strstr(llama_dart_last_error(),
+                  vocabulary_piece(kGrammarToken).c_str()) != nullptr);
+    llama_sampler_free(sampler);
+    llama_dart_clear_last_error();
+    assert(llama_dart_last_error() == nullptr);
+  }).join();
+  assert(llama_dart_last_error() != nullptr);
+  assert(error == llama_dart_last_error());
+  assert(error.find(vocabulary_piece(kRejectedToken)) != std::string::npos);
+
+  // A token that the grammar accepts is no error and clears the last one.
+  llama_sampler *accepting = grammar_sampler(vocab, kGrammarToken);
+  assert(llama_dart_sampler_accept(accepting, kGrammarToken));
+  assert(llama_dart_last_error() == nullptr);
+  llama_sampler_free(accepting);
+
+  test_barrier_lazy_grammar(vocab);
+  test_barrier_tokens(vocab);
+  test_barrier_bitmaps(path);
+
+  assert(calls_in_flight_ended());
+  return 0;
+}
+
+std::atomic<int> g_eval_failure{0};
+
+// A graph evaluation callback that throws on request, as a backend does when
+// it fails in the middle of a decode.
+bool throwing_eval_callback(ggml_tensor *, bool ask, void *) {
+  switch (g_eval_failure.exchange(0)) {
+  case 1:
+    throw std::runtime_error("evaluation failed");
+  case 2:
+    throw 42;
+  default:
+    return !ask;
+  }
+}
+
+// The same through a decode and the sampling that follows it, as generation
+// runs them, and for an exception from inside the decode itself.
+int test_model_barrier(const char *path) {
+  model_options options;
+  options.eval_callback = throwing_eval_callback;
+  model_fixture fixture = load_model(path, options);
+  const llama_vocab *vocab = llama_model_get_vocab(fixture.model);
+  llama_sampler *greedy = greedy_sampler();
+  const llama_token sampled = decode_and_sample(fixture, greedy);
+  assert(sampled >= 0);
+  assert(llama_dart_last_error() == nullptr);
+
+  // The greedy sampler selects the token before the grammar sees it, so the
+  // chain accepts a token that the grammar rejects.
+  const llama_token other =
+      sampled == kGrammarToken ? kRejectedToken : kGrammarToken;
+  const auto rejecting_chain = [vocab, other] {
+    llama_sampler *chain = greedy_sampler();
+    llama_sampler_chain_add(chain, grammar_sampler(vocab, other));
+    return chain;
+  };
+  llama_sampler *chain = rejecting_chain();
+  assert(llama_dart_sampler_sample(chain, fixture.context, -1) == -1);
+  assert(is_grammar_stack_error(llama_dart_last_error()));
+  llama_sampler_free(chain);
+
+  chain = rejecting_chain();
+  const int32_t index = -1;
+  llama_token draft = 0;
+  llama_token accepted = 0;
+  assert(llama_dart_sampler_sample_and_accept_n(
+             chain, fixture.context, &index, 1, &draft, 0, &accepted, 1) ==
+         kExceptionStatus);
+  assert(is_grammar_stack_error(llama_dart_last_error()));
+  llama_sampler_free(chain);
+
+  // A sampler's exception leaves the context usable, and a call that
+  // succeeds clears the error.
+  assert(llama_dart_sampler_sample(greedy, fixture.context, -1) == sampled);
+  assert(llama_dart_last_error() == nullptr);
+
+  // A failure that llama.cpp reports itself is not an exception: it keeps
+  // its own return value and leaves no last error.
+  llama_token invalid = -2;
+  clear_memory(fixture);
+  const int32_t status =
+      llama_dart_decode(fixture.context, llama_batch_get_one(&invalid, 1));
+  assert(status != 0 && status != LLAMA_DART_STATUS_EXCEPTION);
+  assert(llama_dart_last_error() == nullptr);
+  auto context_params = llama_context_default_params();
+  context_params.n_seq_max = 1u << 20;
+  assert(llama_dart_init_from_model(fixture.model, context_params) == nullptr);
+  assert(llama_dart_last_error() == nullptr);
+  assert(llama_dart_exit_tracked_count() == 2);
+  assert(decode_and_sample(fixture, greedy) == sampled);
+  llama_sampler_free(greedy);
+
+  // An exception from inside a decode. The context is only freed afterwards.
+  clear_memory(fixture);
+  g_eval_failure.store(1);
+  assert(llama_dart_decode(fixture.context, prompt(fixture)) ==
+         kExceptionStatus);
+  assert(std::string(llama_dart_last_error()) == "evaluation failed");
+  g_eval_failure.store(2);
+  assert(llama_dart_decode(fixture.context, prompt(fixture)) ==
+         LLAMA_DART_STATUS_EXCEPTION);
+  assert(std::string(llama_dart_last_error()) == "unknown C++ exception");
+
+  assert(calls_in_flight_ended());
+  return 0;
+}
+
+// A sampler that selects the tokens of a script, whatever the logits are, and
+// records what it is made to accept.
+struct scripted_sampler {
+  std::vector<llama_token> script;
+  size_t next = 0;
+  std::vector<llama_token> accepted;
+};
+
+const char *scripted_name(const llama_sampler *) { return "scripted"; }
+
+void scripted_accept(llama_sampler *sampler, llama_token token) {
+  static_cast<scripted_sampler *>(sampler->ctx)->accepted.push_back(token);
+}
+
+void scripted_apply(llama_sampler *sampler, llama_token_data_array *candidates) {
+  auto *state = static_cast<scripted_sampler *>(sampler->ctx);
+  assert(state->next < state->script.size());
+  const llama_token token = state->script[state->next++];
+  for (size_t i = 0; i < candidates->size; ++i) {
+    if (candidates->data[i].id == token) {
+      candidates->selected = static_cast<int64_t>(i);
+      return;
+    }
+  }
+  assert(false && "the scripted token is not a candidate");
+}
+
+llama_sampler *scripted(scripted_sampler *state) {
+  static llama_sampler_i scripted_interface = [] {
+    llama_sampler_i value{};
+    value.name = scripted_name;
+    value.accept = scripted_accept;
+    value.apply = scripted_apply;
+    return value;
+  }();
+  return llama_sampler_init(&scripted_interface, state);
+}
+
+using tokens = std::vector<llama_token>;
+
+// llama_dart_sampler_sample_and_accept_n makes the sampler accept each token
+// it returns exactly once, also when the context's backend sampler chose it,
+// and stops at an end-of-generation token that the draft predicted, as
+// llama.cpp's common_sampler_sample_and_accept_n does.
+int test_model_sample_accept(const char *path) {
+  llama_backend_init();
+  auto model_params = llama_model_default_params();
+  // On the CPU, where every device can run the backend sampler's argmax: the
+  // Metal device of a virtual machine cannot.
+  static ggml_backend_dev_t no_devices[] = {nullptr};
+  model_params.n_gpu_layers = 0;
+  model_params.devices = no_devices;
+  llama_model *model = llama_dart_model_load_from_file(path, model_params);
+  assert(model != nullptr);
+  const llama_vocab *vocab = llama_model_get_vocab(model);
+  const llama_token eog = llama_vocab_eos(vocab);
+  assert(eog != LLAMA_TOKEN_NULL && llama_vocab_is_eog(vocab, eog));
+
+  // Four positions with logits, as a target decode of a draft has them.
+  tokens input = {7, 8, 9, 10};
+  std::vector<llama_pos> positions = {0, 1, 2, 3};
+  std::vector<int32_t> sequence_counts(input.size(), 1);
+  llama_seq_id sequence = 0;
+  std::vector<llama_seq_id *> sequences(input.size(), &sequence);
+  std::vector<int8_t> outputs(input.size(), 1);
+  const llama_batch batch = {static_cast<int32_t>(input.size()),
+                             input.data(),
+                             nullptr,
+                             positions.data(),
+                             sequence_counts.data(),
+                             sequences.data(),
+                             outputs.data()};
+  const std::vector<int32_t> indices = {0, 1, 2, 3};
+  tokens sampled(indices.size(), LLAMA_TOKEN_NULL);
+  const auto sample_and_accept = [&](llama_context *context,
+                                     scripted_sampler &state,
+                                     const tokens &draft) {
+    llama_sampler *sampler = scripted(&state);
+    const int32_t count = llama_dart_sampler_sample_and_accept_n(
+        sampler, context, indices.data(),
+        static_cast<int32_t>(draft.size()) + 1, draft.data(),
+        static_cast<int32_t>(draft.size()), sampled.data(),
+        static_cast<int32_t>(sampled.size()));
+    llama_sampler_free(sampler);
+    assert(count >= 0);
+    return tokens(sampled.begin(), sampled.begin() + count);
+  };
+
+  auto context_params = llama_context_default_params();
+  context_params.n_ctx = 64;
+  llama_context *context = llama_dart_init_from_model(model, context_params);
+  assert(context != nullptr);
+  assert(llama_dart_decode(context, batch) == 0);
+
+  // Every draft token matches: one more token is sampled after them.
+  scripted_sampler all_match{{20, 21, 22, 23}};
+  assert(sample_and_accept(context, all_match, {20, 21, 22}) ==
+         tokens({20, 21, 22, 23}));
+  assert(all_match.accepted == tokens({20, 21, 22, 23}));
+
+  // The first mismatch ends it with the sampler's own token.
+  scripted_sampler mismatch{{20, 30, 22, 23}};
+  assert(sample_and_accept(context, mismatch, {20, 21, 22}) ==
+         tokens({20, 30}));
+  assert(mismatch.accepted == tokens({20, 30}));
+
+  // An end of generation that the draft predicted ends it too: the draft
+  // tokens after it are not output and must not reach the sampler.
+  scripted_sampler stops{{20, eog, 22, 23}};
+  const tokens after_eog = sample_and_accept(context, stops, {20, eog, 22});
+  assert(after_eog == tokens({20, eog}));
+  assert(stops.accepted == tokens({20, eog}));
+
+  // As the last draft token it is still followed by the target's own sample.
+  scripted_sampler last{{20, 21, eog, 23}};
+  assert(sample_and_accept(context, last, {20, 21, eog}) ==
+         tokens({20, 21, eog, 23}));
+  assert(last.accepted == tokens({20, 21, eog, 23}));
+  llama_dart_exit_free(context);
+
+  // A context with a backend sampler has chosen the token already.
+  llama_sampler *backend_chain = greedy_sampler();
+  llama_sampler_seq_config backend_sampler = {0, backend_chain};
+  context_params.samplers = &backend_sampler;
+  context_params.n_samplers = 1;
+  context = llama_dart_init_from_model(model, context_params);
+  assert(context != nullptr);
+  llama_token last_input = input.back();
+  assert(llama_dart_decode(context, llama_batch_get_one(&last_input, 1)) == 0);
+  const llama_token chosen = llama_get_sampled_token_ith(context, -1);
+  assert(chosen != LLAMA_TOKEN_NULL);
+
+  scripted_sampler plain;
+  llama_sampler *sampler = scripted(&plain);
+  assert(llama_dart_sampler_sample(sampler, context, -1) == chosen);
+  llama_sampler_free(sampler);
+  assert(plain.accepted == tokens({chosen}));
+
+  scripted_sampler counted;
+  sampler = scripted(&counted);
+  const int32_t last_index = -1;
+  llama_token draft = 0;
+  assert(llama_dart_sampler_sample_and_accept_n(sampler, context, &last_index,
+                                                1, &draft, 0, sampled.data(),
+                                                1) == 1);
+  llama_sampler_free(sampler);
+  assert(sampled[0] == chosen);
+  assert(counted.accepted == tokens({chosen}));
+
+  llama_dart_exit_free(context);
+  llama_sampler_free(backend_chain);
+  llama_dart_exit_free(model);
+  return 0;
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -1551,9 +2300,27 @@ int main(int argc, char **argv) {
   if (scenario == "graph") {
     return test_graph();
   }
+  if (scenario == "barrier-free") {
+    return test_barrier_free();
+  }
+  if (scenario == "barrier-free-idle") {
+    return test_barrier_free_idle();
+  }
   if (first != nullptr) {
     if (scenario == "make-model") {
       return make_model(first, false);
+    }
+    if (scenario == "make-vocabulary-model") {
+      return make_model(first, false, true);
+    }
+    if (scenario == "barrier-grammar") {
+      return test_barrier_grammar(first);
+    }
+    if (scenario == "model-barrier") {
+      return test_model_barrier(first);
+    }
+    if (scenario == "model-sample-accept") {
+      return test_model_sample_accept(first);
     }
     if (scenario == "make-encoder-model") {
       return make_model(first, true);

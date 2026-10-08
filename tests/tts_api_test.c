@@ -60,5 +60,10 @@ int main(void) {
     assert(llama_dart_tts_eval_callback(&node, false, NULL));
 
     llama_dart_tts_free(NULL);
+
+    // A failure that is not a caught exception leaves no last error.
+    assert(llama_dart_last_error() == NULL);
+    llama_dart_clear_last_error();
+    assert(llama_dart_last_error() == NULL);
     return 0;
 }

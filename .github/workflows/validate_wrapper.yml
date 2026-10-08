@@ -142,6 +142,21 @@ jobs:
           grep -F -- "-DVulkan_GLSLC_EXECUTABLE=$ANDROID_VULKAN_GLSLC" configure-build.log
           grep -Fx -- '-- GL_KHR_cooperative_matrix supported by glslc' configure-build.log
           test -f build/android-vulkan/bin/libggml-vulkan.so
+      # The release takes the Android core libraries from this configuration,
+      # and no other pull request lane compiles the wrapper with the NDK.
+      - name: Build the wrapper and check the bundle's exception runtime
+        if: matrix.upstream == 'pinned'
+        run: |
+          set -euo pipefail
+          export ANDROID_NDK_HOME="${ANDROID_SDK_ROOT}/ndk/28.2.13676358"
+          cmake --build build/android-vulkan --target llamadart_lib ggml-cpu --parallel 4
+          LLVM="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          mkdir build/android-vulkan/bundle
+          cp build/android-vulkan/libllamadart.so build/android-vulkan/bin/*.so build/android-vulkan/bundle/
+          python3 tools/validate_android_artifacts.py \
+            --readelf "$LLVM/llvm-readelf" build/android-vulkan/bundle
+          python3 tools/validate_exports.py --format readelf \
+            --tool "$LLVM/llvm-readelf" build/android-vulkan/bundle/libllamadart.so
 
   kleidiai-dispatch-emulated:
     needs: changes
@@ -353,6 +368,9 @@ jobs:
           git -C third_party/llama.cpp fetch --depth=1 origin "$LLAMADART_QUALIFICATION_SHA"
           git -C third_party/llama.cpp checkout --detach "$LLAMADART_QUALIFICATION_SHA"
           test "$(git -C third_party/llama.cpp rev-parse HEAD)" = "$LLAMADART_QUALIFICATION_SHA"
+      # lavapipe, so that the Vulkan device facts are read from a real loader.
+      - name: Install the Mesa software Vulkan device
+        run: sudo apt-get update && sudo apt-get install -y libvulkan1 mesa-vulkan-drivers
       - name: Configure wrapper contract tests
         run: >-
           cmake -S . -B build/wrapper-contract -G Ninja
@@ -368,10 +386,18 @@ jobs:
           llamadart_tts_api_test
           llamadart_tts_eval_test
           llamadart_mtmd_compat_test
+          llamadart_barrier_test
+          llamadart_vulkan_device_info_test
           llamadart_exit_teardown_test
           llamadart_tts_smoke
       - name: Run wrapper contract tests
         run: ctest --test-dir build/wrapper-contract --output-on-failure
+      # ggml-vulkan uses a CPU implementation only when it is asked to.
+      - name: Read the software Vulkan device through the wrapper
+        env:
+          GGML_VK_VISIBLE_DEVICES: '0'
+          LLAMADART_TEST_VULKAN_DEVICES: '1'
+        run: build/wrapper-contract/llamadart_vulkan_device_info_test
       - name: Validate public grammar sampler boundary
         run: python3 tools/validate_grammar_boundary.py build/wrapper-contract/libllamadart.so
       - name: Validate wrapper exports
@@ -419,6 +445,7 @@ jobs:
           -DGGML_OPENCL=OFF
           -DGGML_OPENMP=OFF
           -DGGML_VULKAN=OFF
+          -DLLAMADART_BUILD_TESTS=ON
       - name: Link mtmd shared library without LTCG objects
         run: cmake --build --preset windows-x64-full --target mtmd
       - name: Validate current mtmd export contract
@@ -429,6 +456,29 @@ jobs:
             --tool dumpbin `
             --symbol mtmd_input_chunk_get_placeholder `
             build/wx64/bin/mtmd.dll
+      # The release builds the wrapper with this compiler, and the exception
+      # barrier depends on how it treats a catch around an extern "C" call.
+      - name: Build the wrapper and its barrier tests with MSVC
+        run: >-
+          cmake --build --preset windows-x64-full --target
+          llamadart_barrier_test
+          llamadart_exit_teardown_test
+          llamadart_vulkan_device_info_test
+          llamadart_tts_api_test
+      - name: Run the barrier and Vulkan probe tests
+        shell: pwsh
+        run: |
+          $wrapperDir = (Resolve-Path build/wx64).Path
+          $upstreamDir = (Resolve-Path build/wx64/bin).Path
+          $env:PATH = "$wrapperDir;$upstreamDir;$env:PATH"
+          ctest --test-dir build/wx64 -R "barrier|vocabulary|vulkan_device_info|tts_api" --timeout 120 --output-on-failure
+      - name: Validate wrapper exports
+        shell: pwsh
+        run: |
+          python tools/validate_exports.py `
+            --format dumpbin `
+            --tool dumpbin `
+            build/wx64/llamadart.dll
 
   macos-exit-teardown:
     needs: changes
