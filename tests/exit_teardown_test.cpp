@@ -1775,12 +1775,17 @@ llama_sampler *scripted(scripted_sampler *state) {
 using tokens = std::vector<llama_token>;
 
 // llama_dart_sampler_sample_and_accept_n makes the sampler accept each token
-// it returns exactly once, also when the context's backend sampler chose it.
+// it returns exactly once, also when the context's backend sampler chose it,
+// and stops at an end-of-generation token that the draft predicted, as
+// llama.cpp's common_sampler_sample_and_accept_n does.
 int test_model_sample_accept(const char *path) {
   llama_backend_init();
   auto model_params = llama_model_default_params();
   llama_model *model = llama_dart_model_load_from_file(path, model_params);
   assert(model != nullptr);
+  const llama_vocab *vocab = llama_model_get_vocab(model);
+  const llama_token eog = llama_vocab_eos(vocab);
+  assert(eog != LLAMA_TOKEN_NULL && llama_vocab_is_eog(vocab, eog));
 
   // Four positions with logits, as a target decode of a draft has them.
   tokens input = {7, 8, 9, 10};
@@ -1830,6 +1835,21 @@ int test_model_sample_accept(const char *path) {
          tokens({20, 30}));
   assert(mismatch.accepted == tokens({20, 30}));
 
+  // An end of generation that the draft predicted ends it too: the draft
+  // tokens after it are not output and must not reach the sampler.
+  scripted_sampler stops{{20, eog, 22, 23}};
+  const tokens after_eog = sample_and_accept(context, stops, {20, eog, 22});
+  fprintf(stderr, "draft continues after EOG: %zu tokens returned, %zu "
+                  "accepted\n",
+          after_eog.size(), stops.accepted.size());
+  assert(after_eog == tokens({20, eog}));
+  assert(stops.accepted == tokens({20, eog}));
+
+  // As the last draft token it is still followed by the target's own sample.
+  scripted_sampler last{{20, 21, eog, 23}};
+  assert(sample_and_accept(context, last, {20, 21, eog}) ==
+         tokens({20, 21, eog, 23}));
+  assert(last.accepted == tokens({20, 21, eog, 23}));
   llama_dart_exit_free(context);
 
   // A context with a backend sampler has chosen the token already.

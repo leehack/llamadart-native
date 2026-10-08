@@ -2720,10 +2720,16 @@ static int32_t llama_dart_sampler_sample_and_accept_n_impl(
     return llama_sampler_sample(sampler, ctx, idx);
   };
 
+  const llama_vocab *vocab = llama_model_get_vocab(llama_get_model(ctx));
   for (; i < draft_count; ++i) {
     const llama_token id = sample_and_accept(idxs[i]);
     out_tokens[count++] = id;
-    if (draft_tokens[i] != id) {
+    // As llama.cpp's common_sampler_sample_and_accept_n since v0.6.0: the
+    // draft tokens after an end of generation are not output, so the sampler
+    // must not accept them. As the last draft token it is still followed by
+    // the target's own sample.
+    if (draft_tokens[i] != id ||
+        (llama_vocab_is_eog(vocab, id) && i + 1 < draft_count)) {
       break;
     }
   }
