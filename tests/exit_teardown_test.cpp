@@ -1914,6 +1914,11 @@ using tokens = std::vector<llama_token>;
 int test_model_sample_accept(const char *path) {
   llama_backend_init();
   auto model_params = llama_model_default_params();
+  // On the CPU, where every device can run the backend sampler's argmax: the
+  // Metal device of a virtual machine cannot.
+  static ggml_backend_dev_t no_devices[] = {nullptr};
+  model_params.n_gpu_layers = 0;
+  model_params.devices = no_devices;
   llama_model *model = llama_dart_model_load_from_file(path, model_params);
   assert(model != nullptr);
   const llama_vocab *vocab = llama_model_get_vocab(model);
