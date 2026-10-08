@@ -19,29 +19,6 @@ struct llama_dart_error_state {
 
 static thread_local llama_dart_error_state llama_dart_error = {};
 
-// The functions below that a barrier calls around its try block stay out of
-// line, so that the body of a barrier and its catch block, which Windows
-// compiles as a function of its own, share no computed address of the
-// thread's storage. With clang-cl for ARM64 a freeing barrier crashed once it
-// read the storage inline before its try block.
-#if defined(_MSC_VER)
-#define LLAMA_DART_NOINLINE __declspec(noinline)
-#else
-#define LLAMA_DART_NOINLINE __attribute__((noinline))
-#endif
-
-// Starts a call without a last error.
-static LLAMA_DART_NOINLINE void llama_dart_error_begin() noexcept {
-  llama_dart_error.set = false;
-}
-
-// Reaches the thread's storage without changing it, see
-// llama_dart_error_state.
-static LLAMA_DART_NOINLINE void llama_dart_error_touch() noexcept {
-  const volatile bool touched = llama_dart_error.set;
-  (void)touched;
-}
-
 // Number of bytes of the well-formed UTF-8 sequence that text starts with, or
 // 0 when it starts with none. It reads no byte after a terminating zero.
 static inline size_t llama_dart_utf8_sequence_length(const unsigned char *text) {
@@ -80,8 +57,7 @@ static inline size_t llama_dart_utf8_sequence_length(const unsigned char *text) 
 // from llama.cpp may hold part of a character, as the piece of a token does.
 // Each byte that starts no well-formed sequence becomes U+FFFD, and a message
 // that does not fit is cut between characters.
-static LLAMA_DART_NOINLINE void
-llama_dart_error_record(const char *message) noexcept {
+static inline void llama_dart_error_record(const char *message) noexcept {
   llama_dart_error_state &error = llama_dart_error;
   const auto *source = reinterpret_cast<const unsigned char *>(
       message != nullptr ? message : "unknown C++ exception");
@@ -121,7 +97,7 @@ static Result llama_dart_catch(Result failure, Call &&call) noexcept {
 // with none, so that a last error after the call is this call's.
 template <typename Result, typename Call>
 static Result llama_dart_barrier(Result failure, Call &&call) noexcept {
-  llama_dart_error_begin();
+  llama_dart_error.set = false;
   return llama_dart_catch(failure, call);
 }
 
@@ -138,7 +114,9 @@ static void llama_dart_void_barrier(Call &&call) noexcept {
 // leave the last error alone unless they catch an exception themselves.
 template <typename Call>
 static void llama_dart_free_barrier(Call &&call) noexcept {
-  llama_dart_error_touch();
+  // Reads the storage without changing it, see llama_dart_error_state.
+  const volatile bool touched = llama_dart_error.set;
+  (void)touched;
   llama_dart_catch(false, [&call] {
     call();
     return true;
