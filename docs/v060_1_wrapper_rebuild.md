@@ -130,10 +130,18 @@ started; that is an out-of-memory condition the barrier does not turn into an
 error. The functions that free do not clear the last error and so first reach
 the storage when they record an exception: a thread whose first call into
 libllamadart is a free that throws while memory is exhausted may abort
-instead of recording. Reading the storage before the free was tried and
-withdrawn: on the Windows ARM64 clang-cl lane both scenarios with a free
-function that throws then crashed, with the read inline and with it in a
-function of its own, and the cause was not found without such a machine.
+instead of recording.
+
+Windows ARM64: built with clang-cl, `llama_dart_exit_free` crashed when the
+free function threw a `std::runtime_error` and worked when it threw an `int`.
+The typed catch in that function's inlined body read a wrong exception
+object, while the catch of everything next to it and the same typed catch in
+other barriers were fine, and which function was affected moved with
+unrelated changes to the file. Every barrier therefore catches everything and
+calls one function that is never inlined, which rethrows the exception being
+handled and names its type there. The cause inside the compiler was not
+established; the lane runs a throwing free function, a throwing device and
+the grammar exception through the barrier.
 
 glibc cancels a thread by a forced unwind, which the barrier's `catch (...)`
 would swallow and glibc then ends the process: a thread inside libllamadart
@@ -396,6 +404,11 @@ queries under a 1.0 instance, not moving a replaced driver to the end of the
 device list (`llamadart_vulkan_device_info_test`), not failing the TTS task
 after a caught exception, and not freeing what a creating call made when
 tracking throws (`llamadart_barrier_test`).
+
+A test executable built with `/EHsc` cannot itself catch an exception that
+passes through an `extern "C"` function of another library: such a scenario
+ended in `0xc0000409` on the clang-cl lane. The scenarios therefore let
+libllamadart do the catching, which is what they are about.
 
 In `validate_wrapper.yml`:
 

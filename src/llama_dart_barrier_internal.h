@@ -133,8 +133,6 @@ static void llama_dart_void_barrier(Call &&call) noexcept {
 // thread between a call that failed there and the read of its error, so they
 // leave the last error alone unless they catch an exception themselves. They
 // therefore first reach the thread's storage when they record an exception.
-// Reading it before the call, to have it allocated by then, made the
-// Windows ARM64 build crash when a free function threw.
 template <typename Call>
 static void llama_dart_free_barrier(Call &&call) noexcept {
   llama_dart_catch(false, [&call] {
