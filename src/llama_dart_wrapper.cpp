@@ -1363,6 +1363,51 @@ LLAMADART_API bool llama_dart_sampler_accept(struct llama_sampler *smpl,
   });
 }
 
+LLAMADART_API struct llama_sampler *
+llama_dart_sampler_init_grammar_lazy_patterns(
+    const struct llama_vocab *vocab, const char *grammar_str,
+    const char *grammar_root, const char **trigger_patterns,
+    size_t num_trigger_patterns, const llama_token *trigger_tokens,
+    size_t num_trigger_tokens) {
+  return llama_dart_barrier<llama_sampler *>(nullptr, [=] {
+    llama_dart_exit_call call;
+    return llama_sampler_init_grammar_lazy_patterns(
+        vocab, grammar_str, grammar_root, trigger_patterns,
+        num_trigger_patterns, trigger_tokens, num_trigger_tokens);
+  });
+}
+
+LLAMADART_API int32_t llama_dart_tokenize(const struct llama_vocab *vocab,
+                                          const char *text, int32_t text_len,
+                                          llama_token *tokens,
+                                          int32_t n_tokens_max,
+                                          bool add_special,
+                                          bool parse_special) {
+  return llama_dart_barrier<int32_t>(LLAMA_DART_STATUS_EXCEPTION, [=] {
+    llama_dart_exit_call call;
+    return llama_tokenize(vocab, text, text_len, tokens, n_tokens_max,
+                          add_special, parse_special);
+  });
+}
+
+LLAMADART_API int32_t llama_dart_token_to_piece(const struct llama_vocab *vocab,
+                                                llama_token token, char *buf,
+                                                int32_t length, int32_t lstrip,
+                                                bool special) {
+  return llama_dart_barrier<int32_t>(LLAMA_DART_STATUS_EXCEPTION, [=] {
+    llama_dart_exit_call call;
+    return llama_token_to_piece(vocab, token, buf, length, lstrip, special);
+  });
+}
+
+LLAMADART_API bool llama_dart_memory_clear(llama_memory_t mem, bool data) {
+  return llama_dart_barrier(false, [mem, data] {
+    llama_dart_exit_call call;
+    llama_memory_clear(mem, data);
+    return true;
+  });
+}
+
 LLAMADART_API bool llama_dart_state_save_file(struct llama_context *ctx,
                                               const char *path_session,
                                               const llama_token *tokens,
@@ -1417,6 +1462,32 @@ llama_dart_adapter_lora_init(struct llama_model *model,
   return llama_dart_barrier<llama_adapter_lora *>(nullptr, [=] {
     llama_dart_exit_call call;
     return llama_adapter_lora_init(model, path_lora);
+  });
+}
+
+LLAMADART_API struct mtmd_bitmap *
+llama_dart_mtmd_bitmap_init_from_audio(size_t n_samples, const float *data) {
+  return llama_dart_barrier<mtmd_bitmap *>(nullptr, [n_samples, data] {
+    llama_dart_exit_call call;
+    return mtmd_bitmap_init_from_audio(n_samples, data);
+  });
+}
+
+LLAMADART_API struct mtmd_bitmap *
+llama_dart_mtmd_bitmap_init_from_buf(struct mtmd_context *ctx,
+                                     const unsigned char *buf, size_t len) {
+  return llama_dart_barrier<mtmd_bitmap *>(nullptr, [ctx, buf, len] {
+    llama_dart_exit_call call;
+    return llama_dart_bitmap_from_buffer(ctx, buf, len).bitmap;
+  });
+}
+
+LLAMADART_API struct mtmd_bitmap *
+llama_dart_mtmd_bitmap_init_from_file(struct mtmd_context *ctx,
+                                      const char *fname) {
+  return llama_dart_barrier<mtmd_bitmap *>(nullptr, [ctx, fname] {
+    llama_dart_exit_call call;
+    return llama_dart_bitmap_from_file(ctx, fname).bitmap;
   });
 }
 
@@ -1481,6 +1552,62 @@ llama_dart_ggml_backend_sched_graph_compute(ggml_backend_sched_t sched,
   return llama_dart_barrier(GGML_STATUS_FAILED, [sched, graph] {
     llama_dart_exit_call call;
     return ggml_backend_sched_graph_compute(sched, graph);
+  });
+}
+
+LLAMADART_API ggml_backend_t
+llama_dart_ggml_backend_dev_init(ggml_backend_dev_t device,
+                                 const char *params) {
+  return llama_dart_barrier<ggml_backend_t>(nullptr, [device, params] {
+    llama_dart_exit_call call;
+    return ggml_backend_dev_init(device, params);
+  });
+}
+
+LLAMADART_API ggml_backend_buffer_t
+llama_dart_ggml_backend_alloc_ctx_tensors(struct ggml_context *ctx,
+                                          ggml_backend_t backend) {
+  return llama_dart_barrier<ggml_backend_buffer_t>(nullptr, [ctx, backend] {
+    llama_dart_exit_call call;
+    return ggml_backend_alloc_ctx_tensors(ctx, backend);
+  });
+}
+
+LLAMADART_API bool
+llama_dart_ggml_backend_tensor_set(struct ggml_tensor *tensor, const void *data,
+                                   size_t offset, size_t size) {
+  return llama_dart_barrier(false, [=] {
+    llama_dart_exit_call call;
+    ggml_backend_tensor_set(tensor, data, offset, size);
+    return true;
+  });
+}
+
+LLAMADART_API bool
+llama_dart_ggml_backend_tensor_get(const struct ggml_tensor *tensor, void *data,
+                                   size_t offset, size_t size) {
+  return llama_dart_barrier(false, [=] {
+    llama_dart_exit_call call;
+    ggml_backend_tensor_get(tensor, data, offset, size);
+    return true;
+  });
+}
+
+LLAMADART_API bool
+llama_dart_ggml_backend_sched_alloc_graph(ggml_backend_sched_t sched,
+                                          struct ggml_cgraph *graph) {
+  return llama_dart_barrier(false, [sched, graph] {
+    llama_dart_exit_call call;
+    return ggml_backend_sched_alloc_graph(sched, graph);
+  });
+}
+
+LLAMADART_API bool
+llama_dart_ggml_backend_sched_synchronize(ggml_backend_sched_t sched) {
+  return llama_dart_barrier(false, [sched] {
+    llama_dart_exit_call call;
+    ggml_backend_sched_synchronize(sched);
+    return true;
   });
 }
 

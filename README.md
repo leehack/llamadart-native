@@ -340,14 +340,20 @@ such call caught nothing: each of them clears it on entry, which tells a caught
 exception from a failure that llama.cpp reports through the same value. The
 functions that free an object only set it, since a Dart finalizer may run one
 between a failed call and the read of its error.
-`llama_dart_sampler_accept` is `llama_sampler_accept` behind the barrier. A
-failed `GGML_ASSERT` still aborts. `src/llama_dart_wrapper.h` lists the
-functions without a barrier and what a caller may do with the objects of a
-call that failed.
+The upstream functions that can throw and that a caller would otherwise call
+directly have a wrapper too: `llama_dart_sampler_accept`,
+`llama_dart_sampler_init_grammar_lazy_patterns`, `llama_dart_tokenize`,
+`llama_dart_token_to_piece`, `llama_dart_memory_clear`, the three
+`llama_dart_mtmd_bitmap_init_` functions and the `llama_dart_ggml_backend_`
+functions that reach a backend. `docs/v060_1_wrapper_rebuild.md` classifies
+every upstream function that `llamadart` calls. A failed `GGML_ASSERT` still
+aborts. `src/llama_dart_wrapper.h` lists the functions without a barrier and
+what a caller may do with the objects of a call that failed.
 
 `llamadart_exit_teardown_test` covers it with the `barrier-free`,
-`barrier-grammar` and, on macOS, `model-barrier` scenarios. The grammar ones
-use a model with a vocabulary that the test writes.
+`barrier-grammar` and, on macOS, `model-barrier` and `model-sample-accept`
+scenarios. The grammar ones use a model with a vocabulary that the test
+writes.
 
 ## Vulkan Device Facts
 

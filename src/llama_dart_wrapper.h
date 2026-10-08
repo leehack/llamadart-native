@@ -221,7 +221,8 @@ LLAMADART_API void llama_dart_set_log_level(int level);
 // - a function that returns a pointer returns NULL;
 // - a function that returns bool returns false;
 // - a function that returns an int32_t status or count returns
-//   LLAMA_DART_STATUS_EXCEPTION, which none of them returns otherwise;
+//   LLAMA_DART_STATUS_EXCEPTION, which none of them but llama_dart_tokenize
+//   returns otherwise;
 // - llama_dart_sampler_sample returns LLAMA_TOKEN_NULL, which it does not
 //   return otherwise;
 // - a function that returns size_t returns 0;
@@ -337,7 +338,8 @@ LLAMADART_API int32_t llama_dart_vulkan_get_device_info(
 // - the three llama_dart creating functions named above and
 //   llama_dart_exit_free;
 // - llama_dart_decode, llama_dart_encode and the other llama_dart functions
-//   below that wrap an upstream function of the same name;
+//   below that wrap an upstream function of the same name, and the three
+//   llama_dart_mtmd_bitmap_init functions;
 // - the libllamadart functions that create, free, or run a task, draft or
 //   batch on, TTS, speculative, MTP or n-gram state;
 // - llama_dart_sampler_sample_and_accept_n;
@@ -451,6 +453,50 @@ LLAMADART_API bool llama_dart_sampler_accept(
     struct llama_sampler * smpl,
     llama_token token);
 
+// The grammar constructor that compiles caller-supplied trigger patterns,
+// which throws for a pattern that is not a valid regular expression. NULL
+// after a caught exception, and for a grammar that does not parse.
+// llama_sampler_init_grammar needs no wrapper: it reports a grammar that does
+// not parse by returning NULL.
+LLAMADART_API struct llama_sampler * llama_dart_sampler_init_grammar_lazy_patterns(
+    const struct llama_vocab * vocab,
+    const char * grammar_str,
+    const char * grammar_root,
+    const char ** trigger_patterns,
+    size_t num_trigger_patterns,
+    const llama_token * trigger_tokens,
+    size_t num_trigger_tokens);
+
+// Returns what llama_tokenize returns: the number of tokens, or the negated
+// number needed when n_tokens_max is too small. After a caught exception it
+// returns LLAMA_DART_STATUS_EXCEPTION, which is also llama_tokenize's own
+// value for a result of more than INT32_MAX tokens, so only
+// llama_dart_last_error tells the two apart.
+LLAMADART_API int32_t llama_dart_tokenize(
+    const struct llama_vocab * vocab,
+    const char * text,
+    int32_t text_len,
+    llama_token * tokens,
+    int32_t n_tokens_max,
+    bool add_special,
+    bool parse_special);
+
+// Returns what llama_token_to_piece returns: the number of bytes, or the
+// negated number needed when length is too small. LLAMA_DART_STATUS_EXCEPTION
+// after a caught exception and in no other case. llama.cpp throws for a token
+// that is not in the vocabulary, which includes LLAMA_TOKEN_NULL.
+LLAMADART_API int32_t llama_dart_token_to_piece(
+    const struct llama_vocab * vocab,
+    llama_token token,
+    char * buf,
+    int32_t length,
+    int32_t lstrip,
+    bool special);
+
+// llama_memory_clear, which clears the backend's buffers when data is true.
+// Returns false after a caught exception and true otherwise.
+LLAMADART_API bool llama_dart_memory_clear(llama_memory_t mem, bool data);
+
 LLAMADART_API bool llama_dart_state_save_file(
     struct llama_context * ctx,
     const char * path_session,
@@ -487,6 +533,25 @@ LLAMADART_API size_t llama_dart_state_seq_set_data_ext(
 LLAMADART_API struct llama_adapter_lora * llama_dart_adapter_lora_init(
     struct llama_model * model,
     const char * path_lora);
+
+// The mtmd constructors of an audio or image input, which allocate what they
+// decode. Each returns the bitmap, or NULL when the input cannot be decoded
+// or after a caught exception. Free it with mtmd_bitmap_free.
+// llama_dart_mtmd_bitmap_init_from_buf and _from_file are
+// mtmd_helper_bitmap_init_from_buf and _from_file with upstream's default
+// options and without a placeholder; they return the bitmap of the result.
+LLAMADART_API struct mtmd_bitmap * llama_dart_mtmd_bitmap_init_from_audio(
+    size_t n_samples,
+    const float * data);
+
+LLAMADART_API struct mtmd_bitmap * llama_dart_mtmd_bitmap_init_from_buf(
+    struct mtmd_context * ctx,
+    const unsigned char * buf,
+    size_t len);
+
+LLAMADART_API struct mtmd_bitmap * llama_dart_mtmd_bitmap_init_from_file(
+    struct mtmd_context * ctx,
+    const char * fname);
 
 LLAMADART_API int32_t llama_dart_mtmd_tokenize(
     const struct mtmd_context * ctx,
@@ -534,6 +599,38 @@ LLAMADART_API int32_t llama_dart_mtmd_helper_decode_image_chunk(
 LLAMADART_API enum ggml_status llama_dart_ggml_backend_sched_graph_compute(
     ggml_backend_sched_t sched,
     struct ggml_cgraph * graph);
+
+// The ggml functions that reach a backend, which a GPU backend may answer
+// with an exception: ggml-vulkan throws for a device it does not support and
+// for a Vulkan error. A function that returns a pointer returns NULL after a
+// caught exception. The others return false after one; where upstream
+// returns nothing they return true otherwise.
+LLAMADART_API ggml_backend_t llama_dart_ggml_backend_dev_init(
+    ggml_backend_dev_t device,
+    const char * params);
+
+LLAMADART_API ggml_backend_buffer_t llama_dart_ggml_backend_alloc_ctx_tensors(
+    struct ggml_context * ctx,
+    ggml_backend_t backend);
+
+LLAMADART_API bool llama_dart_ggml_backend_tensor_set(
+    struct ggml_tensor * tensor,
+    const void * data,
+    size_t offset,
+    size_t size);
+
+LLAMADART_API bool llama_dart_ggml_backend_tensor_get(
+    const struct ggml_tensor * tensor,
+    void * data,
+    size_t offset,
+    size_t size);
+
+LLAMADART_API bool llama_dart_ggml_backend_sched_alloc_graph(
+    ggml_backend_sched_t sched,
+    struct ggml_cgraph * graph);
+
+LLAMADART_API bool llama_dart_ggml_backend_sched_synchronize(
+    ggml_backend_sched_t sched);
 
 // Returns the version of libllamadart's stable symbol contract around
 // experimental upstream audio-generation internals.

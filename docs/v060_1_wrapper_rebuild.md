@@ -22,6 +22,24 @@ New exports:
 | `const char * llama_dart_last_error(void)` | `NULL` when the calling thread's last call with a barrier caught nothing |
 | `void llama_dart_clear_last_error(void)` | none |
 | `bool llama_dart_sampler_accept(struct llama_sampler *, llama_token)` | `false` after a caught exception |
+| `struct llama_sampler * llama_dart_sampler_init_grammar_lazy_patterns(const struct llama_vocab *, const char * grammar_str, const char * grammar_root, const char ** trigger_patterns, size_t num_trigger_patterns, const llama_token * trigger_tokens, size_t num_trigger_tokens)` | `NULL`; also llama.cpp's value for a grammar that does not parse, so the last error tells them apart |
+| `int32_t llama_dart_tokenize(const struct llama_vocab *, const char * text, int32_t text_len, llama_token * tokens, int32_t n_tokens_max, bool add_special, bool parse_special)` | `LLAMA_DART_STATUS_EXCEPTION`; `llama_tokenize` returns the same `INT32_MIN` for more than `INT32_MAX` tokens, so the last error tells them apart |
+| `int32_t llama_dart_token_to_piece(const struct llama_vocab *, llama_token, char * buf, int32_t length, int32_t lstrip, bool special)` | `LLAMA_DART_STATUS_EXCEPTION`, in no other case |
+| `bool llama_dart_memory_clear(llama_memory_t, bool data)` | `false`; `true` otherwise (upstream returns nothing) |
+| `struct mtmd_bitmap * llama_dart_mtmd_bitmap_init_from_audio(size_t n_samples, const float * data)` | `NULL` |
+| `struct mtmd_bitmap * llama_dart_mtmd_bitmap_init_from_buf(struct mtmd_context *, const unsigned char * buf, size_t len)` | `NULL`; also for an input that cannot be decoded, so the last error tells them apart |
+| `struct mtmd_bitmap * llama_dart_mtmd_bitmap_init_from_file(struct mtmd_context *, const char * fname)` | as `_from_buf` |
+| `ggml_backend_t llama_dart_ggml_backend_dev_init(ggml_backend_dev_t, const char * params)` | `NULL`; also upstream's failure value |
+| `ggml_backend_buffer_t llama_dart_ggml_backend_alloc_ctx_tensors(struct ggml_context *, ggml_backend_t)` | `NULL`; also upstream's failure value |
+| `bool llama_dart_ggml_backend_tensor_set(struct ggml_tensor *, const void * data, size_t offset, size_t size)` | `false`; `true` otherwise (upstream returns nothing) |
+| `bool llama_dart_ggml_backend_tensor_get(const struct ggml_tensor *, void * data, size_t offset, size_t size)` | `false`; `true` otherwise |
+| `bool llama_dart_ggml_backend_sched_alloc_graph(ggml_backend_sched_t, struct ggml_cgraph *)` | `false`; also upstream's failure value |
+| `bool llama_dart_ggml_backend_sched_synchronize(ggml_backend_sched_t)` | `false`; `true` otherwise |
+
+All of them are calls in flight for exit teardown, like the existing
+wrappers. The two bitmap functions from a buffer and a file take upstream's
+default options and no placeholder and return the `bitmap` of upstream's
+result, which is how `llamadart` calls them.
 
 `enum llama_dart_status { LLAMA_DART_STATUS_EXCEPTION = INT32_MIN }` is the
 value an `int32_t` status or count export returns after a caught exception.
@@ -79,13 +97,76 @@ may skip the destructors of its locals; the exception still reaches the
 barrier.
 
 Not covered: `GGML_ASSERT` and `GGML_ABORT` call `abort`, and a signal is not
-an exception. Upstream functions that a caller reaches without a `llama_dart_`
-wrapper have no barrier. `llamadart` calls these directly today:
-`llama_sampler_accept` (use `llama_dart_sampler_accept`),
-`llama_sampler_init_grammar_lazy_patterns` (a malformed trigger pattern throws
-`std::regex_error`), `llama_tokenize`, `llama_token_to_piece` (an out-of-range
-token throws `std::out_of_range`, which includes `LLAMA_TOKEN_NULL`) and the
-`mtmd` bitmap constructors.
+an exception.
+
+### Upstream functions that llamadart calls directly
+
+Every upstream function that `lib/src/backends/llama_cpp/` of `llamadart`
+calls at `ad31d529e` (0.11.1), outside the generated bindings, with what a
+caller does about exceptions. With this rebuild no function in the right-hand
+column needs a direct call.
+
+Behind a barrier:
+
+| Upstream function | Wrapper |
+| --- | --- |
+| `llama_model_load_from_file`, `llama_init_from_model`, `llama_decode`, `llama_encode`, `llama_synchronize`, `llama_sampler_sample`, `llama_state_save_file`, `llama_state_load_file`, `llama_state_seq_get_size_ext`, `llama_state_seq_get_data_ext`, `llama_state_seq_set_data_ext`, `llama_adapter_lora_init`, `mtmd_init_from_file`, `mtmd_tokenize`, `mtmd_encode_chunk`, `mtmd_helper_eval_chunks`, `mtmd_helper_eval_chunk_single`, `mtmd_helper_decode_image_chunk`, `ggml_backend_sched_graph_compute` | the `llama_dart_` function of the same name, since `v0.5.0-2` |
+| `llama_free`, `llama_model_free`, `mtmd_free` | `llama_dart_exit_free` |
+| `llama_sampler_accept`: a grammar throws for a token it rejects | `llama_dart_sampler_accept` |
+| `llama_sampler_init_grammar_lazy_patterns`: `std::regex_error` for a trigger pattern that is not a valid regular expression | `llama_dart_sampler_init_grammar_lazy_patterns` |
+| `llama_tokenize`: `std::out_of_range` for a byte that the vocabulary has no token for, `std::runtime_error` from the pre-tokenizer's regular expressions | `llama_dart_tokenize` |
+| `llama_token_to_piece`: `std::out_of_range` for a token that is not in the vocabulary, such as `LLAMA_TOKEN_NULL` | `llama_dart_token_to_piece` |
+| `llama_memory_clear`: clears the backend's buffers | `llama_dart_memory_clear` |
+| `mtmd_bitmap_init_from_audio`, `mtmd_helper_bitmap_init_from_buf`, `mtmd_helper_bitmap_init_from_file`: allocate what they decode from caller-supplied media | `llama_dart_mtmd_bitmap_init_from_audio`, `_from_buf`, `_from_file` |
+| `ggml_backend_dev_init`: ggml-vulkan throws `Unsupported device` and Vulkan errors while it creates the device | `llama_dart_ggml_backend_dev_init` |
+| `ggml_backend_alloc_ctx_tensors`, `ggml_backend_tensor_set`, `ggml_backend_tensor_get`, `ggml_backend_sched_alloc_graph`, `ggml_backend_sched_synchronize`: allocate or transfer on the backend, where ggml-vulkan throws `vk::SystemError` | the `llama_dart_ggml_backend_` function of the same name |
+
+Called directly, and why that is safe. Any of them can still throw
+`std::bad_alloc` where it allocates a small object.
+
+| Upstream functions | Why no exception reaches the caller |
+| --- | --- |
+| `ggml_init`, `ggml_free`, `ggml_new_tensor_1d`, `ggml_new_tensor_2d`, `ggml_add`, `ggml_mul`, `ggml_mul_mat`, `ggml_norm`, `ggml_relu`, `ggml_gelu_erf`, `ggml_soft_max_ext`, `ggml_get_rows`, `ggml_cont`, `ggml_cont_2d`, `ggml_permute`, `ggml_transpose`, `ggml_reshape_3d`, `ggml_set_input`, `ggml_set_output`, `ggml_new_graph_custom`, `ggml_build_forward_expand`, `ggml_graph_overhead_custom`, `ggml_tensor_overhead` | `ggml.c` is C; a failed assertion aborts |
+| `ggml_backend_load`, `ggml_backend_load_all`, `ggml_backend_load_all_from_path`, `ggml_backend_register`, and the `ggml_backend_init` and `ggml_backend_score` entry points of a backend module | `ggml-backend-reg.cpp` uses the `std::error_code` file system calls, and a module's registration catches its own exceptions (`ggml_backend_vk_reg`) |
+| `ggml_backend_reg_count`, `ggml_backend_reg_get`, `ggml_backend_reg_by_name`, `ggml_backend_reg_name`, `ggml_backend_reg_dev_count`, `ggml_backend_reg_dev_get`, `ggml_backend_reg_get_proc_address`, `ggml_backend_dev_count`, `ggml_backend_dev_get`, `ggml_backend_dev_by_type`, `ggml_backend_dev_name`, `ggml_backend_dev_type`, `ggml_backend_dev_backend_reg`, `ggml_backend_dev_get_props`, `ggml_backend_dev_memory`, `ggml_backend_get_device`, `ggml_backend_name`, and the CPU backend's thread count setter | read the registry, or query a device that registration already enumerated; none creates a device or allocates on one |
+| `ggml_backend_sched_new`, `ggml_backend_sched_reset`, `ggml_backend_buffer_set_usage` | set up or reset the scheduler's own tables; no backend call |
+| `ggml_backend_free`, `ggml_backend_sched_free`, `ggml_backend_buffer_free`, `llama_sampler_free`, `llama_batch_free`, `llama_adapter_lora_free`, `mtmd_bitmap_free`, `mtmd_input_chunks_free`, `llama_backend_free` | destructors, which do not throw |
+| `llama_backend_init`, `llama_context_default_params`, `llama_model_default_params`, `llama_sampler_chain_default_params`, `llama_supports_gpu_offload`, `llama_max_parallel_sequences`, `llama_batch_init`, `llama_log_get` | return constants or `malloc` |
+| `llama_model_get_vocab`, `llama_model_n_ctx_train`, `llama_model_n_embd`, `llama_model_n_embd_out`, `llama_model_has_encoder`, `llama_model_has_decoder`, `llama_model_is_recurrent`, `llama_model_is_hybrid`, `llama_model_is_diffusion`, `llama_model_ftype`, `llama_model_chat_template`, `llama_model_meta_count`, `llama_model_meta_key_by_index`, `llama_model_meta_val_str`, `llama_model_meta_val_str_by_index`, `llama_adapter_get_alora_n_invocation_tokens`, `llama_adapter_get_alora_invocation_tokens` | read fields and the metadata map of a loaded model |
+| `llama_n_ctx`, `llama_n_ctx_seq`, `llama_n_batch`, `llama_n_ubatch`, `llama_n_seq_max`, `llama_n_rs_seq`, `llama_n_threads_batch`, `llama_pooling_type`, `llama_get_memory`, `llama_perf_context`, `llama_perf_context_reset`, `llama_set_embeddings`, `llama_set_adapters_lora` | read or set fields of a context; the adapter list is applied by the next decode |
+| `llama_memory_seq_rm`, `llama_memory_seq_pos_max` | bookkeeping of the cache cells; no backend call |
+| `llama_get_logits`, `llama_get_logits_ith`, `llama_get_embeddings`, `llama_get_embeddings_ith`, `llama_get_embeddings_seq` | first wait for the backend, which `llama_dart_decode` has already done behind the barrier; llama.cpp catches its own index errors and returns `NULL`, or aborts in a Debug build |
+| `llama_vocab_n_tokens`, `llama_vocab_bos`, `llama_vocab_eos`, `llama_vocab_sep`, `llama_vocab_mask`, `llama_vocab_is_eog`, `llama_vocab_get_suppress_tokens` | read fields of the vocabulary |
+| `llama_vocab_get_text`, `llama_token_get_text` | throw `std::out_of_range` only for a token outside the vocabulary; both call sites pass one read from it, the BOS token after `>= 0` and the mask token after a range check |
+| `llama_sampler_chain_init`, `llama_sampler_chain_add`, `llama_sampler_init_greedy`, `llama_sampler_init_dist`, `llama_sampler_init_top_k`, `llama_sampler_init_top_p`, `llama_sampler_init_min_p`, `llama_sampler_init_temp`, `llama_sampler_init_penalties`, `llama_sampler_init_logit_bias`, `llama_perf_sampler`, `llama_perf_sampler_reset` | allocate and fill a small sampler object |
+| `llama_sampler_init_grammar` | the grammar parser catches its own exceptions and the function returns `NULL` (`llama-grammar.cpp` `parse`); it compiles no regular expression |
+| `mtmd_context_params_default`, `mtmd_helper_init_opt_default`, `mtmd_default_marker`, `mtmd_support_vision`, `mtmd_support_audio`, `mtmd_helper_support_video`, `mtmd_log_set`, `mtmd_helper_log_set`, `mtmd_input_chunks_init`, `mtmd_input_chunks_size`, `mtmd_input_chunks_get`, `mtmd_input_chunk_get_type`, `mtmd_get_output_embd` | return constants, read fields, or create an empty list |
+
+`llamadart` calls no chat template function of llama.cpp and neither
+`llama_detokenize` nor `llama_sampler_apply`.
+
+## Sampler fixes
+
+`llama_dart_sampler_sample_and_accept_n` reimplements llama.cpp's
+`common_sampler_sample_and_accept_n` and differed from it in two ways. Both
+are covered by the `model-sample-accept` scenario with a sampler that records
+what it is made to accept.
+
+- A token that the context's backend sampler chose was accepted twice.
+  `llama_sampler_sample` accepts such a token itself, in every llama.cpp
+  release from `v0.2.0` to `v0.6.0`, and the function accepted it again:
+  measured as one accept through `llama_dart_sampler_sample` and two through
+  `llama_dart_sampler_sample_and_accept_n`. The function now takes the token
+  from the context and accepts it once. Only a context created with
+  `llama_context_params.samplers` has a backend sampler, and `llamadart`
+  creates none, so its generation was not affected; the native releases
+  `v0.2.0` to `v0.6.0` have the defect for a caller that does.
+- The draft tokens after an end of generation were accepted. llama.cpp
+  `v0.6.0` stops when the target samples an end-of-generation token that the
+  draft also predicted and more draft tokens follow, because those tokens are
+  not output. The function went on: for a draft of three with the end of
+  generation second it returned and accepted four tokens, now two. This path
+  is the one `llamadart` uses to verify a speculative draft.
 
 ## Vulkan device facts
 
@@ -246,8 +327,8 @@ python3 tools/validate_exports.py --format nm --tool nm \
 python3 tools/validate_grammar_boundary.py build/v060/libllamadart.dylib
 ```
 
-On macOS arm64 / Apple M4 Max the Debug Metal build passed 42 default CTest
-cases (37 before), 175 Python tests, all 70 required wrapper exports (65
+On macOS arm64 / Apple M4 Max the Debug Metal build passed 43 default CTest
+cases (37 before), 175 Python tests, all 83 required wrapper exports (65
 before) and the grammar repetition boundary. Against the wrapper of `main`,
 sampling a token that the grammar rejects through
 `llama_dart_sampler_sample` ended the process with `libc++abi: terminating
@@ -260,7 +341,7 @@ The barrier scenarios also fail when a call in flight is not ended: making
 on the exception path fails `barrier-grammar` and `barrier-free`.
 
 An Android arm64 Release build of `libllamadart.so` with NDK 28.2 (CPU only)
-compiled both sources and exports the 70 symbols. No pull request lane
+compiled both sources and exports the 83 symbols. No pull request lane
 compiles the wrapper for Android, and none compiles it with MSVC `cl` for
 Windows x64; the Windows ARM64 lane uses clang-cl. Both are first built by
 the release workflow.
@@ -270,4 +351,15 @@ against the pinned, post-v0.4.0 and v0.6.0 upstreams and reads lavapipe
 through the wrapper (`llvmpipe`, API 1.4, loader 1.3, subgroup size 8, with
 `GGML_VK_VISIBLE_DEVICES=0`); `windows-arm64-kleidiai` runs every test that
 needs no backend; `macos-exit-teardown` runs the exit teardown and barrier
-scenarios, including `model-barrier`, in Release and under AddressSanitizer.
+scenarios, including `model-barrier` and `model-sample-accept`, in Release
+and under AddressSanitizer.
+
+Forced exceptions per wrapper family, in `barrier-free` and `barrier-grammar`
+on every platform: a grammar that rejects the accepted token, a trigger
+pattern `(`, `LLAMA_TOKEN_NULL` to `llama_dart_token_to_piece`, a text with a
+byte the vocabulary has no token for, a ggml device whose backend throws
+`Unsupported device` while it is created, and a free function that throws.
+The bitmap constructors, `llama_dart_memory_clear` and the other ggml
+functions have no exception that can be forced without a GPU backend or an
+allocation failure: they are run on valid and on undecodable input, the ggml
+ones on the CPU backend in the macOS `graph` scenario.

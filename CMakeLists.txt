@@ -293,6 +293,7 @@ if (LLAMADART_BUILD_TESTS)
         llamadart_lib Threads::Threads)
     target_include_directories(llamadart_exit_teardown_test PRIVATE
         third_party/llama.cpp/tools/mtmd
+        third_party/llama.cpp/ggml/src
         src
     )
     foreach(scenario dispose order repeat in-flight nested settle timeout
