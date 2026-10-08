@@ -1775,7 +1775,9 @@ int test_barrier_free() {
                                LLAMA_DART_EXIT_STAGE_SESSION));
   assert(llama_dart_exit_track(object, throw_on_free,
                                LLAMA_DART_EXIT_STAGE_SESSION));
+  TRACE("first free");
   llama_dart_exit_free(object);
+  TRACE("first free returned");
   assert(llama_dart_last_error() != nullptr);
   assert(std::string(llama_dart_last_error()) == "free failed");
   // A free that catches nothing keeps the error: a finalizer may run it
@@ -1796,6 +1798,7 @@ int test_barrier_free() {
   llama_dart_clear_last_error();
   assert(llama_dart_last_error() == nullptr);
 
+  TRACE("undecodable");
   // The last error is valid UTF-8 and bounded whatever the message was.
   assert(llama_dart_exit_track(object, throw_undecodable_on_free,
                                LLAMA_DART_EXIT_STAGE_SESSION));
@@ -1804,12 +1807,14 @@ int test_barrier_free() {
   assert(undecodable ==
          "piece: \xEF\xBF\xBD\xEF\xBF\xBD " + std::string(511 - 14, 'x'));
 
+  TRACE("device init");
   // A backend that throws while it is created yields no backend.
   ggml_backend_device device{};
   device.iface.init_backend = throw_on_init;
   assert(llama_dart_ggml_backend_dev_init(&device, nullptr) == nullptr);
   assert(std::string(llama_dart_last_error()) == "Unsupported device");
 
+  TRACE("device queries");
   // So do the queries of a device, which leave nothing half written.
   size_t memory_free = 9;
   size_t memory_total = 9;
@@ -1832,7 +1837,9 @@ int test_barrier_free() {
   assert(std::string(props.name) == "device" && props.memory_total == 4);
   assert(llama_dart_last_error() == nullptr);
 
+  TRACE("stale errors");
   test_barrier_clears_stale_error();
+  TRACE("calls in flight");
 
   assert(calls_in_flight_ended());
   return 0;

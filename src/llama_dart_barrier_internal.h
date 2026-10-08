@@ -58,14 +58,7 @@ static inline size_t llama_dart_utf8_sequence_length(const unsigned char *text) 
 // from llama.cpp may hold part of a character, as the piece of a token does.
 // Each byte that starts no well-formed sequence becomes U+FFFD, and a message
 // that does not fit is cut between characters.
-#if defined(_MSC_VER)
-#define LLAMA_DART_NOINLINE __declspec(noinline)
-#else
-#define LLAMA_DART_NOINLINE __attribute__((noinline))
-#endif
-
-static LLAMA_DART_NOINLINE void
-llama_dart_error_record(const char *message) noexcept {
+static inline void llama_dart_error_record(const char *message) noexcept {
   llama_dart_error_state &error = llama_dart_error;
   const auto *source = reinterpret_cast<const unsigned char *>(
       message != nullptr ? message : "unknown C++ exception");

@@ -878,18 +878,17 @@ static void llama_dart_exit_release(void *object,
     // either the object or its free.
     ++registry.freeing_calls;
   }
-  // Ends the free also when free_fn throws.
-  struct freeing_call {
-    llama_dart_exit_registry &registry;
-    ~freeing_call() {
-      {
-        std::lock_guard<std::mutex> lock(registry.mutex);
-        --registry.freeing_calls;
-      }
-      llama_dart_exit_call_end();
-    }
-  } freeing{registry};
-  free_fn(object);
+  // An exception of free_fn is recorded here, around the call itself, and the
+  // free ends below either way.
+  llama_dart_catch(false, [free_fn, object] {
+    free_fn(object);
+    return true;
+  });
+  {
+    std::lock_guard<std::mutex> lock(registry.mutex);
+    --registry.freeing_calls;
+  }
+  llama_dart_exit_call_end();
 }
 
 // Begins a call in flight on this thread. A creating call is counted as one
