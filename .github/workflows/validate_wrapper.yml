@@ -371,6 +371,7 @@ jobs:
           llamadart_tts_api_test
           llamadart_tts_eval_test
           llamadart_mtmd_compat_test
+          llamadart_barrier_test
           llamadart_vulkan_device_info_test
           llamadart_exit_teardown_test
           llamadart_tts_smoke

@@ -269,9 +269,11 @@ enum llama_dart_status {
 };
 
 // Message of the exception that the calling thread's last function with a
-// barrier caught, or NULL when it caught none. The string is truncated to 511
-// bytes and stays valid until the same thread calls another function with a
-// barrier. Each thread has its own.
+// barrier caught, or NULL when it caught none. The string is valid UTF-8 of
+// at most 511 bytes: a byte of the exception's message that is not part of a
+// well-formed sequence is replaced by U+FFFD, and a longer message is cut
+// between characters. It stays valid until the same thread calls another
+// function with a barrier. Each thread has its own.
 LLAMADART_API const char * llama_dart_last_error(void);
 
 // Clears the calling thread's last error.

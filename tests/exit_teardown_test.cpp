@@ -1558,6 +1558,12 @@ int test_model_tts(const char *path, const char *mmproj_path) {
 
 void throw_on_free(void *) { throw std::runtime_error("free failed"); }
 
+// A message as llama.cpp builds it around the piece of a token: part of a
+// character, and more text than the last error holds.
+void throw_undecodable_on_free(void *) {
+  throw std::runtime_error("piece: \xE2\x96 " + std::string(600, 'x'));
+}
+
 // What ggml-vulkan does for a device it does not support.
 ggml_backend_t throw_on_init(ggml_backend_dev_t, const char *) {
   throw std::runtime_error("Unsupported device");
@@ -1733,6 +1739,14 @@ int test_barrier_free() {
   assert(llama_dart_last_error() != nullptr);
   llama_dart_clear_last_error();
   assert(llama_dart_last_error() == nullptr);
+
+  // The last error is valid UTF-8 and bounded whatever the message was.
+  assert(llama_dart_exit_track(object, throw_undecodable_on_free,
+                               LLAMA_DART_EXIT_STAGE_SESSION));
+  llama_dart_exit_free(object);
+  const std::string undecodable = llama_dart_last_error();
+  assert(undecodable ==
+         "piece: \xEF\xBF\xBD\xEF\xBF\xBD " + std::string(511 - 14, 'x'));
 
   // A backend that throws while it is created yields no backend.
   ggml_backend_device device{};
