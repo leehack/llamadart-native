@@ -234,6 +234,14 @@ LLAMADART_API void llama_dart_set_log_level(int level);
 // own, llama_dart_last_error tells the two apart: each of these functions
 // clears the calling thread's last error when it is called, so after it
 // returns, llama_dart_last_error is non-NULL only if it caught an exception.
+// Read it from the same thread before anything else runs there.
+//
+// The functions that free an object (llama_dart_exit_free and the
+// llama_dart_tts, speculative, mtp and ngram free functions) are the
+// exception: they set the last error when they catch an exception and do not
+// clear it otherwise, because a Dart finalizer may run one on a thread
+// between a call that failed there and the read of its error. Call
+// llama_dart_clear_last_error first to learn whether a free threw.
 //
 // The functions without a barrier are llama_dart_last_error,
 // llama_dart_clear_last_error, llama_dart_set_log_level, the

@@ -39,13 +39,16 @@ Existing exports keep their signatures and gain the barrier:
 | `llama_dart_ggml_backend_sched_graph_compute` | `GGML_STATUS_FAILED` |
 | `llama_dart_tts_start`, `llama_dart_tts_step`, `llama_dart_tts_reset` | `LLAMA_DART_TTS_STATUS_UPSTREAM_ERROR`; the task is `FAILED` and `llama_dart_tts_last_error` has the message |
 | `llama_dart_tts_get_info`, `llama_dart_tts_set_cancel_flag` | `LLAMA_DART_TTS_STATUS_UPSTREAM_ERROR` |
-| `llama_dart_synchronize`, `llama_dart_exit_free`, `llama_dart_tts_free`, `llama_dart_speculative_free`, `llama_dart_mtp_free`, `llama_dart_ngram_free`, `llama_dart_speculative_accept`, `llama_dart_mtp_accept`, `llama_dart_ngram_accept` | nothing returned; `llama_dart_last_error` is set |
+| `llama_dart_synchronize`, `llama_dart_speculative_accept`, `llama_dart_mtp_accept`, `llama_dart_ngram_accept` | nothing returned; `llama_dart_last_error` is set |
+| `llama_dart_exit_free`, `llama_dart_tts_free`, `llama_dart_speculative_free`, `llama_dart_mtp_free`, `llama_dart_ngram_free` | nothing returned; `llama_dart_last_error` is set, and is not cleared when nothing is caught |
 
 `NULL`, `false`, `0`, `GGML_STATUS_FAILED` and
 `LLAMA_DART_TTS_STATUS_UPSTREAM_ERROR` are also what llama.cpp returns for a
 failure of its own. A function with a barrier clears the calling thread's last
 error on entry, so `llama_dart_last_error() != NULL` after the call means a
-caught exception. `LLAMA_DART_STATUS_EXCEPTION` and, from
+caught exception. The functions that free do not clear it: a Dart
+`NativeFinalizer` may run `llama_dart_exit_free` on a thread between a failed
+call and the read of its error. `LLAMA_DART_STATUS_EXCEPTION` and, from
 `llama_dart_sampler_sample`, `LLAMA_TOKEN_NULL` are returned in no other case.
 
 No barrier, and the last error is left unchanged: `llama_dart_set_log_level`,

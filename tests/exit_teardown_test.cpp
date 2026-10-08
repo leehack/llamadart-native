@@ -1552,15 +1552,23 @@ bool calls_in_flight_ended() {
 // libllamadart and is reported as the calling thread's last error.
 int test_barrier_free() {
   static char object[] = "object";
+  static char other[] = "other";
   assert(llama_dart_last_error() == nullptr);
+  assert(llama_dart_exit_track(other, free_named,
+                               LLAMA_DART_EXIT_STAGE_SESSION));
   assert(llama_dart_exit_track(object, throw_on_free,
                                LLAMA_DART_EXIT_STAGE_SESSION));
   llama_dart_exit_free(object);
   assert(llama_dart_last_error() != nullptr);
   assert(std::string(llama_dart_last_error()) == "free failed");
+  // A free that catches nothing keeps the error: a finalizer may run it
+  // before the caller of the failed call has read the error.
+  llama_dart_exit_free(other);
+  assert(recorded() == std::vector<std::string>({"other"}));
+  assert(std::string(llama_dart_last_error()) == "free failed");
   assert(llama_dart_exit_tracked_count() == 0);
 
-  // A call that catches nothing clears it, and so does the caller.
+  // Any other call that catches nothing clears it, and so does the caller.
   assert(llama_dart_exit_track(object, free_named,
                                LLAMA_DART_EXIT_STAGE_SESSION));
   assert(llama_dart_last_error() == nullptr);

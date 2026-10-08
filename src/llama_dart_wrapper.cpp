@@ -81,8 +81,7 @@ static void llama_dart_error_record(const char *message) noexcept {
 // Runs call so that no C++ exception leaves libllamadart: an exception unwinds
 // call, is recorded as the thread's last error, and failure is returned.
 template <typename Result, typename Call>
-static Result llama_dart_barrier(Result failure, Call &&call) noexcept {
-  llama_dart_error.set = false;
+static Result llama_dart_catch(Result failure, Call &&call) noexcept {
   try {
     return call();
   } catch (const std::exception &error) {
@@ -93,9 +92,28 @@ static Result llama_dart_barrier(Result failure, Call &&call) noexcept {
   return failure;
 }
 
+// The same for a call whose caller reads the last error afterwards: it starts
+// with none, so that a last error after the call is this call's.
+template <typename Result, typename Call>
+static Result llama_dart_barrier(Result failure, Call &&call) noexcept {
+  llama_dart_error.set = false;
+  return llama_dart_catch(failure, call);
+}
+
 template <typename Call>
 static void llama_dart_void_barrier(Call &&call) noexcept {
   llama_dart_barrier(false, [&call] {
+    call();
+    return true;
+  });
+}
+
+// For the functions that free an object. A Dart finalizer may run one on a
+// thread between a call that failed there and the read of its error, so they
+// leave the last error alone unless they catch an exception themselves.
+template <typename Call>
+static void llama_dart_free_barrier(Call &&call) noexcept {
+  llama_dart_catch(false, [&call] {
     call();
     return true;
   });
@@ -1182,7 +1200,7 @@ LLAMADART_API bool llama_dart_exit_untrack(void *object) {
 }
 
 LLAMADART_API void llama_dart_exit_free(void *object) {
-  llama_dart_void_barrier(
+  llama_dart_free_barrier(
       [object] { llama_dart_exit_release(object, nullptr); });
 }
 
@@ -1566,7 +1584,7 @@ LLAMADART_API struct llama_dart_tts *llama_dart_tts_init(
 }
 
 LLAMADART_API void llama_dart_tts_free(struct llama_dart_tts *tts) {
-  llama_dart_void_barrier(
+  llama_dart_free_barrier(
       [tts] { llama_dart_exit_release(tts, llama_dart_tts_free_object); });
 }
 
@@ -2084,7 +2102,7 @@ LLAMADART_API struct llama_dart_speculative *llama_dart_speculative_init(
 
 LLAMADART_API void
 llama_dart_speculative_free(struct llama_dart_speculative *speculative) {
-  llama_dart_void_barrier([speculative] {
+  llama_dart_free_barrier([speculative] {
     llama_dart_exit_release(speculative, llama_dart_speculative_free_object);
   });
 }
@@ -2357,7 +2375,7 @@ LLAMADART_API struct llama_dart_mtp *llama_dart_mtp_init_with_draft_model(
 }
 
 LLAMADART_API void llama_dart_mtp_free(struct llama_dart_mtp *mtp) {
-  llama_dart_void_barrier(
+  llama_dart_free_barrier(
       [mtp] { llama_dart_exit_release(mtp, llama_dart_mtp_free_object); });
 }
 
@@ -2538,7 +2556,7 @@ llama_dart_ngram_simple_init(int32_t ngram_size, int32_t draft_token_max) {
 }
 
 LLAMADART_API void llama_dart_ngram_free(struct llama_dart_ngram *ngram) {
-  llama_dart_void_barrier([ngram] {
+  llama_dart_free_barrier([ngram] {
     llama_dart_exit_release(ngram, llama_dart_ngram_free_object);
   });
 }

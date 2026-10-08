@@ -337,7 +337,9 @@ message for the calling thread:
 
 `llama_dart_last_error` returns the message, or `NULL` when the thread's last
 such call caught nothing: each of them clears it on entry, which tells a caught
-exception from a failure that llama.cpp reports through the same value.
+exception from a failure that llama.cpp reports through the same value. The
+functions that free an object only set it, since a Dart finalizer may run one
+between a failed call and the read of its error.
 `llama_dart_sampler_accept` is `llama_sampler_accept` behind the barrier. A
 failed `GGML_ASSERT` still aborts. `src/llama_dart_wrapper.h` lists the
 functions without a barrier and what a caller may do with the objects of a
