@@ -351,11 +351,14 @@ if (LLAMADART_BUILD_TESTS)
                 COMMAND llamadart_exit_teardown_test model-speculative-process
                     "${LLAMADART_EXIT_TEARDOWN_TEST_MODEL}")
         endif()
-        add_test(NAME llamadart_exit_teardown_model-barrier
-            COMMAND llamadart_exit_teardown_test model-barrier
-                "${exit_teardown_vocabulary_model}")
-        set_tests_properties(llamadart_exit_teardown_model-barrier PROPERTIES
-            FIXTURES_REQUIRED llamadart_exit_teardown_vocabulary_model)
+        foreach(scenario model-barrier model-sample-accept)
+            add_test(NAME llamadart_exit_teardown_${scenario}
+                COMMAND llamadart_exit_teardown_test ${scenario}
+                    "${exit_teardown_vocabulary_model}")
+            set_tests_properties(llamadart_exit_teardown_${scenario}
+                PROPERTIES
+                FIXTURES_REQUIRED llamadart_exit_teardown_vocabulary_model)
+        endforeach()
         # llama_encode needs an encoder, which the test also writes.
         set(exit_teardown_encoder
             "${CMAKE_CURRENT_BINARY_DIR}/exit_teardown_test_encoder.gguf")

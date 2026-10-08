@@ -1734,6 +1734,146 @@ int test_model_barrier(const char *path) {
   return 0;
 }
 
+// A sampler that selects the tokens of a script, whatever the logits are, and
+// records what it is made to accept.
+struct scripted_sampler {
+  std::vector<llama_token> script;
+  size_t next = 0;
+  std::vector<llama_token> accepted;
+};
+
+const char *scripted_name(const llama_sampler *) { return "scripted"; }
+
+void scripted_accept(llama_sampler *sampler, llama_token token) {
+  static_cast<scripted_sampler *>(sampler->ctx)->accepted.push_back(token);
+}
+
+void scripted_apply(llama_sampler *sampler, llama_token_data_array *candidates) {
+  auto *state = static_cast<scripted_sampler *>(sampler->ctx);
+  assert(state->next < state->script.size());
+  const llama_token token = state->script[state->next++];
+  for (size_t i = 0; i < candidates->size; ++i) {
+    if (candidates->data[i].id == token) {
+      candidates->selected = static_cast<int64_t>(i);
+      return;
+    }
+  }
+  assert(false && "the scripted token is not a candidate");
+}
+
+llama_sampler *scripted(scripted_sampler *state) {
+  static llama_sampler_i interface = [] {
+    llama_sampler_i value{};
+    value.name = scripted_name;
+    value.accept = scripted_accept;
+    value.apply = scripted_apply;
+    return value;
+  }();
+  return llama_sampler_init(&interface, state);
+}
+
+using tokens = std::vector<llama_token>;
+
+// llama_dart_sampler_sample_and_accept_n makes the sampler accept each token
+// it returns exactly once, also when the context's backend sampler chose it.
+int test_model_sample_accept(const char *path) {
+  llama_backend_init();
+  auto model_params = llama_model_default_params();
+  llama_model *model = llama_dart_model_load_from_file(path, model_params);
+  assert(model != nullptr);
+
+  // Four positions with logits, as a target decode of a draft has them.
+  tokens input = {7, 8, 9, 10};
+  std::vector<llama_pos> positions = {0, 1, 2, 3};
+  std::vector<int32_t> sequence_counts(input.size(), 1);
+  llama_seq_id sequence = 0;
+  std::vector<llama_seq_id *> sequences(input.size(), &sequence);
+  std::vector<int8_t> outputs(input.size(), 1);
+  const llama_batch batch = {static_cast<int32_t>(input.size()),
+                             input.data(),
+                             nullptr,
+                             positions.data(),
+                             sequence_counts.data(),
+                             sequences.data(),
+                             outputs.data()};
+  const std::vector<int32_t> indices = {0, 1, 2, 3};
+  tokens sampled(indices.size(), LLAMA_TOKEN_NULL);
+  const auto sample_and_accept = [&](llama_context *context,
+                                     scripted_sampler &state,
+                                     const tokens &draft) {
+    llama_sampler *sampler = scripted(&state);
+    const int32_t count = llama_dart_sampler_sample_and_accept_n(
+        sampler, context, indices.data(),
+        static_cast<int32_t>(draft.size()) + 1, draft.data(),
+        static_cast<int32_t>(draft.size()), sampled.data(),
+        static_cast<int32_t>(sampled.size()));
+    llama_sampler_free(sampler);
+    assert(count >= 0);
+    return tokens(sampled.begin(), sampled.begin() + count);
+  };
+
+  auto context_params = llama_context_default_params();
+  context_params.n_ctx = 64;
+  llama_context *context = llama_dart_init_from_model(model, context_params);
+  assert(context != nullptr);
+  assert(llama_dart_decode(context, batch) == 0);
+
+  // Every draft token matches: one more token is sampled after them.
+  scripted_sampler all_match{{20, 21, 22, 23}};
+  assert(sample_and_accept(context, all_match, {20, 21, 22}) ==
+         tokens({20, 21, 22, 23}));
+  assert(all_match.accepted == tokens({20, 21, 22, 23}));
+
+  // The first mismatch ends it with the sampler's own token.
+  scripted_sampler mismatch{{20, 30, 22, 23}};
+  assert(sample_and_accept(context, mismatch, {20, 21, 22}) ==
+         tokens({20, 30}));
+  assert(mismatch.accepted == tokens({20, 30}));
+
+  llama_dart_exit_free(context);
+
+  // A context with a backend sampler has chosen the token already.
+  llama_sampler *backend_chain = greedy_sampler();
+  llama_sampler_seq_config backend_sampler = {0, backend_chain};
+  context_params.samplers = &backend_sampler;
+  context_params.n_samplers = 1;
+  context = llama_dart_init_from_model(model, context_params);
+  assert(context != nullptr);
+  llama_token last_input = input.back();
+  assert(llama_dart_decode(context, llama_batch_get_one(&last_input, 1)) == 0);
+  const llama_token chosen = llama_get_sampled_token_ith(context, -1);
+  assert(chosen != LLAMA_TOKEN_NULL);
+
+  scripted_sampler plain;
+  llama_sampler *sampler = scripted(&plain);
+  assert(llama_dart_sampler_sample(sampler, context, -1) == chosen);
+  llama_sampler_free(sampler);
+  fprintf(stderr, "backend-sampled token: llama_dart_sampler_sample made the "
+                  "sampler accept it %zu time(s)\n",
+          plain.accepted.size());
+  assert(plain.accepted == tokens({chosen}));
+
+  scripted_sampler counted;
+  sampler = scripted(&counted);
+  const int32_t last_index = -1;
+  llama_token draft = 0;
+  assert(llama_dart_sampler_sample_and_accept_n(sampler, context, &last_index,
+                                                1, &draft, 0, sampled.data(),
+                                                1) == 1);
+  llama_sampler_free(sampler);
+  fprintf(stderr, "backend-sampled token: "
+                  "llama_dart_sampler_sample_and_accept_n made the sampler "
+                  "accept it %zu time(s)\n",
+          counted.accepted.size());
+  assert(sampled[0] == chosen);
+  assert(counted.accepted == tokens({chosen}));
+
+  llama_dart_exit_free(context);
+  llama_sampler_free(backend_chain);
+  llama_dart_exit_free(model);
+  return 0;
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -1802,6 +1942,9 @@ int main(int argc, char **argv) {
     }
     if (scenario == "model-barrier") {
       return test_model_barrier(first);
+    }
+    if (scenario == "model-sample-accept") {
+      return test_model_sample_accept(first);
     }
     if (scenario == "make-encoder-model") {
       return make_model(first, true);

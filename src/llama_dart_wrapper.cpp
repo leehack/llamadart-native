@@ -2708,15 +2708,16 @@ static int32_t llama_dart_sampler_sample_and_accept_n_impl(
   int32_t count = 0;
   int32_t i = 0;
   const auto sample_and_accept = [sampler, ctx](int32_t idx) {
-    // llama_sampler_sample accepts CPU-sampled tokens itself, but returns
-    // backend-preselected tokens before that accept path.
-    const bool backend_sampled =
-        llama_get_sampled_token_ith(ctx, idx) != LLAMA_TOKEN_NULL;
-    const llama_token id = llama_sampler_sample(sampler, ctx, idx);
-    if (backend_sampled) {
-      llama_sampler_accept(sampler, id);
+    // A token that the context's backend sampler chose is accepted here and
+    // not passed to llama_sampler_sample: whether that accepts such a token
+    // itself depends on the llama.cpp version, and it must be accepted once.
+    // llama_sampler_sample accepts what it samples on the CPU.
+    const llama_token backend_token = llama_get_sampled_token_ith(ctx, idx);
+    if (backend_token != LLAMA_TOKEN_NULL) {
+      llama_sampler_accept(sampler, backend_token);
+      return backend_token;
     }
-    return id;
+    return llama_sampler_sample(sampler, ctx, idx);
   };
 
   for (; i < draft_count; ++i) {
