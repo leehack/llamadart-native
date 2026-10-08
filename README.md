@@ -347,6 +347,34 @@ call that failed.
 `barrier-grammar` and, on macOS, `model-barrier` scenarios. The grammar ones
 use a model with a vocabulary that the test writes.
 
+## Vulkan Device Facts
+
+`llama_dart_vulkan_get_device_count` and `llama_dart_vulkan_get_device_info`
+report, for each device that ggml-vulkan registers, the Vulkan API version of
+the loader and of the device, the subgroup size, the vendor and device ids,
+the device type, the driver version and the name. A caller needs them before
+it uses the Vulkan backend: ggml-vulkan requires Vulkan 1.2 but still
+registers a device whose driver stops at 1.1, and some of its shaders depend
+on the subgroup size.
+
+They read the Vulkan loader directly (`vulkan-1.dll`, `libvulkan.so.1`, or
+`libvulkan.so` on Android), which `libllamadart` opens at run time and does
+not link. They create a Vulkan instance and no logical device, and do not load
+ggml-vulkan. Device `N` is ggml's device `VulkanN`: the selection of
+`ggml_vk_instance_init` is mirrored, including `GGML_VK_VISIBLE_DEVICES`.
+Without a usable loader they return a negative `llama_dart_vulkan_status`,
+and on Apple platforms always `LLAMA_DART_VULKAN_STATUS_UNSUPPORTED`.
+`src/llama_dart_wrapper.h` documents the fields and the two cases where the
+order can differ from ggml's.
+
+`llamadart_vulkan_device_info_test` runs the probe against a table-driven
+loader, and against the machine's own loader. To require a device there:
+
+```bash
+GGML_VK_VISIBLE_DEVICES=0 LLAMADART_TEST_VULKAN_DEVICES=1 \
+  build/wrapper-contract/llamadart_vulkan_device_info_test
+```
+
 ## Experimental TTS Wrapper
 
 `libllamadart` exposes a versioned, opaque C symbol contract around llama.cpp's

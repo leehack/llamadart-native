@@ -353,6 +353,9 @@ jobs:
           git -C third_party/llama.cpp fetch --depth=1 origin "$LLAMADART_QUALIFICATION_SHA"
           git -C third_party/llama.cpp checkout --detach "$LLAMADART_QUALIFICATION_SHA"
           test "$(git -C third_party/llama.cpp rev-parse HEAD)" = "$LLAMADART_QUALIFICATION_SHA"
+      # lavapipe, so that the Vulkan device facts are read from a real loader.
+      - name: Install the Mesa software Vulkan device
+        run: sudo apt-get update && sudo apt-get install -y libvulkan1 mesa-vulkan-drivers
       - name: Configure wrapper contract tests
         run: >-
           cmake -S . -B build/wrapper-contract -G Ninja
@@ -368,10 +371,17 @@ jobs:
           llamadart_tts_api_test
           llamadart_tts_eval_test
           llamadart_mtmd_compat_test
+          llamadart_vulkan_device_info_test
           llamadart_exit_teardown_test
           llamadart_tts_smoke
       - name: Run wrapper contract tests
         run: ctest --test-dir build/wrapper-contract --output-on-failure
+      # ggml-vulkan uses a CPU implementation only when it is asked to.
+      - name: Read the software Vulkan device through the wrapper
+        env:
+          GGML_VK_VISIBLE_DEVICES: '0'
+          LLAMADART_TEST_VULKAN_DEVICES: '1'
+        run: build/wrapper-contract/llamadart_vulkan_device_info_test
       - name: Validate public grammar sampler boundary
         run: python3 tools/validate_grammar_boundary.py build/wrapper-contract/libllamadart.so
       - name: Validate wrapper exports

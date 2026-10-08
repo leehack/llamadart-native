@@ -75,3 +75,70 @@ wrapper have no barrier. `llamadart` calls these directly today:
 `std::regex_error`), `llama_tokenize`, `llama_token_to_piece` (an out-of-range
 token throws `std::out_of_range`, which includes `LLAMA_TOKEN_NULL`) and the
 `mtmd` bitmap constructors.
+
+## Vulkan device facts
+
+`llamadart` needs two facts about the device ggml-vulkan will use before it
+uses it: the subgroup size, because the small matmul tile is wrong at subgroup
+size 16 ([llamadart#948](https://github.com/leehack/llamadart/issues/948)),
+and the device's Vulkan API version, because ggml-vulkan calls a null
+`vkGetBufferDeviceAddress` on a driver below 1.2
+([llamadart#782](https://github.com/leehack/llamadart/issues/782)).
+
+New exports:
+
+| Symbol | Failure semantics |
+| --- | --- |
+| `int32_t llama_dart_vulkan_get_device_count(void)` | number of devices, or a negative `llama_dart_vulkan_status` |
+| `int32_t llama_dart_vulkan_get_device_info(int32_t index, struct llama_dart_vulkan_device_info * out_info)` | `LLAMA_DART_VULKAN_STATUS_OK`, or a negative status; `out_info` is written only for `OK` |
+
+`enum llama_dart_vulkan_status`: `OK` 0, `INVALID_ARGUMENT` -1 (null
+`out_info` or a `struct_size` that is too small), `UNSUPPORTED` -2 (Apple
+platforms, where there is no ggml-vulkan), `NO_LOADER` -3, `LOADER_ERROR` -4
+(no instance, as without any driver), `NO_DEVICE` -5 (index out of range).
+
+`struct llama_dart_vulkan_device_info`: `struct_size`,
+`instance_api_version`, `physical_device_index`, `api_version`,
+`driver_version`, `vendor_id`, `device_id`, `device_type`, `subgroup_size` (all
+`uint32_t`) and `char device_name[256]`.
+
+The probe opens the loader at run time (`vulkan-1.dll`, `libvulkan.so.1`,
+`libvulkan.so` on Android), so `libllamadart` gains no Vulkan link dependency
+and the symbols exist in every build, whichever backends its bundle has. It
+resolves every entry point through `vkGetInstanceProcAddr` and checks it before
+use, calls `vkGetPhysicalDeviceProperties2` and `vkGetPhysicalDeviceFeatures2`
+only when both the loader and the device are at least Vulkan 1.1, and creates
+an instance but no logical device. The result is read once per process.
+
+Device order at `d81235049` (`ggml_vk_instance_init`,
+`ggml/src/ggml-vulkan/ggml-vulkan.cpp`), which the probe mirrors so that index
+`N` is ggml's `VulkanN`:
+
+1. With `GGML_VK_VISIBLE_DEVICES`, exactly the listed loader indices in the
+   listed order; an index out of range leaves ggml without devices.
+2. Otherwise every discrete or integrated GPU with `storageBuffer16BitAccess`,
+   in loader order. Two entries with the same `deviceUUID`, or the same valid
+   `deviceLUID`, are one GPU under two drivers, except when both are MoltenVK:
+   the preferred driver stays, and moves to the end of the list when it
+   replaces the other.
+3. Otherwise the first device that is not a CPU.
+
+ggml refuses to initialize when `vkEnumerateInstanceVersion` is below 1.2 and
+then registers no device; the probe still lists the devices, with
+`instance_api_version`. ggml sets `device->subgroup_size` from
+`VkPhysicalDeviceSubgroupProperties.subgroupSize` and the small matmul tile
+compares that value, which is what `subgroup_size` reports; the minimum and
+maximum of `VK_EXT_subgroup_size_control` only choose the required subgroup
+size of individual pipelines.
+
+Known differences: ggml reads the 16-bit storage feature from
+`VkPhysicalDeviceVulkan11Features`, which a driver below 1.2 does not fill in,
+so its choice for such a device next to other GPUs is undefined; the probe
+reads the equivalent `VkPhysicalDevice16BitStorageFeatures`. ggml holds 16
+devices, and so does the probe. A single GPU is index 0 either way.
+
+Not verified on hardware: a Mali device with subgroup size 16, a device or
+loader below Vulkan 1.2, any Android or Windows loader, and the agreement of
+the mirrored order with a real ggml-vulkan on a machine with several GPUs.
+The table-driven test covers those cases against the code that
+`ggml_vk_instance_init` was read to do, not against ggml-vulkan itself.

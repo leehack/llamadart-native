@@ -133,6 +133,47 @@ struct llama_dart_tts_output_info {
     int64_t sample_count;
 };
 
+enum llama_dart_vulkan_status {
+    LLAMA_DART_VULKAN_STATUS_OK = 0,
+    LLAMA_DART_VULKAN_STATUS_INVALID_ARGUMENT = -1,
+    // This libllamadart is built for a platform without ggml-vulkan, such as
+    // the Apple platforms, and never looks for a Vulkan loader.
+    LLAMA_DART_VULKAN_STATUS_UNSUPPORTED = -2,
+    // The system has no Vulkan loader, or the loader lacks an entry point
+    // that every Vulkan version has.
+    LLAMA_DART_VULKAN_STATUS_NO_LOADER = -3,
+    // The loader could not create an instance or list its devices, as when
+    // no Vulkan driver is installed.
+    LLAMA_DART_VULKAN_STATUS_LOADER_ERROR = -4,
+    // There is no device with this index.
+    LLAMA_DART_VULKAN_STATUS_NO_DEVICE = -5,
+};
+
+struct llama_dart_vulkan_device_info {
+    // Set to sizeof(struct llama_dart_vulkan_device_info) before calling.
+    uint32_t struct_size;
+    // vkEnumerateInstanceVersion, or Vulkan 1.0 where the loader predates
+    // that function. Versions are encoded as VK_MAKE_API_VERSION does: major
+    // in bits 22-28, minor in bits 12-21.
+    uint32_t instance_api_version;
+    // Index of the device in vkEnumeratePhysicalDevices.
+    uint32_t physical_device_index;
+    // VkPhysicalDeviceProperties: apiVersion, driverVersion, vendorID,
+    // deviceID and deviceType (a VkPhysicalDeviceType).
+    uint32_t api_version;
+    uint32_t driver_version;
+    uint32_t vendor_id;
+    uint32_t device_id;
+    uint32_t device_type;
+    // VkPhysicalDeviceSubgroupProperties.subgroupSize, which is what
+    // ggml-vulkan uses as the device's subgroup size. 0 when it cannot be
+    // read: the loader or the device is older than Vulkan 1.1.
+    uint32_t subgroup_size;
+    // VkPhysicalDeviceProperties.deviceName, which is also the description
+    // of the ggml device.
+    char device_name[256];
+};
+
 // Primitive C mirror of the upstream common_params_speculative knobs used by
 // libllamadart. Most positive integer controls override upstream defaults.
 // Fields that accept zero as a meaningful override use negative values as
@@ -198,7 +239,8 @@ LLAMADART_API void llama_dart_set_log_level(int level);
 // llama_dart_clear_last_error, llama_dart_set_log_level, the
 // llama_dart_exit_ functions other than llama_dart_exit_track and
 // llama_dart_exit_free, the draft context and need_embd getters,
-// llama_dart_tts_eval_callback, and the llama_dart_tts_ functions that only
+// llama_dart_tts_eval_callback, the llama_dart_vulkan_ functions, which
+// report through their own status, and the llama_dart_tts_ functions that only
 // read or set fields of the task (api_version, request_default, cancel,
 // get_output_info, read_pcm, last_error). They leave the last error
 // unchanged.
@@ -225,6 +267,38 @@ LLAMADART_API const char * llama_dart_last_error(void);
 
 // Clears the calling thread's last error.
 LLAMADART_API void llama_dart_clear_last_error(void);
+
+// Vulkan device facts
+//
+// The devices that ggml-vulkan registers on this system, read from the Vulkan
+// loader directly: the same devices in the same order, so index N here is
+// ggml's device "VulkanN". The functions create a Vulkan instance and destroy
+// it again. They do not load ggml-vulkan and create no logical device, so they
+// are safe to call before deciding whether to use the Vulkan backend at all,
+// and they work in a libllamadart whose bundle has no ggml-vulkan. The result
+// is read once per process. GGML_VK_VISIBLE_DEVICES is honored as ggml does.
+//
+// ggml-vulkan requires Vulkan 1.2. It registers no device when
+// instance_api_version is below 1.2; the devices are still listed here. It
+// does register a device whose own api_version is below 1.2, and then calls
+// Vulkan 1.2 functions that such a driver does not have, so check both.
+//
+// The order mirrors llama.cpp v0.6.0. Two cases can differ: a device below
+// Vulkan 1.2 next to other GPUs, where ggml reads the 16-bit storage feature
+// from a structure that such a driver does not fill in, and more than 16
+// devices. device_name and the ids identify the device either way.
+
+// Number of devices, or a negative llama_dart_vulkan_status when Vulkan
+// cannot be queried. 0 when the loader works and ggml would use no device,
+// as with only a CPU implementation such as lavapipe.
+LLAMADART_API int32_t llama_dart_vulkan_get_device_count(void);
+
+// Describes device index. Returns LLAMA_DART_VULKAN_STATUS_OK, the negative
+// status that llama_dart_vulkan_get_device_count returns, or NO_DEVICE or
+// INVALID_ARGUMENT. out_info is written only for OK.
+LLAMADART_API int32_t llama_dart_vulkan_get_device_info(
+    int32_t index,
+    struct llama_dart_vulkan_device_info * out_info);
 
 // Exit teardown
 //

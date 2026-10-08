@@ -188,7 +188,19 @@ endif()
 
 llamadart_attach_android_cpu_backend_score(ggml-cpu)
 
-add_library(llamadart_lib SHARED "src/llama_dart_wrapper.cpp")
+add_library(llamadart_lib SHARED
+    "src/llama_dart_wrapper.cpp"
+    "src/llama_dart_vulkan_device_info.cpp")
+# The Vulkan device facts need only the Vulkan types: the loader is opened at
+# run time, so libllamadart links no Vulkan library and loads without one.
+set(LLAMADART_VULKAN_HEADERS_INCLUDE
+    "${CMAKE_CURRENT_SOURCE_DIR}/third_party/Vulkan-Headers/include")
+if (NOT EXISTS "${LLAMADART_VULKAN_HEADERS_INCLUDE}/vulkan/vulkan_core.h")
+    message(FATAL_ERROR "Missing submodule: third_party/Vulkan-Headers. Run: git submodule update --init --recursive")
+endif()
+target_include_directories(llamadart_lib SYSTEM PRIVATE
+    "${LLAMADART_VULKAN_HEADERS_INCLUDE}")
+target_link_libraries(llamadart_lib PRIVATE ${CMAKE_DL_LIBS})
 target_compile_definitions(llamadart_lib PRIVATE
     LLAMADART_MTMD_HELPER_HAS_EMBD_BATCH=$<BOOL:${LLAMADART_MTMD_HELPER_HAS_EMBD_BATCH}>
     LLAMADART_SPECULATIVE_HAS_COMMON_BATCH=$<BOOL:${LLAMADART_SPECULATIVE_HAS_COMMON_BATCH}>
@@ -257,6 +269,17 @@ if (LLAMADART_BUILD_TESTS)
         LLAMADART_MTMD_HELPER_HAS_OPTIONS=$<BOOL:${LLAMADART_MTMD_HELPER_HAS_OPTIONS}>)
     target_link_libraries(llamadart_mtmd_compat_test PRIVATE mtmd)
     add_test(NAME llamadart_mtmd_compat_test COMMAND llamadart_mtmd_compat_test)
+
+    add_executable(llamadart_vulkan_device_info_test
+        tests/vulkan_device_info_test.cpp)
+    target_compile_features(llamadart_vulkan_device_info_test PRIVATE cxx_std_17)
+    target_link_libraries(llamadart_vulkan_device_info_test PRIVATE
+        llamadart_lib)
+    target_include_directories(llamadart_vulkan_device_info_test SYSTEM PRIVATE
+        "${LLAMADART_VULKAN_HEADERS_INCLUDE}")
+    target_include_directories(llamadart_vulkan_device_info_test PRIVATE src)
+    add_test(NAME llamadart_vulkan_device_info_test
+        COMMAND llamadart_vulkan_device_info_test)
 
     add_executable(llamadart_exit_teardown_test tests/exit_teardown_test.cpp)
     target_compile_features(llamadart_exit_teardown_test PRIVATE cxx_std_17)
@@ -353,7 +376,8 @@ if (LLAMADART_BUILD_TESTS)
 
     # Contract assertions must execute against optimized Release libraries too.
     foreach(test_target llamadart_speculative_api_test llamadart_tts_api_test
-            llamadart_tts_eval_test llamadart_exit_teardown_test llamadart_mtmd_compat_test)
+            llamadart_tts_eval_test llamadart_exit_teardown_test llamadart_mtmd_compat_test
+            llamadart_vulkan_device_info_test)
         if (MSVC)
             target_compile_options(${test_target} PRIVATE /UNDEBUG)
         else()
