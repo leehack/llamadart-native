@@ -1613,17 +1613,30 @@ bool calls_in_flight_ended() {
 
 // A free that threw has finished like any other: with nothing left to free,
 // it does not hold up an exit that a call in flight would otherwise delay.
+#define TRACE(step)                                                           \
+  do {                                                                         \
+    fprintf(stderr, "trace: %s\n", step);                                      \
+    fflush(stderr);                                                            \
+  } while (0)
+
 int test_barrier_free_idle() {
   static char object[] = "object";
+  TRACE("track");
   assert(llama_dart_exit_track(object, throw_on_free,
                                LLAMA_DART_EXIT_STAGE_SESSION));
+  TRACE("free");
   llama_dart_exit_free(object);
+  TRACE("freed");
   assert(llama_dart_last_error() != nullptr);
+  TRACE(llama_dart_last_error());
   std::thread([] { llama_dart_exit_call_begin(); }).join();
+  TRACE("joined");
   llama_dart_exit_set_wait_ms(30000);
   const auto started = std::chrono::steady_clock::now();
   llama_dart_exit_teardown();
+  TRACE("torn down");
   assert(elapsed_ms(started) < 5000);
+  TRACE("done");
   return 0;
 }
 
