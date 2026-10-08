@@ -19,7 +19,7 @@ New exports:
 
 | Symbol | Failure semantics |
 | --- | --- |
-| `const char * llama_dart_last_error(void)` | `NULL` when the calling thread's last call with a barrier caught nothing |
+| `const char * llama_dart_last_error(void)` | `NULL` when the calling thread's last call with a barrier caught nothing; otherwise valid UTF-8 of at most 511 bytes |
 | `void llama_dart_clear_last_error(void)` | none |
 | `bool llama_dart_sampler_accept(struct llama_sampler *, llama_token)` | `false` after a caught exception |
 | `struct llama_sampler * llama_dart_sampler_init_grammar_lazy_patterns(const struct llama_vocab *, const char * grammar_str, const char * grammar_root, const char ** trigger_patterns, size_t num_trigger_patterns, const llama_token * trigger_tokens, size_t num_trigger_tokens)` | `NULL`; also llama.cpp's value for a grammar that does not parse, so the last error tells them apart |
@@ -107,6 +107,26 @@ reaches the barrier, but memory or a lock may stay held. After
 `LLAMA_DART_STATUS_EXCEPTION` or any other caught exception on Windows, every
 object that was passed to the call must be freed and not reused, a sampler and
 a model included.
+
+Android: the NDK links the C++ runtime statically (`ANDROID_STL=c++_static`,
+now passed explicitly), so a typed catch in `libllamadart.so` of an exception
+thrown in `libllama.so` works only because one library of the bundle,
+`libggml-base.so`, defines the runtime (`__cxa_throw`, `__cxa_begin_catch`)
+and the type information of `std::exception` and `std::runtime_error`, and the
+others import them from it. `tools/validate_android_artifacts.py` now fails a
+bundle in which more than one library defines them, none does, or
+`libllama.so` or `libllamadart.so` does not import what it throws or catches
+with. `c++_shared` was not chosen: it adds `libc++_shared.so` to the bundle,
+where it clashes with another plugin's or NDK's copy in the same app.
+
+The last error lives in thread-local storage that the record itself never
+allocates. The platform may allocate a thread's block on first access:
+emulated thread-local storage does on Android below API 29, which is what
+these builds target, and so does the dynamic loader for a library loaded with
+`dlopen`. Every barrier touches the storage before the call that may throw,
+so recording `std::bad_alloc` afterwards finds it there. If that first
+allocation fails, the platform aborts before the call has started; that is an
+out-of-memory condition the barrier does not turn into an error.
 
 glibc cancels a thread by a forced unwind, which the barrier's `catch (...)`
 would swallow and glibc then ends the process: a thread inside libllamadart
@@ -350,39 +370,52 @@ python3 tools/validate_exports.py --format nm --tool nm \
 python3 tools/validate_grammar_boundary.py build/v060/libllamadart.dylib
 ```
 
-On macOS arm64 / Apple M4 Max the Debug Metal build passed 43 default CTest
-cases (37 before), 175 Python tests, all 83 required wrapper exports (65
-before) and the grammar repetition boundary. Against the wrapper of `main`,
-sampling a token that the grammar rejects through
-`llama_dart_sampler_sample` ended the process with `libc++abi: terminating
-due to uncaught exception of type std::runtime_error: Unexpected empty grammar
-stack after accepting piece: qb (42)` and status 134; with the barrier the
-same program gets `LLAMA_TOKEN_NULL` and exits with status 0.
+On macOS arm64 / Apple M4 Max the Debug Metal build passed 45 default CTest
+cases (37 before), 183 Python tests (175 before), all 85 required wrapper
+exports (65 before) and the grammar repetition boundary. The same tests pass
+in a RelWithDebInfo build with AddressSanitizer and
+UndefinedBehaviorSanitizer. Against the wrapper of `main`, sampling a token
+that the grammar rejects through `llama_dart_sampler_sample` ended the process
+with `libc++abi: terminating due to uncaught exception of type
+std::runtime_error: Unexpected empty grammar stack after accepting piece: qb
+(42)` and status 134; with the barrier the same program gets
+`LLAMA_TOKEN_NULL` and exits with status 0.
 
-The barrier scenarios also fail when a call in flight is not ended: making
-`llama_dart_sampler_accept` or the free guard skip `llama_dart_exit_call_end`
-on the exception path fails `barrier-grammar` and `barrier-free`.
+Mutations that the tests reject: skipping `llama_dart_exit_call_end` on the
+exception path of `llama_dart_sampler_accept` or of the free guard
+(`barrier-grammar`, `barrier-free`), not restoring the count of frees in
+flight when a free throws (`barrier-free-idle`), calling the Vulkan 1.1
+queries under a 1.0 instance, not moving a replaced driver to the end of the
+device list (`llamadart_vulkan_device_info_test`), not failing the TTS task
+after a caught exception, and not freeing what a creating call made when
+tracking throws (`llamadart_barrier_test`).
 
-An Android arm64 Release build of `libllamadart.so` with NDK 28.2 (CPU only)
-compiled both sources and exports the 83 symbols. No pull request lane
-compiles the wrapper for Android, and none compiles it with MSVC `cl` for
-Windows x64; the Windows ARM64 lane uses clang-cl. Both are first built by
-the release workflow.
+In `validate_wrapper.yml`:
 
-In `validate_wrapper.yml`, `wrapper-contract` runs every test on Linux x64
-against the pinned, post-v0.4.0 and v0.6.0 upstreams and reads lavapipe
-through the wrapper (`llvmpipe`, API 1.4, loader 1.3, subgroup size 8, with
-`GGML_VK_VISIBLE_DEVICES=0`); `windows-arm64-kleidiai` runs every test that
-needs no backend; `macos-exit-teardown` runs the exit teardown and barrier
-scenarios, including `model-barrier` and `model-sample-accept`, in Release
-and under AddressSanitizer.
+- `wrapper-contract` runs every test on Linux x64 against the pinned,
+  post-v0.4.0 and v0.6.0 upstreams and reads lavapipe through the wrapper
+  (`llvmpipe`, API 1.4, loader 1.3, subgroup size 8, with
+  `GGML_VK_VISIBLE_DEVICES=0`).
+- `windows-arm64-kleidiai` runs every test that needs no backend, with
+  clang-cl.
+- `msvc-mtmd-link-contract` builds `libllamadart` with MSVC `cl` for x64, the
+  compiler of the Windows x64 release, runs the barrier, grammar and Vulkan
+  probe tests and validates the exports. Before, it built only `mtmd`.
+- `android-vulkan-shaders`, on the pinned upstream, builds `libllamadart` and
+  the CPU backend with NDK 28.2 in the configuration the release takes its
+  Android core libraries from, and validates the exports and the bundle's
+  shared exception runtime. No lane runs code on Android.
+- `macos-exit-teardown` runs the exit teardown and barrier scenarios,
+  including `model-barrier` and `model-sample-accept`, in Release and under
+  AddressSanitizer.
 
 Forced exceptions per wrapper family, in `barrier-free` and `barrier-grammar`
 on every platform: a grammar that rejects the accepted token, a trigger
 pattern `(`, `LLAMA_TOKEN_NULL` to `llama_dart_token_to_piece`, a text with a
 byte the vocabulary has no token for, a ggml device whose backend throws
-`Unsupported device` while it is created, and a free function that throws.
-The bitmap constructors, `llama_dart_memory_clear` and the other ggml
-functions have no exception that can be forced without a GPU backend or an
-allocation failure: they are run on valid and on undecodable input, the ggml
-ones on the CPU backend in the macOS `graph` scenario.
+`Unsupported device` while it is created or while it is queried, and a free
+function that throws. The bitmap constructors, `llama_dart_memory_clear` and
+the ggml tensor and scheduler functions have no exception that can be forced
+without a GPU backend or an allocation failure: they are run on valid and on
+undecodable input, the ggml ones on the CPU backend in the macOS `graph`
+scenario.

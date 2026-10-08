@@ -2100,14 +2100,14 @@ void scripted_apply(llama_sampler *sampler, llama_token_data_array *candidates) 
 }
 
 llama_sampler *scripted(scripted_sampler *state) {
-  static llama_sampler_i interface = [] {
+  static llama_sampler_i scripted_interface = [] {
     llama_sampler_i value{};
     value.name = scripted_name;
     value.accept = scripted_accept;
     value.apply = scripted_apply;
     return value;
   }();
-  return llama_sampler_init(&interface, state);
+  return llama_sampler_init(&scripted_interface, state);
 }
 
 using tokens = std::vector<llama_token>;

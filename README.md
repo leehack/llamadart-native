@@ -335,11 +335,11 @@ message for the calling thread:
 | `enum llama_dart_tts_status` | `LLAMA_DART_TTS_STATUS_UPSTREAM_ERROR`, and the task fails |
 | `void` | nothing; only the message is kept |
 
-`llama_dart_last_error` returns the message, or `NULL` when the thread's last
-such call caught nothing: each of them clears it on entry, which tells a caught
-exception from a failure that llama.cpp reports through the same value. The
-functions that free an object only set it, since a Dart finalizer may run one
-between a failed call and the read of its error.
+`llama_dart_last_error` returns the message as valid UTF-8, or `NULL` when the
+thread's last such call caught nothing: each of them clears it on entry, which
+tells a caught exception from a failure that llama.cpp reports through the
+same value. The functions that free an object only set it, since a Dart
+finalizer may run one between a failed call and the read of its error.
 The upstream functions that can throw and that a caller would otherwise call
 directly have a wrapper too: `llama_dart_sampler_accept`,
 `llama_dart_sampler_init_grammar_lazy_patterns`, `llama_dart_tokenize`,
@@ -351,9 +351,10 @@ aborts. `src/llama_dart_wrapper.h` lists the functions without a barrier and
 what a caller may do with the objects of a call that failed.
 
 `llamadart_exit_teardown_test` covers it with the `barrier-free`,
-`barrier-grammar` and, on macOS, `model-barrier` and `model-sample-accept`
-scenarios. The grammar ones use a model with a vocabulary that the test
-writes.
+`barrier-free-idle`, `barrier-grammar` and, on macOS, `model-barrier` and
+`model-sample-accept` scenarios. The grammar ones use a model with a
+vocabulary that the test writes. `llamadart_barrier_test` calls the helpers
+behind the barrier directly.
 
 ## Vulkan Device Facts
 
