@@ -1423,6 +1423,35 @@ llama_dart_ggml_backend_dev_init(ggml_backend_dev_t device,
   });
 }
 
+LLAMADART_API bool
+llama_dart_ggml_backend_dev_memory(ggml_backend_dev_t device, size_t *free,
+                                   size_t *total) {
+  const bool read = llama_dart_barrier(false, [device, free, total] {
+    llama_dart_exit_call call;
+    ggml_backend_dev_memory(device, free, total);
+    return true;
+  });
+  if (!read) {
+    *free = 0;
+    *total = 0;
+  }
+  return read;
+}
+
+LLAMADART_API bool
+llama_dart_ggml_backend_dev_get_props(ggml_backend_dev_t device,
+                                      struct ggml_backend_dev_props *props) {
+  const bool read = llama_dart_barrier(false, [device, props] {
+    llama_dart_exit_call call;
+    ggml_backend_dev_get_props(device, props);
+    return true;
+  });
+  if (!read) {
+    memset(props, 0, sizeof(*props));
+  }
+  return read;
+}
+
 LLAMADART_API ggml_backend_buffer_t
 llama_dart_ggml_backend_alloc_ctx_tensors(struct ggml_context *ctx,
                                           ggml_backend_t backend) {

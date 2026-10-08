@@ -51,6 +51,8 @@ DEFAULT_REQUIRED_SYMBOLS = [
     "llama_dart_mtmd_helper_decode_image_chunk",
     "llama_dart_ggml_backend_sched_graph_compute",
     "llama_dart_ggml_backend_dev_init",
+    "llama_dart_ggml_backend_dev_memory",
+    "llama_dart_ggml_backend_dev_get_props",
     "llama_dart_ggml_backend_alloc_ctx_tensors",
     "llama_dart_ggml_backend_tensor_set",
     "llama_dart_ggml_backend_tensor_get",

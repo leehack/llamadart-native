@@ -4,9 +4,14 @@
 #include <cstring>
 #include <exception>
 
-// The calling thread's last caught exception. It has no destructor and needs
-// no allocation, so recording std::bad_alloc cannot fail and nothing is left
-// to destroy when the thread or the process ends.
+// The calling thread's last caught exception. It has no destructor, so nothing
+// is left to destroy when the thread or the process ends, and recording into
+// it allocates nothing. The platform may allocate the storage itself on the
+// thread's first access: emulated thread-local storage on Android does, and so
+// does the dynamic loader for a library loaded with dlopen. Every barrier
+// therefore touches it before the call that may throw, so that recording
+// std::bad_alloc afterwards finds it there. If that first allocation fails,
+// the platform aborts the process, before the call has started.
 struct llama_dart_error_state {
   bool set;
   char message[512];
@@ -109,6 +114,9 @@ static void llama_dart_void_barrier(Call &&call) noexcept {
 // leave the last error alone unless they catch an exception themselves.
 template <typename Call>
 static void llama_dart_free_barrier(Call &&call) noexcept {
+  // Reads the storage without changing it, see llama_dart_error_state.
+  const volatile bool touched = llama_dart_error.set;
+  (void)touched;
   llama_dart_catch(false, [&call] {
     call();
     return true;

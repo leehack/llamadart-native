@@ -30,6 +30,8 @@ New exports:
 | `struct mtmd_bitmap * llama_dart_mtmd_bitmap_init_from_buf(struct mtmd_context *, const unsigned char * buf, size_t len)` | `NULL`; also for an input that cannot be decoded, so the last error tells them apart |
 | `struct mtmd_bitmap * llama_dart_mtmd_bitmap_init_from_file(struct mtmd_context *, const char * fname)` | as `_from_buf` |
 | `ggml_backend_t llama_dart_ggml_backend_dev_init(ggml_backend_dev_t, const char * params)` | `NULL`; also upstream's failure value |
+| `bool llama_dart_ggml_backend_dev_memory(ggml_backend_dev_t, size_t * free, size_t * total)` | `false` with both outputs zero; `true` otherwise (upstream returns nothing) |
+| `bool llama_dart_ggml_backend_dev_get_props(ggml_backend_dev_t, struct ggml_backend_dev_props * props)` | `false` with `props` zeroed; `true` otherwise |
 | `ggml_backend_buffer_t llama_dart_ggml_backend_alloc_ctx_tensors(struct ggml_context *, ggml_backend_t)` | `NULL`; also upstream's failure value |
 | `bool llama_dart_ggml_backend_tensor_set(struct ggml_tensor *, const void * data, size_t offset, size_t size)` | `false`; `true` otherwise (upstream returns nothing) |
 | `bool llama_dart_ggml_backend_tensor_get(const struct ggml_tensor *, void * data, size_t offset, size_t size)` | `false`; `true` otherwise |
@@ -119,6 +121,7 @@ Behind a barrier:
 | `llama_memory_clear`: clears the backend's buffers | `llama_dart_memory_clear` |
 | `mtmd_bitmap_init_from_audio`, `mtmd_helper_bitmap_init_from_buf`, `mtmd_helper_bitmap_init_from_file`: allocate what they decode from caller-supplied media | `llama_dart_mtmd_bitmap_init_from_audio`, `_from_buf`, `_from_file` |
 | `ggml_backend_dev_init`: ggml-vulkan throws `Unsupported device` and Vulkan errors while it creates the device | `llama_dart_ggml_backend_dev_init` |
+| `ggml_backend_dev_memory`, `ggml_backend_dev_get_props`: ggml-vulkan lists the physical devices on each call (`enumeratePhysicalDevices`), which throws `vk::SystemError` when the loader fails | `llama_dart_ggml_backend_dev_memory`, `llama_dart_ggml_backend_dev_get_props` |
 | `ggml_backend_alloc_ctx_tensors`, `ggml_backend_tensor_set`, `ggml_backend_tensor_get`, `ggml_backend_sched_alloc_graph`, `ggml_backend_sched_synchronize`: allocate or transfer on the backend, where ggml-vulkan throws `vk::SystemError` | the `llama_dart_ggml_backend_` function of the same name |
 
 Called directly, and why that is safe. Any of them can still throw
@@ -128,7 +131,7 @@ Called directly, and why that is safe. Any of them can still throw
 | --- | --- |
 | `ggml_init`, `ggml_free`, `ggml_new_tensor_1d`, `ggml_new_tensor_2d`, `ggml_add`, `ggml_mul`, `ggml_mul_mat`, `ggml_norm`, `ggml_relu`, `ggml_gelu_erf`, `ggml_soft_max_ext`, `ggml_get_rows`, `ggml_cont`, `ggml_cont_2d`, `ggml_permute`, `ggml_transpose`, `ggml_reshape_3d`, `ggml_set_input`, `ggml_set_output`, `ggml_new_graph_custom`, `ggml_build_forward_expand`, `ggml_graph_overhead_custom`, `ggml_tensor_overhead` | `ggml.c` is C; a failed assertion aborts |
 | `ggml_backend_load`, `ggml_backend_load_all`, `ggml_backend_load_all_from_path`, `ggml_backend_register`, and the `ggml_backend_init` and `ggml_backend_score` entry points of a backend module | `ggml-backend-reg.cpp` uses the `std::error_code` file system calls, and a module's registration catches its own exceptions (`ggml_backend_vk_reg`) |
-| `ggml_backend_reg_count`, `ggml_backend_reg_get`, `ggml_backend_reg_by_name`, `ggml_backend_reg_name`, `ggml_backend_reg_dev_count`, `ggml_backend_reg_dev_get`, `ggml_backend_reg_get_proc_address`, `ggml_backend_dev_count`, `ggml_backend_dev_get`, `ggml_backend_dev_by_type`, `ggml_backend_dev_name`, `ggml_backend_dev_type`, `ggml_backend_dev_backend_reg`, `ggml_backend_dev_get_props`, `ggml_backend_dev_memory`, `ggml_backend_get_device`, `ggml_backend_name`, and the CPU backend's thread count setter | read the registry, or query a device that registration already enumerated; none creates a device or allocates on one |
+| `ggml_backend_reg_count`, `ggml_backend_reg_get`, `ggml_backend_reg_by_name`, `ggml_backend_reg_name`, `ggml_backend_reg_dev_count`, `ggml_backend_reg_dev_get`, `ggml_backend_reg_get_proc_address`, `ggml_backend_dev_count`, `ggml_backend_dev_get`, `ggml_backend_dev_by_type`, `ggml_backend_dev_name`, `ggml_backend_dev_type`, `ggml_backend_dev_backend_reg`, `ggml_backend_get_device`, `ggml_backend_name`, and the CPU backend's thread count setter | read the registry or what a backend stored when it registered its devices; ggml-vulkan answers the name and the type from its device context |
 | `ggml_backend_sched_new`, `ggml_backend_sched_reset`, `ggml_backend_buffer_set_usage` | set up or reset the scheduler's own tables; no backend call |
 | `ggml_backend_free`, `ggml_backend_sched_free`, `ggml_backend_buffer_free`, `llama_sampler_free`, `llama_batch_free`, `llama_adapter_lora_free`, `mtmd_bitmap_free`, `mtmd_input_chunks_free`, `llama_backend_free` | destructors, which do not throw |
 | `llama_backend_init`, `llama_context_default_params`, `llama_model_default_params`, `llama_sampler_chain_default_params`, `llama_supports_gpu_offload`, `llama_max_parallel_sequences`, `llama_batch_init`, `llama_log_get` | return constants or `malloc` |
@@ -143,7 +146,10 @@ Called directly, and why that is safe. Any of them can still throw
 | `mtmd_context_params_default`, `mtmd_helper_init_opt_default`, `mtmd_default_marker`, `mtmd_support_vision`, `mtmd_support_audio`, `mtmd_helper_support_video`, `mtmd_log_set`, `mtmd_helper_log_set`, `mtmd_input_chunks_init`, `mtmd_input_chunks_size`, `mtmd_input_chunks_get`, `mtmd_input_chunk_get_type`, `mtmd_get_output_embd` | return constants, read fields, or create an empty list |
 
 `llamadart` calls no chat template function of llama.cpp and neither
-`llama_detokenize` nor `llama_sampler_apply`.
+`llama_detokenize` nor `llama_sampler_apply`. `llama_print_system_info` is
+named only by a test of the bindings stub; it appends the registered
+backends' feature lists to a static string and throws nothing but
+`std::bad_alloc`.
 
 ## Sampler fixes
 

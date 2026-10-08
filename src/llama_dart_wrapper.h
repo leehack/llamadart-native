@@ -617,6 +617,18 @@ LLAMADART_API ggml_backend_t llama_dart_ggml_backend_dev_init(
     ggml_backend_dev_t device,
     const char * params);
 
+// Both queries ask the backend again: ggml-vulkan lists the physical devices
+// each time. After a caught exception they return false and the outputs are
+// zero.
+LLAMADART_API bool llama_dart_ggml_backend_dev_memory(
+    ggml_backend_dev_t device,
+    size_t * free,
+    size_t * total);
+
+LLAMADART_API bool llama_dart_ggml_backend_dev_get_props(
+    ggml_backend_dev_t device,
+    struct ggml_backend_dev_props * props);
+
 LLAMADART_API ggml_backend_buffer_t llama_dart_ggml_backend_alloc_ctx_tensors(
     struct ggml_context * ctx,
     ggml_backend_t backend);

@@ -1569,6 +1569,28 @@ ggml_backend_t throw_on_init(ggml_backend_dev_t, const char *) {
   throw std::runtime_error("Unsupported device");
 }
 
+// And for a query of a device when the loader cannot list its devices.
+void throw_on_memory(ggml_backend_dev_t, size_t *free, size_t *total) {
+  *free = 1;
+  *total = 2;
+  throw std::runtime_error("no devices");
+}
+
+void throw_on_props(ggml_backend_dev_t, ggml_backend_dev_props *props) {
+  props->memory_total = 2;
+  throw std::runtime_error("no properties");
+}
+
+void report_memory(ggml_backend_dev_t, size_t *free, size_t *total) {
+  *free = 3;
+  *total = 4;
+}
+
+void report_props(ggml_backend_dev_t, ggml_backend_dev_props *props) {
+  props->name = "device";
+  props->memory_total = 4;
+}
+
 // Whether a thread that holds no call in flight sees the registry idle, which
 // it is only when every call that threw also ended its call in flight.
 // Teardown frees a tracked object only then. It is the last use of the
@@ -1753,6 +1775,28 @@ int test_barrier_free() {
   device.iface.init_backend = throw_on_init;
   assert(llama_dart_ggml_backend_dev_init(&device, nullptr) == nullptr);
   assert(std::string(llama_dart_last_error()) == "Unsupported device");
+
+  // So do the queries of a device, which leave nothing half written.
+  size_t memory_free = 9;
+  size_t memory_total = 9;
+  ggml_backend_dev_props props{};
+  device.iface.get_memory = throw_on_memory;
+  device.iface.get_props = throw_on_props;
+  assert(!llama_dart_ggml_backend_dev_memory(&device, &memory_free,
+                                             &memory_total));
+  assert(std::string(llama_dart_last_error()) == "no devices");
+  assert(memory_free == 0 && memory_total == 0);
+  assert(!llama_dart_ggml_backend_dev_get_props(&device, &props));
+  assert(std::string(llama_dart_last_error()) == "no properties");
+  assert(props.memory_total == 0 && props.name == nullptr);
+  device.iface.get_memory = report_memory;
+  device.iface.get_props = report_props;
+  assert(llama_dart_ggml_backend_dev_memory(&device, &memory_free,
+                                            &memory_total));
+  assert(memory_free == 3 && memory_total == 4);
+  assert(llama_dart_ggml_backend_dev_get_props(&device, &props));
+  assert(std::string(props.name) == "device" && props.memory_total == 4);
+  assert(llama_dart_last_error() == nullptr);
 
   test_barrier_clears_stale_error();
 
