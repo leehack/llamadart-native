@@ -307,7 +307,9 @@ if (LLAMADART_BUILD_TESTS)
     )
     foreach(scenario dispose order repeat in-flight nested settle timeout
             idle-wait own-call blocked exit late-static free-in-flight
-            free-timeout barrier-free barrier-free-idle)
+            free-timeout barrier-free barrier-free-idle diagnose-exe
+            diagnose-exe-ggml diagnose-dll-device diagnose-dll-free-number
+            diagnose-dll-free diagnose-dll-free-thread)
         add_test(NAME llamadart_exit_teardown_${scenario}
             COMMAND llamadart_exit_teardown_test ${scenario})
     endforeach()

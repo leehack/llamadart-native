@@ -1619,6 +1619,50 @@ bool calls_in_flight_ended() {
     fflush(stderr);                                                            \
   } while (0)
 
+void throw_number_on_free(void *) { throw 42; }
+
+// Temporary: tells apart where an exception of this executable is lost on
+// Windows ARM64.
+int test_diagnose(const std::string &which) {
+  static char object[] = "object";
+  ggml_backend_device device{};
+  device.iface.init_backend = throw_on_init;
+  TRACE(which.c_str());
+  if (which == "exe") {
+    try {
+      throw_on_free(nullptr);
+    } catch (const std::exception &error) {
+      TRACE(error.what());
+    }
+  } else if (which == "exe-ggml") {
+    try {
+      ggml_backend_dev_init(&device, nullptr);
+    } catch (const std::exception &error) {
+      TRACE(error.what());
+    }
+  } else if (which == "dll-device") {
+    assert(llama_dart_ggml_backend_dev_init(&device, nullptr) == nullptr);
+    TRACE(llama_dart_last_error());
+  } else if (which == "dll-free-number") {
+    assert(llama_dart_exit_track(object, throw_number_on_free,
+                                 LLAMA_DART_EXIT_STAGE_SESSION));
+    llama_dart_exit_free(object);
+    TRACE(llama_dart_last_error());
+  } else if (which == "dll-free") {
+    assert(llama_dart_exit_track(object, throw_on_free,
+                                 LLAMA_DART_EXIT_STAGE_SESSION));
+    llama_dart_exit_free(object);
+    TRACE(llama_dart_last_error());
+  } else if (which == "dll-free-thread") {
+    assert(llama_dart_exit_track(object, throw_on_free,
+                                 LLAMA_DART_EXIT_STAGE_SESSION));
+    std::thread([] { llama_dart_exit_free(object); }).join();
+    TRACE("joined");
+  }
+  TRACE("done");
+  return 0;
+}
+
 int test_barrier_free_idle() {
   static char object[] = "object";
   TRACE("track");
@@ -2305,6 +2349,9 @@ int main(int argc, char **argv) {
   }
   if (scenario == "barrier-free-idle") {
     return test_barrier_free_idle();
+  }
+  if (scenario.rfind("diagnose-", 0) == 0) {
+    return test_diagnose(scenario.substr(9));
   }
   if (first != nullptr) {
     if (scenario == "make-model") {
