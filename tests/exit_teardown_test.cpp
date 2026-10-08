@@ -1799,6 +1799,18 @@ int test_barrier_free() {
   assert(undecodable ==
          "piece: \xEF\xBF\xBD\xEF\xBF\xBD " + std::string(511 - 14, 'x'));
 
+  // llama.cpp throws for a speculative type it does not know. The creating
+  // function logs that and passes the exception on to its barrier before it
+  // has touched the target context.
+  int target = 0;
+  llama_dart_speculative_params speculative_params{};
+  speculative_params.type_names = "no-such-type";
+  assert(llama_dart_speculative_init(
+             nullptr, nullptr, reinterpret_cast<llama_context *>(&target),
+             llama_context_default_params(), &speculative_params) == nullptr);
+  assert(std::string(llama_dart_last_error()) ==
+         "unknown speculative type: no-such-type");
+
   // A backend that throws while it is created yields no backend.
   ggml_backend_device device{};
   device.iface.init_backend = throw_on_init;

@@ -1992,12 +1992,10 @@ static struct llama_dart_speculative *llama_dart_speculative_init_impl(
       dart_params == nullptr ? default_params : *dart_params;
 
   std::vector<common_speculative_type> types;
+  // The barrier records the message. A typed catch here would be one more
+  // place for the defect described at llama_dart_error_record_current.
   try {
     types = llama_dart_speculative_types_from_params(params_input);
-  } catch (const std::exception &e) {
-    LOG_WRN("%s: failed to resolve speculative types: %s\n", __func__,
-            e.what());
-    throw;
   } catch (...) {
     LOG_WRN("%s: failed to resolve speculative types\n", __func__);
     throw;
@@ -2075,10 +2073,6 @@ static struct llama_dart_speculative *llama_dart_speculative_init_impl(
   speculative->ctx_tgt = target_context;
   try {
     speculative->spec = common_speculative_init(params, 1);
-  } catch (const std::exception &e) {
-    LOG_WRN("%s: failed to initialize common_speculative: %s\n", __func__,
-            e.what());
-    throw;
   } catch (...) {
     LOG_WRN("%s: failed to initialize common_speculative\n", __func__);
     throw;
