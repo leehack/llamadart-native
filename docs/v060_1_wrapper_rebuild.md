@@ -67,6 +67,14 @@ creating function owns its draft context, speculative state and handle until
 the handle is tracked, so an exception leaves no untracked context, which on
 Metal would abort at exit.
 
+Windows: the presets compile with `/EHsc`, under which MSVC and clang-cl
+assume that an `extern "C"` function never throws and remove a `catch` around
+a call to one, which is every llama.cpp call the wrapper makes. `libllamadart`
+is therefore compiled with `/EHsc-`. llama.cpp itself keeps `/EHsc`, so a
+frame of one of its `extern "C"` functions between the throw and the barrier
+may skip the destructors of its locals; the exception still reaches the
+barrier.
+
 Not covered: `GGML_ASSERT` and `GGML_ABORT` call `abort`, and a signal is not
 an exception. Upstream functions that a caller reaches without a `llama_dart_`
 wrapper have no barrier. `llamadart` calls these directly today:
@@ -142,3 +150,121 @@ loader below Vulkan 1.2, any Android or Windows loader, and the agreement of
 the mirrored order with a real ggml-vulkan on a machine with several GPUs.
 The table-driven test covers those cases against the code that
 `ggml_vk_instance_init` was read to do, not against ggml-vulkan itself.
+
+## Exit teardown on Linux: not in this rebuild
+
+Issue: [llamadart#949](https://github.com/leehack/llamadart/issues/949). On
+Linux a C `exit()` while another thread is inside llama.cpp crashes that
+thread: `exit()` destroys function-local C++ statics that it still reads
+(`ggml_backend_cpu_get_extra_buffer_types` in `ggml-cpu/ggml-cpu.cpp`, the
+map behind `unicode_utf8_to_byte` in `src/unicode.cpp`). The exit registry
+is armed on Apple platforms only. Arming it on Linux was left out because it
+does not fix the crash as it stands, and what would fix it is a change to
+every library of the bundle that no lane here can prove.
+
+Why the Apple mechanism does not carry over:
+
+- `exit()` runs one process-wide list of `atexit` and `__cxa_atexit` entries
+  in reverse order of registration, on glibc, musl and bionic alike, and the
+  C++ standard requires that interleaving. The destructor of a function-local
+  static is registered when the static is first constructed, whichever library
+  it belongs to. Library destructors (`.fini_array`,
+  `__attribute__((destructor))`) run from `_dl_fini`, the first entry, and so
+  last.
+- A handler that libllamadart registers therefore runs before the statics
+  that existed when it was registered and after every static constructed
+  later. The map behind `unicode_utf8_to_byte` is first constructed inside a
+  model load (`llama-vocab.cpp:3439`), so for an exit during the first load a
+  handler registered before the load runs after the map is destroyed, and one
+  registered after the load is not registered yet. That is the `quit-loading`
+  frame of the issue.
+- On Apple the wrapper solves this by defining `__cxa_atexit` inside its own
+  image, so that the destructor of every static in the image runs teardown
+  first. That works because llama.cpp and ggml are linked into
+  `libllamadart.dylib`. On Linux, Android and Windows they are separate
+  libraries (`libllama.so`, `libggml-base.so`, `libggml-cpu.so` and the other
+  backend modules), whose registrations bind to the C library's
+  `__cxa_atexit`. A library loaded with `dlopen` cannot interpose that.
+- Registering the plain `atexit` handler when the first object is tracked, as
+  the Apple build also does, would cover only the statics constructed before
+  that moment: likely the `quit-generating` frame, since the CPU buffer type
+  list is built during the load, but not `quit-loading`, and not a static that
+  the first decode, sample or detokenization constructs. It would also free
+  Vulkan and CUDA objects during `exit()` in an order relative to the driver's
+  own exit handlers that nothing controls, where exiting with an idle model
+  is clean today (8 of 8 in the issue). No Linux host was available to
+  measure either effect, and the Linux lanes here load no backend, so they run
+  no model scenario.
+
+Recommended design, for a later rebuild:
+
+1. Compile a small object into every shared library of the bundle that holds
+   llama.cpp statics (`ggml-base`, `ggml`, each `ggml-cpu` variant and backend
+   module, `llama`, `mtmd`, `llama-common`), from this repository's CMake and
+   without patching upstream. It defines a hidden `__cxa_atexit`, as
+   `src/llama_dart_wrapper.cpp` does for Apple, that registers each destructor
+   behind a call to one gate function exported by the lowest library,
+   `libggml-base.so`. libllamadart installs teardown as that gate's callback.
+2. On Linux the gate should only wait for the calls in flight and block new
+   ones, without freeing tracked objects: nothing on Linux aborts over a live
+   buffer, which is the reason Apple frees them, and freeing GPU objects late
+   in `exit()` is the riskier half.
+3. Prove it with a Linux lane that loads the CPU backend module and runs the
+   `model-load-wait` and `model-decode-wait` scenarios of
+   `tests/exit_teardown_test.cpp`, with AddressSanitizer, plus the
+   `quit-loading` and `quit-generating` probes on a GPU host for Vulkan and
+   CUDA.
+
+A call that is not a call in flight is not waited for under any of these, so
+a long native call that bypasses the `llama_dart_` wrappers stays exposed.
+The NVIDIA driver frame of the image-generation probe belongs to
+`stable-diffusion-native`. A native host can already call
+`llama_dart_exit_teardown` itself before `exit`.
+
+Windows, from the documented C runtime behavior and not from a run: `exit()`
+ends in `ExitProcess`, which terminates the other threads before any DLL
+receives `DLL_PROCESS_DETACH`, and each DLL destroys its statics there. A
+worker is gone before the statics it read are destroyed, so this crash has no
+counterpart, and a handler in `llamadart.dll` would run too late to wait for
+anything.
+
+## Checks
+
+```bash
+git submodule update --init --recursive
+cmake -S . -B build/v060 -G Ninja -DCMAKE_BUILD_TYPE=Debug \
+  -DGGML_METAL=ON -DGGML_OPENMP=OFF -DGGML_CCACHE=OFF \
+  -DGGML_CPU_KLEIDIAI=OFF -DLLAMADART_BUILD_TESTS=ON
+cmake --build build/v060 --parallel 8
+ctest --test-dir build/v060 --output-on-failure
+python3 -m unittest discover -s tests -p 'test_*.py'
+python3 tools/validate_exports.py --format nm --tool nm \
+  --forbid-import __cxa_atexit build/v060/libllamadart.dylib
+python3 tools/validate_grammar_boundary.py build/v060/libllamadart.dylib
+```
+
+On macOS arm64 / Apple M4 Max the Debug Metal build passed 42 default CTest
+cases (37 before), 175 Python tests, all 70 required wrapper exports (65
+before) and the grammar repetition boundary. Against the wrapper of `main`,
+sampling a token that the grammar rejects through
+`llama_dart_sampler_sample` ended the process with `libc++abi: terminating
+due to uncaught exception of type std::runtime_error: Unexpected empty grammar
+stack after accepting piece: qb (42)` and status 134; with the barrier the
+same program gets `LLAMA_TOKEN_NULL` and exits with status 0.
+
+The barrier scenarios also fail when a call in flight is not ended: making
+`llama_dart_sampler_accept` or the free guard skip `llama_dart_exit_call_end`
+on the exception path fails `barrier-grammar` and `barrier-free`.
+
+An Android arm64 Release build of `libllamadart.so` with NDK 28.2 (CPU only)
+compiled both sources and exports the 70 symbols. No pull request lane
+compiles the wrapper for Android, and none compiles it with MSVC `cl` for
+Windows x64; the Windows ARM64 lane uses clang-cl. Both are first built by
+the release workflow.
+
+In `validate_wrapper.yml`, `wrapper-contract` runs every test on Linux x64
+against the pinned, post-v0.4.0 and v0.6.0 upstreams and reads lavapipe
+through the wrapper (`llvmpipe`, API 1.4, loader 1.3, subgroup size 8, with
+`GGML_VK_VISIBLE_DEVICES=0`); `windows-arm64-kleidiai` runs every test that
+needs no backend; `macos-exit-teardown` runs the exit teardown and barrier
+scenarios, including `model-barrier`, in Release and under AddressSanitizer.
