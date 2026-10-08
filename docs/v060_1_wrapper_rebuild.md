@@ -123,10 +123,17 @@ The last error lives in thread-local storage that the record itself never
 allocates. The platform may allocate a thread's block on first access:
 emulated thread-local storage does on Android below API 29, which is what
 these builds target, and so does the dynamic loader for a library loaded with
-`dlopen`. Every barrier touches the storage before the call that may throw,
-so recording `std::bad_alloc` afterwards finds it there. If that first
-allocation fails, the platform aborts before the call has started; that is an
-out-of-memory condition the barrier does not turn into an error.
+`dlopen`. A barrier that clears the last error reaches the storage before the
+call that may throw, so recording `std::bad_alloc` afterwards finds it there.
+If that first allocation fails, the platform aborts before the call has
+started; that is an out-of-memory condition the barrier does not turn into an
+error. The functions that free do not clear the last error and so first reach
+the storage when they record an exception: a thread whose first call into
+libllamadart is a free that throws while memory is exhausted may abort
+instead of recording. Reading the storage before the free was tried and
+withdrawn: on the Windows ARM64 clang-cl lane both scenarios with a free
+function that throws then crashed, with the read inline and with it in a
+function of its own, and the cause was not found without such a machine.
 
 glibc cancels a thread by a forced unwind, which the barrier's `catch (...)`
 would swallow and glibc then ends the process: a thread inside libllamadart

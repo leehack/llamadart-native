@@ -8,10 +8,11 @@
 // is left to destroy when the thread or the process ends, and recording into
 // it allocates nothing. The platform may allocate the storage itself on the
 // thread's first access: emulated thread-local storage on Android does, and so
-// does the dynamic loader for a library loaded with dlopen. Every barrier
-// therefore touches it before the call that may throw, so that recording
-// std::bad_alloc afterwards finds it there. If that first allocation fails,
-// the platform aborts the process, before the call has started.
+// does the dynamic loader for a library loaded with dlopen. A barrier that
+// clears the last error reaches the storage before the call that may throw,
+// so that recording std::bad_alloc afterwards finds it there. A barrier of a
+// function that frees does not: see llama_dart_free_barrier. If the platform
+// cannot allocate the storage, it aborts the process.
 struct llama_dart_error_state {
   bool set;
   char message[512];
@@ -111,12 +112,12 @@ static void llama_dart_void_barrier(Call &&call) noexcept {
 
 // For the functions that free an object. A Dart finalizer may run one on a
 // thread between a call that failed there and the read of its error, so they
-// leave the last error alone unless they catch an exception themselves.
+// leave the last error alone unless they catch an exception themselves. They
+// therefore first reach the thread's storage when they record an exception.
+// Reading it before the call, to have it allocated by then, made the
+// Windows ARM64 build crash when a free function threw.
 template <typename Call>
 static void llama_dart_free_barrier(Call &&call) noexcept {
-  // Reads the storage without changing it, see llama_dart_error_state.
-  const volatile bool touched = llama_dart_error.set;
-  (void)touched;
   llama_dart_catch(false, [&call] {
     call();
     return true;
