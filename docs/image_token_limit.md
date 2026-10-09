@@ -31,14 +31,31 @@ CTest cases pass and the export validator finds all 86 required exports.
 A real cached Gemma 4 E2B Q4_K_S model with its F16 projector and a 1600x1600
 RGB image produces 1089 image tokens by default and 484 with an explicit
 512-token limit. The same maintained test optionally takes a model and
-projector path and checks both preprocessing and vision encoding:
+projector path and checks preprocessing. A fourth argument selects a limit and additionally
+encodes the capped image:
 
 ```sh
 build/v060-2/llamadart_image_token_limit_test /path/to/model.gguf /path/to/mmproj.gguf
+build/v060-2/llamadart_image_token_limit_test /path/to/model.gguf /path/to/mmproj.gguf 70
 ```
 
-The encoding smoke is still running at the time of this candidate commit;
-preprocessing results alone are not an encoding or answer-quality claim.
+A full default-image CPU encode was stopped at the bounded limit while still
+computing. The smaller capped encoding smoke is recorded separately; neither
+preprocessing nor encoding alone establishes answer quality.
+
+The upstream resize budget is not a strict ceiling on arbitrary input. A
+source-path control using the exact vendored `mtmd-image.cpp` resize helper
+produced 81 patches for a tiny square at 70 and 715 for a 48x48000 image at 512.
+Minimum-size and patch alignment can overshoot the target. Consumers that
+promise a ceiling must reject oversized image chunks before encoding. The
+prepared Dart consumer does so, on both causal and noncausal projectors, and
+rejects runtimes lacking chunk inspection. Default inputs are unchanged.
+
 Real noncausal Gemma 4 (`gemma4v`) projectors remain unqualified: no matching
 cached projector is available. Gemma 3 remains explicitly unsupported. No
 runtime release, device run or downstream pin change was performed.
+
+The bounded real CPU encode with an explicit limit of 70 passed: default
+preprocessing 1089 patches, capped 64 patches, encoded output shape
+[1536,64,1]. This is real Gemma 4 E2B vision-encoding evidence. It does not
+qualify noncausal Gemma 4v, GPU inference, full text decode or answer quality.

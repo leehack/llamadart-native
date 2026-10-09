@@ -3,6 +3,7 @@
 
 #include <cassert>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <initializer_list>
 #include <vector>
@@ -12,8 +13,9 @@
 #error "Wrapper contract tests require active assertions"
 #endif
 
-static void real_image_limit(const char *model_path, const char *projector_path) {
-  assert(llama_dart_mtmd_supports_image_token_limit(projector_path, 512) == 1);
+static void real_image_limit(const char *model_path, const char *projector_path,
+                             int limit, bool encode) {
+  assert(llama_dart_mtmd_supports_image_token_limit(projector_path, limit) == 1);
   llama_model_params model_params = llama_model_default_params();
   model_params.n_gpu_layers = 0;
   model_params.vocab_only = true;
@@ -28,7 +30,7 @@ static void real_image_limit(const char *model_path, const char *projector_path)
     params.use_gpu = false;
     params.warmup = false;
     params.n_threads = 4;
-    if (run == 1) params.image_max_tokens = 512;
+    if (run == 1) params.image_max_tokens = limit;
     mtmd_context *projector = llama_dart_mtmd_init_from_file(projector_path, model, &params);
     assert(projector != nullptr);
     auto *chunks = mtmd_input_chunks_init();
@@ -39,21 +41,25 @@ static void real_image_limit(const char *model_path, const char *projector_path)
       const auto *chunk = mtmd_input_chunks_get(chunks, i);
       if (mtmd_input_chunk_get_type(chunk) == MTMD_INPUT_CHUNK_TYPE_IMAGE) {
         counts[run] += mtmd_input_chunk_get_n_tokens(chunk);
-        assert(llama_dart_mtmd_encode_chunk(projector, chunk) == 0);
+        if (encode && run == 1) {
+          assert(llama_dart_mtmd_encode_chunk(projector, chunk) == 0);
+        }
       }
     }
     mtmd_input_chunks_free(chunks);
     llama_dart_exit_free(projector);
   }
   std::printf("real image tokens: default=%zu capped=%zu\n", counts[0], counts[1]);
-  assert(counts[0] > 512 && counts[1] > 0 && counts[1] <= 512);
+  assert(counts[0] > static_cast<size_t>(limit) && counts[1] > 0 &&
+         counts[1] <= static_cast<size_t>(limit));
   mtmd_bitmap_free(bitmap);
   llama_dart_exit_free(model);
 }
 
 int main(int argc, char **argv) {
-  if (argc == 3) {
-    real_image_limit(argv[1], argv[2]);
+  if (argc == 3 || argc == 4) {
+    const int limit = argc == 4 ? std::atoi(argv[3]) : 512;
+    real_image_limit(argv[1], argv[2], limit, argc == 4);
     return 0;
   }
   const char *path = "image_token_limit_metadata.gguf";

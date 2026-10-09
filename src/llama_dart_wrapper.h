@@ -459,7 +459,10 @@ LLAMADART_API struct llama_context * llama_dart_init_from_model(
 // Returns 1 for a Gemma 4 vision projector (gemma4v/gemma4uv) and a limit
 // in [70, 1120], 0 for an unsupported projector/limit, -1 for a read error
 // or invalid arguments (llama_dart_last_error describes the error).
-// It is a vision-patch budget, not a limit on prompt/marker tokens. Defaults
+// It is an upstream resize budget: minimum-size/patch alignment can exceed
+// it, especially for extreme aspect ratios. Callers enforcing a ceiling must
+// inspect image-chunk token counts before encoding. It does not limit prompt
+// or marker tokens. Defaults
 // are unchanged unless the caller explicitly sets image_max_tokens.
 LLAMADART_API int32_t llama_dart_mtmd_supports_image_token_limit(
     const char * mmproj_fname, int32_t max_tokens);
