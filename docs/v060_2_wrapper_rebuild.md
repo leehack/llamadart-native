@@ -88,6 +88,63 @@ What the patch does not fix, on this driver:
 Remove the patch when the pinned upstream has an equivalent change, or when
 the S24 run passes without it.
 
+## Null `vkGetBufferDeviceAddress`
+
+Issue: [llamadart#782](https://github.com/leehack/llamadart/issues/782).
+Patch: `0002-vulkan-buffer-device-address-entry-point.patch`.
+
+On a Galaxy A53 5G (`SC-53C`, Mali-G68, Android 16) loading a model on Vulkan
+ends the process: `SIGSEGV` at `pc 0` called from `libggml-vulkan.so`, under
+`ggml_backend_alloc_ctx_tensors_from_buft` and
+`llama_model_base::load_tensors`, with native `v0.5.0-2`.
+
+Root cause at `d81235049`, `ggml/src/ggml-vulkan/`:
+
+- `ggml_vk_instance_init` requires Vulkan 1.2 only of the loader
+  (`vk::enumerateInstanceVersion`, `ggml-vulkan.cpp` lines 5192 to 5197).
+  Nothing compares the `apiVersion` of the device.
+- `ggml_vk_get_device` declares `VkPhysicalDeviceVulkan11Features` and
+  `VkPhysicalDeviceVulkan12Features` without initializing their members (lines
+  4308 to 4316), passes them to `vkGetPhysicalDeviceFeatures2` (line 4475) and
+  takes `buffer_device_address` from `vk12_features.bufferDeviceAddress` (line
+  4518). A driver below Vulkan 1.2 does not know these structures and writes
+  nothing, so the value is what the stack held.
+- `ggml_vk_create_buffer` then calls `getBufferAddress`, the core 1.2
+  `vkGetBufferDeviceAddress` (`ggml-vulkan-buffers.cpp` lines 175 to 177),
+  through a Vulkan-Hpp dispatcher that is initialized from the instance (lines
+  5190 and 5270 of `ggml-vulkan.cpp`) and never from the device. A device
+  without the function makes that a call of a null pointer.
+
+Upstream `master` at `609290be6` (2026-10-09) has the same code, and no
+upstream issue or pull request names it.
+
+The patch asks the created device for the function
+(`vkGetDeviceProcAddr(device, "vkGetBufferDeviceAddress")`, after
+`createDevice` at line 4769) and clears `buffer_device_address`, with a
+warning, when there is none. ggml then creates buffers without
+`eShaderDeviceAddress` and uses the im2col shaders without device addresses,
+as on any device that lacks the feature.
+
+Not known: whether the A53's driver reports itself below Vulkan 1.2. The run
+that crashed recorded no Vulkan version. A driver at 1.2 or later that
+reports the feature without the function would crash the same way, and the
+patch covers both because it tests the function and not the version.
+
+What the patch does not fix: on a device below Vulkan 1.2 the other members
+read from the two structures stay indeterminate (`shaderFloat16`,
+`storageBuffer16BitAccess`, `vulkanMemoryModel`), so ggml-vulkan still needs
+Vulkan 1.2 from the driver. `llamadart` refuses such a device before a load
+from the `api_version` of the `v0.6.0-1` device facts, and then never reaches
+this code. The patch is for a driver at 1.2 or later without the function and
+for a caller that does not check.
+
+No device has run the patch. That the device answers null follows from the
+trace and from the issue's note that initializing the dispatcher from the
+device did not help in stable-diffusion.cpp's copy of this code.
+
+Remove the patch when the pinned upstream checks the device's API version or
+the function before it uses buffer device addresses.
+
 ## Checks
 
 ```bash

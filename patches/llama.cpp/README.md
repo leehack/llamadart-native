@@ -18,8 +18,9 @@ these hold:
 
 - `series.json` lists the patches in the order they apply. Each entry has the
   patch `file`, the `tracking` issue, the `upstream` pull request or issue to
-  watch, and optional `android_markers`: a `library` of the Android bundle and
-  a `text` that only the patched source compiles into it.
+  watch (a permalink to the upstream lines when there is none), and optional
+  `android_markers`: a `library` of the Android bundle and a `text` that only
+  the patched source compiles into it.
 - `NNNN-short-name.patch` is a unified diff (`git diff -U2` inside
   `third_party/llama.cpp`) of one existing `.c`, `.cpp`, `.m` or `.mm` file. A
   patch cannot add a file or edit a header: only a source that an upstream
