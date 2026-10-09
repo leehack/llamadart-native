@@ -145,6 +145,19 @@ device did not help in stable-diffusion.cpp's copy of this code.
 Remove the patch when the pinned upstream checks the device's API version or
 the function before it uses buffer device addresses.
 
+## Device runs owed before release
+
+No lane runs ggml-vulkan on a device, and both patches change behavior only on
+the affected drivers. Before `llamadart` ships with `v0.6.0-2`, on the bundle
+of that tag or of a non-publishing run of the release workflow, Vulkan load
+and generation compared with CPU output on the same device:
+
+| Device | Shows |
+| --- | --- |
+| Galaxy S24 `SC-51E`, Adreno 750, API 36 | stories15M F32 and Qwen3.5-0.8B Q4_0 generate without the crash and equal CPU, this time on llama.cpp `v0.6.0` and through `llamadart` |
+| Galaxy A53 `SC-53C`, Mali-G68, API 36 | the device's Vulkan API version; then a typed refusal or CPU fallback from `llamadart` (below 1.2), or Vulkan output equal to CPU with the warning of patch 0002 in the log (1.2 or later) |
+| Pixel 9 Pro `caiman`, Mali-G715 ([llamadart#948](https://github.com/leehack/llamadart/issues/948)) | no change from `v0.6.0-1`: neither patch applies to this driver |
+
 ## Checks
 
 ```bash
