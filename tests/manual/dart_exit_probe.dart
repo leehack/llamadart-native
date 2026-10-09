@@ -10,7 +10,8 @@
 //     <scenario> <model.gguf>
 //
 // <bundle-dir> holds libllamadart.so and the backend modules. A run is clean
-// when it prints EXIT_PROBE_REACHED and exits with code 0.
+// when it prints EXIT_PROBE_REACHED and exits with code 0. Append -slow-exit
+// to a scenario for a host whose own exit handler takes 300 ms.
 import 'dart:async';
 import 'dart:convert';
 import 'dart:ffi';
@@ -109,7 +110,7 @@ void _generateThenIdle((SendPort, String, String, String, int) a) {
 }
 
 Future<void> main(List<String> args) async {
-  final [shimPath, bundle, scenario, model] = args;
+  final [shimPath, bundle, requested, model] = args;
   final shim = DynamicLibrary.open(shimPath);
   final openLib = shim.lookupFunction<_OpenLibN, _OpenLibD>(
     'shim_open_library',
@@ -128,16 +129,17 @@ Future<void> main(List<String> args) async {
     await ready.first;
   }
 
+  // A scenario with -slow-exit appended has an exit handler that takes 300 ms.
+  // It is registered before libllamadart is opened, and so runs after the
+  // handler of libllamadart.
+  const slowExit = '-slow-exit';
+  final scenario = requested.endsWith(slowExit)
+      ? requested.substring(0, requested.length - slowExit.length)
+      : requested;
+  if (scenario != requested) sleepingAtexit(300);
+
   switch (scenario) {
     case 'control-spin': // no native library at all
-      await spin();
-      _cExit();
-    case 'control-spin-slow-exit': // an exit handler that takes 300 ms
-      sleepingAtexit(300);
-      await spin();
-      _cExit();
-    case 'control-spin-slow-exit-2500':
-      sleepingAtexit(2500);
       await spin();
       _cExit();
     case 'idle-spin': // model idle for longer than the settle time

@@ -16,6 +16,7 @@ from unittest import mock
 from tools.validate_linux_artifact import (
     extract_archive,
     extract_member_safely,
+    is_nodelete,
     parse_imports,
     resolve_tool,
     validate_archive,
@@ -267,9 +268,60 @@ class ValidateLinuxArtifactTest(unittest.TestCase):
             parse_imports(objdump, "objdump"), {"__cxa_finalize", "__cxa_atexit"}
         )
 
+    def test_nodelete_is_read_from_readelf_and_objdump(self) -> None:
+        self.assertTrue(
+            is_nodelete(" 0x000000006ffffffb (FLAGS_1)            Flags: NODELETE\n")
+        )
+        self.assertTrue(
+            is_nodelete(" 0x000000006ffffffb (FLAGS_1)  Flags: NOW NODELETE\n")
+        )
+        self.assertTrue(is_nodelete("  FLAGS_1              0x0000000000000009\n"))
+        self.assertFalse(is_nodelete("  FLAGS_1              0x0000000000000001\n"))
+        self.assertFalse(
+            is_nodelete(" 0x000000006ffffffb (FLAGS_1)            Flags: NOW\n")
+        )
+        self.assertFalse(is_nodelete(" 0x000000000000001e (FLAGS)  BIND_NOW\n"))
+
+    @unittest.skipIf(sys.platform == "win32", "the stand-in tool is a shell script")
+    def test_libllamadart_must_not_be_unloadable(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            archive_path = root / "runtime.tar.gz"
+            with tarfile.open(archive_path, "w:gz") as archive:
+                for name in ("libllamadart.so", "libmtmd.so.0"):
+                    member = tarfile.TarInfo(name)
+                    member.size = 1
+                    archive.addfile(member, BytesIO(b"x"))
+                link = tarfile.TarInfo("libmtmd.so")
+                link.type = tarfile.SYMTYPE
+                link.linkname = "libmtmd.so.0"
+                archive.addfile(link)
+            tool = root / "readelf"
+            tool.write_text(
+                "#!/bin/sh\n"
+                'if [ "$1" = "-d" ]; then\n'
+                "  printf ' 0x000000000000000e (SONAME)  Library soname: [%s]\\n'"
+                ' "$(basename "$2")"\n'
+                "fi\n"
+            )
+            tool.chmod(0o755)
+
+            errors = validate_archive(archive_path, str(tool), "readelf")
+
+        self.assertEqual(
+            errors,
+            [
+                "libllamadart.so: is not linked with -z nodelete, so a dlclose "
+                "leaves its exit handler behind"
+            ],
+        )
+
     @unittest.skipIf(sys.platform == "win32", "the stand-in tool is a shell script")
     def test_a_local_library_must_not_import_cxa_atexit(self) -> None:
-        dynamic = " 0x000000000000000e (SONAME)  Library soname: [{soname}]\n"
+        dynamic = (
+            " 0x000000000000000e (SONAME)  Library soname: [{soname}]\n"
+            " 0x000000006ffffffb (FLAGS_1)  Flags: NODELETE\n"
+        )
         imported = (
             "     1: 0000000000000000     0 FUNC    GLOBAL DEFAULT  UND "
             "__cxa_atexit@GLIBC_2.17 (2)\n"

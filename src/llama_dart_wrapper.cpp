@@ -44,18 +44,13 @@
 #endif
 #endif
 
-// Where C exit() runs exit teardown, or on Linux the wait of it. Android is
-// left out: an exit during a call in flight has not been examined there.
-#if defined(__linux__) && !defined(__ANDROID__)
-#include <dlfcn.h>
+// On Linux with glibc, C exit() runs llama_dart_exit_at_exit. Android is left
+// out: an exit during a call in flight has not been examined there.
+#if defined(__linux__) && defined(__GLIBC__) && !defined(__ANDROID__)
+#include <unistd.h>
 #define LLAMA_DART_EXIT_ON_LINUX 1
 #else
 #define LLAMA_DART_EXIT_ON_LINUX 0
-#endif
-#if defined(__APPLE__) || LLAMA_DART_EXIT_ON_LINUX
-#define LLAMA_DART_EXIT_AT_PROCESS_EXIT 1
-#else
-#define LLAMA_DART_EXIT_AT_PROCESS_EXIT 0
 #endif
 
 // Global log level (0=none, 1=debug, 2=info, 3=warn, 4=error)
@@ -743,32 +738,11 @@ static thread_local bool llama_dart_exit_teardown_thread = false;
 static thread_local int32_t llama_dart_exit_call_depth = 0;
 
 #if LLAMA_DART_EXIT_ON_LINUX
-// Set while teardown waits for the calls in flight, and for good when it gave
-// up waiting or was run by C exit(). A decode or an encode on the CPU backend
-// ends then. One that outlasts the wait is still running when the exit
-// reaches the handlers of other libraries, and the destructor of OpenBLAS
-// never returns while its threads are at work.
-static std::atomic<bool> llama_dart_exit_ending_calls{false};
-
-static bool llama_dart_exit_abort_callback(void *) {
-  return llama_dart_exit_ending_calls.load(std::memory_order_relaxed);
-}
-
-// Whether the teardown that this thread is about to run is the one of C
-// exit(), which only waits.
-static thread_local bool llama_dart_exit_only_waits = false;
-
-// Set, under the registry lock, when C exit() runs teardown: it then frees
-// nothing. Nothing on Linux needs the objects freed, and the exit handlers of
-// a GPU driver may have run already: an exit with a model left loaded is
-// known to be clean, a free among those handlers is not.
+// Set, under the registry lock, once C exit() has reached libllamadart. The
+// exit frees nothing: nothing on Linux needs the objects freed, and the exit
+// handlers of a GPU driver may have run already. An exit with a model left
+// loaded is known to be clean, a free among those handlers is not.
 static std::atomic<bool> llama_dart_exit_keeps_objects{false};
-
-static void llama_dart_exit_wait_at_exit() {
-  llama_dart_exit_only_waits = true;
-  llama_dart_exit_teardown();
-  llama_dart_exit_only_waits = false;
-}
 #endif
 
 // Called with the registry locked. Returns whether the calling thread may go
@@ -788,8 +762,8 @@ static bool llama_dart_exit_admit(llama_dart_exit_registry &registry,
     return true;
   }
 #if LLAMA_DART_EXIT_ON_LINUX
-  // Nothing was freed, so the thread holds nothing that is gone, and blocked
-  // here it would hang an exit handler of the host that joins it.
+  // The exit freed nothing, so the thread holds nothing that is gone, and
+  // blocked here it would hang an exit handler of the host that joins it.
   if (llama_dart_exit_keeps_objects.load()) {
     return false;
   }
@@ -802,16 +776,16 @@ static bool llama_dart_exit_admit(llama_dart_exit_registry &registry,
 
 #if LLAMA_DART_EXIT_ON_LINUX
 // Whether a call in flight that was just begun on this thread was not counted
-// because C exit() has waited already. Such a call must not start work that
-// the exit no longer waits for: its function throws, and the barrier returns
-// the failure value.
+// because C exit() has passed libllamadart already. Such a call must not
+// start work under the rest of the exit: its function throws, and the barrier
+// returns the failure value.
 static bool llama_dart_exit_began_too_late() {
   return llama_dart_exit_call_depth == 0 && !llama_dart_exit_teardown_thread &&
          llama_dart_exit_keeps_objects.load();
 }
 #endif
 
-#if LLAMA_DART_EXIT_AT_PROCESS_EXIT
+#if defined(__APPLE__)
 struct llama_dart_exit_static_destructor {
   void (*destroy)(void *);
   void *object;
@@ -821,11 +795,7 @@ static void llama_dart_exit_destroy_static(void *argument) {
   const auto destructor =
       *static_cast<llama_dart_exit_static_destructor *>(argument);
   free(argument);
-#if LLAMA_DART_EXIT_ON_LINUX
-  llama_dart_exit_wait_at_exit();
-#else
   llama_dart_exit_teardown();
-#endif
   destructor.destroy(destructor.object);
 }
 
@@ -871,6 +841,34 @@ __cxa_atexit(void (*destroy)(void *), void *object, void *dso_handle) {
 }
 #endif
 
+#if LLAMA_DART_EXIT_ON_LINUX
+// What C exit() runs on Linux. With a call in flight on another thread it
+// ends the process there, with the status of the exit and without the rest
+// of the exit: what would follow is the exit handlers and destructors of
+// other libraries, a GPU driver or OpenBLAS among them, which would run under
+// the call. It does not wait for the call instead, because time spent inside
+// exit() is not harmless either: a Dart VM aborts when one of its isolates
+// collects garbage meanwhile, and 20 ms were enough for that. With no call in
+// flight it returns at once and the exit goes on.
+static void llama_dart_exit_at_exit(int status, void *) {
+  auto &registry = llama_dart_exit_state();
+  {
+    std::lock_guard<std::mutex> lock(registry.mutex);
+    if (!registry.torn_down.exchange(true)) {
+      llama_dart_exit_teardown_thread = true;
+      llama_dart_exit_keeps_objects.store(true);
+    }
+    // A call in flight on this thread is the one that is exiting.
+    const int32_t own_calls = llama_dart_exit_call_depth > 0 ? 1 : 0;
+    if (registry.calls == own_calls) {
+      return;
+    }
+  }
+  fflush(nullptr);
+  _exit(status);
+}
+#endif
+
 // Registers teardown to run at exit once something is tracked, so that it
 // does not wait for the first static of this image to be destroyed. atexit
 // handlers run in reverse order of registration, so this one runs after the
@@ -882,20 +880,20 @@ static void llama_dart_exit_arm() {
   }
 #elif LLAMA_DART_EXIT_ON_LINUX
   if (!llama_dart_exit_state().armed.exchange(true)) {
-    atexit(llama_dart_exit_wait_at_exit);
+    on_exit(llama_dart_exit_at_exit, nullptr);
   }
 #endif
 }
 
-// On Linux llama.cpp is not part of this image and its libraries register no
-// static destructors (llama_dart_static_destructors.c), so only a handler
-// runs the wait at exit, and the exit that arrives during the first creating
+// On Linux llama.cpp is not part of this image and no library of the bundle
+// registers static destructors (llama_dart_static_destructors.c), so only a
+// handler sees the exit, and the exit that arrives during the first creating
 // call needs one that was registered before anything is tracked.
 static void llama_dart_exit_arm_creating_call() {
 #if LLAMA_DART_EXIT_ON_LINUX
   static std::atomic<bool> armed{false};
   if (!armed.exchange(true)) {
-    atexit(llama_dart_exit_wait_at_exit);
+    on_exit(llama_dart_exit_at_exit, nullptr);
   }
 #endif
 }
@@ -1096,19 +1094,6 @@ static bool llama_dart_exit_load_progress_callback(float progress,
          caller->callback(progress, caller->user_data);
 }
 
-// On Linux, gives a context without an abort callback the one that ends its
-// evaluations while teardown waits.
-static void llama_dart_exit_end_evaluations_at_exit(
-    llama_context_params &params) {
-#if LLAMA_DART_EXIT_ON_LINUX
-  if (params.abort_callback == nullptr) {
-    params.abort_callback = llama_dart_exit_abort_callback;
-  }
-#else
-  (void)params;
-#endif
-}
-
 static void llama_dart_exit_free_model(void *object) {
   llama_model_free(static_cast<llama_model *>(object));
 }
@@ -1210,9 +1195,6 @@ LLAMADART_API void llama_dart_exit_teardown(void) {
       return;
     }
     llama_dart_exit_teardown_thread = true;
-#if LLAMA_DART_EXIT_ON_LINUX
-    llama_dart_exit_keeps_objects.store(llama_dart_exit_only_waits);
-#endif
     const auto can_free = [&registry](const auto &tracked) {
       return llama_dart_exit_can_free(registry, tracked.second);
     };
@@ -1225,25 +1207,12 @@ LLAMADART_API void llama_dart_exit_teardown(void) {
     }
     // A call in flight on this thread cannot end while teardown runs.
     const int32_t own_calls = llama_dart_exit_call_depth > 0 ? 1 : 0;
-#if LLAMA_DART_EXIT_ON_LINUX
-    llama_dart_exit_ending_calls.store(true);
-#endif
     const bool idle = registry.idle.wait_for(
         lock, std::chrono::milliseconds(registry.wait_ms),
         [&registry, own_calls] { return registry.calls == own_calls; });
     if (!idle) {
       return;
     }
-#if LLAMA_DART_EXIT_ON_LINUX
-    // The exit frees nothing, so it has no reason to let the threads settle:
-    // it takes time only while a call is in flight. Time spent in exit() is
-    // not harmless, as a Dart VM aborts when its isolates run meanwhile.
-    if (llama_dart_exit_keeps_objects.load()) {
-      return;
-    }
-    // The free functions that run next may evaluate.
-    llama_dart_exit_ending_calls.store(false);
-#endif
     registry.idle.wait_until(
         lock, registry.last_call_end + llama_dart_exit_settle_time,
         [] { return false; });
@@ -1289,7 +1258,6 @@ llama_dart_init_from_model(struct llama_model *model,
                            struct llama_context_params params) {
   return llama_dart_barrier<llama_context *>(nullptr, [model, &params] {
     llama_dart_exit_creating_call call;
-    llama_dart_exit_end_evaluations_at_exit(params);
     return llama_dart_exit_track_created(
         llama_init_from_model(model, params), llama_dart_exit_free_context,
         LLAMA_DART_EXIT_STAGE_CONTEXT);
@@ -2187,7 +2155,6 @@ static struct llama_dart_speculative *llama_dart_speculative_init_impl(
     context_params.embeddings = false;
     context_params.ctx_other = target_context;
 
-    llama_dart_exit_end_evaluations_at_exit(context_params);
     speculative->ctx_dft =
         llama_init_from_model(resolved_draft_model, context_params);
     if (speculative->ctx_dft == nullptr) {
@@ -2439,7 +2406,6 @@ static struct llama_dart_mtp *llama_dart_mtp_init_impl(
   ctx_params.embeddings = false;
   ctx_params.ctx_other = ctx_tgt;
 
-  llama_dart_exit_end_evaluations_at_exit(ctx_params);
   // Owns the draft context until the handle does, so that neither a failure
   // nor an exception leaves it behind.
   std::unique_ptr<llama_context, void (*)(llama_context *)> draft_context(

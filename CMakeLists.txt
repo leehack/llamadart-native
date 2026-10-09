@@ -189,7 +189,8 @@ endif()
 llamadart_attach_android_cpu_backend_score(ggml-cpu)
 
 # Adds src/llama_dart_static_destructors.c to every shared library and backend
-# module that llama.cpp builds, whatever backends are enabled.
+# module that llama.cpp builds, whatever backends are enabled. libllamadart
+# gets it below.
 function(llamadart_drop_static_destructors directory)
     get_property(target_names DIRECTORY "${directory}" PROPERTY BUILDSYSTEM_TARGETS)
     foreach(target_name IN LISTS target_names)
@@ -215,6 +216,13 @@ endif()
 add_library(llamadart_lib SHARED
     "src/llama_dart_wrapper.cpp"
     "src/llama_dart_vulkan_device_info.cpp")
+if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    target_sources(llamadart_lib PRIVATE
+        $<TARGET_OBJECTS:llamadart_static_destructors>)
+    # libllamadart registers an exit handler with on_exit, which a dlclose
+    # does not remove, so the library must not be unloaded.
+    target_link_options(llamadart_lib PRIVATE -Wl,-z,nodelete)
+endif()
 # The Vulkan device facts need only the Vulkan types: the loader is opened at
 # run time, so libllamadart links no Vulkan library and loads without one.
 set(LLAMADART_VULKAN_HEADERS_INCLUDE
@@ -385,15 +393,16 @@ if (LLAMADART_BUILD_TESTS)
             set_tests_properties(llamadart_exit_teardown_${scenario} PROPERTIES
                 FIXTURES_REQUIRED llamadart_exit_teardown_model)
         endforeach()
-        # What only Linux does: teardown ends a decode on the CPU backend,
-        # the statics of llama.cpp outlive an exit, and the exit takes time
-        # only for a call in flight and blocks no thread.
+        # What only Linux does: the exit ends the process for a call in
+        # flight, the statics of llama.cpp outlive an exit, and an exit with
+        # no call in flight takes no time and blocks no thread.
         if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
-            add_test(NAME llamadart_exit_teardown_exit-late-calls
-                COMMAND llamadart_exit_teardown_test exit-late-calls)
-            foreach(scenario model-decode-ended model-decode-outlasts-wait
-                    model-exit-idle model-exit-join-idle
-                    model-exit-join-generating)
+            foreach(scenario exit-late-calls exit-status)
+                add_test(NAME llamadart_exit_teardown_${scenario}
+                    COMMAND llamadart_exit_teardown_test ${scenario})
+            endforeach()
+            foreach(scenario model-unguarded-decode model-exit-idle
+                    model-exit-join-idle model-exit-join-generating)
                 add_test(NAME llamadart_exit_teardown_${scenario}
                     COMMAND llamadart_exit_teardown_test ${scenario}
                         "${exit_teardown_model}")

@@ -100,6 +100,19 @@ def inspect_dynamic(path: Path, tool: str, mode: str) -> DynamicMetadata:
     return DynamicMetadata(soname=soname, needed=tuple(needed), raw=raw)
 
 
+def is_nodelete(raw: str) -> bool:
+    """Whether readelf -d or objdump -p output has DF_1_NODELETE set."""
+    for line in raw.splitlines():
+        if "FLAGS_1" not in line:
+            continue
+        if "NODELETE" in line:
+            return True
+        match = re.search(r"FLAGS_1\s+(0x[0-9a-fA-F]+)\s*$", line)
+        if match and int(match.group(1), 16) & 0x8:
+            return True
+    return False
+
+
 def parse_imports(raw: str, mode: str) -> set[str]:
     imports: set[str] = set()
     for line in raw.splitlines():
@@ -263,6 +276,13 @@ def validate_archive(archive_path: Path, tool: str, mode: str) -> list[str]:
             for dependency in dynamic.needed:
                 if dependency.startswith(LOCAL_LIBRARY_PREFIXES) and dependency not in names:
                     errors.append(f"{name}: local DT_NEEDED dependency is absent: {dependency}")
+            # libllamadart registers an exit handler with on_exit, which a
+            # dlclose does not remove: the library must never be unloaded.
+            if name == "libllamadart.so" and not is_nodelete(dynamic.raw):
+                errors.append(
+                    f"{name}: is not linked with -z nodelete, so a dlclose "
+                    "leaves its exit handler behind"
+                )
             if name.startswith(LOCAL_LIBRARY_PREFIXES):
                 try:
                     imports = inspect_imports(root / name, tool, mode)
