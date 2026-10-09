@@ -16,6 +16,7 @@ from unittest import mock
 from tools.validate_linux_artifact import (
     extract_archive,
     extract_member_safely,
+    parse_imports,
     resolve_tool,
     validate_archive,
 )
@@ -237,6 +238,91 @@ class ValidateLinuxArtifactTest(unittest.TestCase):
             "libmtmd.so -> libmtmd.so.0 -> libmtmd.so",
             errors,
         )
+
+    def test_imports_are_the_undefined_dynamic_symbols(self) -> None:
+        readelf = (
+            "Symbol table '.dynsym' contains 4 entries:\n"
+            "   Num:    Value          Size Type    Bind   Vis      Ndx Name\n"
+            "     0: 0000000000000000     0 NOTYPE  LOCAL  DEFAULT  UND \n"
+            "     1: 0000000000000000     0 FUNC    WEAK   DEFAULT  UND "
+            "__cxa_finalize@GLIBC_2.17 (2)\n"
+            "     2: 0000000000000000     0 FUNC    GLOBAL DEFAULT  UND "
+            "__cxa_atexit@GLIBC_2.17 (2)\n"
+            "     3: 0000000000004b20    64 FUNC    GLOBAL DEFAULT   12 "
+            "llama_decode\n"
+        )
+        self.assertEqual(
+            parse_imports(readelf, "readelf"), {"__cxa_finalize", "__cxa_atexit"}
+        )
+        objdump = (
+            "DYNAMIC SYMBOL TABLE:\n"
+            "0000000000000000  w   DF *UND*\t0000000000000000 (GLIBC_2.17) "
+            "__cxa_finalize\n"
+            "0000000000000000      DF *UND*\t0000000000000000 (GLIBC_2.17) "
+            "__cxa_atexit\n"
+            "0000000000004b20 g    DF .text\t0000000000000040  Base        "
+            "llama_decode\n"
+        )
+        self.assertEqual(
+            parse_imports(objdump, "objdump"), {"__cxa_finalize", "__cxa_atexit"}
+        )
+
+    @unittest.skipIf(sys.platform == "win32", "the stand-in tool is a shell script")
+    def test_a_local_library_must_not_import_cxa_atexit(self) -> None:
+        dynamic = " 0x000000000000000e (SONAME)  Library soname: [{soname}]\n"
+        imported = (
+            "     1: 0000000000000000     0 FUNC    GLOBAL DEFAULT  UND "
+            "__cxa_atexit@GLIBC_2.17 (2)\n"
+        )
+        defined = (
+            "     1: 000000000000f900     8 FUNC    LOCAL  DEFAULT   11 "
+            "__cxa_atexit\n"
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            archive_path = root / "runtime.tar.gz"
+            names = (
+                "libllamadart.so",
+                "libmtmd.so.0",
+                "libggml-cuda.so",
+                "libopenblas.so.0",
+            )
+            with tarfile.open(archive_path, "w:gz") as archive:
+                for name in names:
+                    member = tarfile.TarInfo(name)
+                    member.size = 1
+                    archive.addfile(member, BytesIO(b"x"))
+                link = tarfile.TarInfo("libmtmd.so")
+                link.type = tarfile.SYMTYPE
+                link.linkname = "libmtmd.so.0"
+                archive.addfile(link)
+
+            # Answers readelf -d with the file's own name as its SONAME, and
+            # the symbol listing with the text under test.
+            symbols = root / "symbols.txt"
+            tool = root / "readelf"
+            tool.write_text(
+                "#!/bin/sh\n"
+                'if [ "$1" = "-d" ]; then\n'
+                f"  printf '{dynamic.format(soname='%s')}' \"$(basename \"$2\")\"\n"
+                "else\n"
+                f'  cat "{symbols}"\n'
+                "fi\n"
+            )
+            tool.chmod(0o755)
+
+            symbols.write_text(imported)
+            errors = validate_archive(archive_path, str(tool), "readelf")
+            self.assertEqual(
+                errors,
+                [
+                    f"{name}: imports __cxa_atexit, so C exit() destroys its statics"
+                    for name in ("libggml-cuda.so", "libllamadart.so", "libmtmd.so.0")
+                ],
+            )
+
+            symbols.write_text(defined)
+            self.assertEqual(validate_archive(archive_path, str(tool), "readelf"), [])
 
     def test_missing_explicit_tool_reports_a_clean_cli_error(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

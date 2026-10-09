@@ -43,6 +43,20 @@
 #endif
 #endif
 
+// Where C exit() runs exit teardown, or on Linux the wait of it. Android is
+// left out: an exit during a call in flight has not been examined there.
+#if defined(__linux__) && !defined(__ANDROID__)
+#include <dlfcn.h>
+#define LLAMA_DART_EXIT_ON_LINUX 1
+#else
+#define LLAMA_DART_EXIT_ON_LINUX 0
+#endif
+#if defined(__APPLE__) || LLAMA_DART_EXIT_ON_LINUX
+#define LLAMA_DART_EXIT_AT_PROCESS_EXIT 1
+#else
+#define LLAMA_DART_EXIT_AT_PROCESS_EXIT 0
+#endif
+
 // Global log level (0=none, 1=debug, 2=info, 3=warn, 4=error)
 static std::atomic<int> g_dart_log_level{3}; // Default to WARN
 // Track last non-CONT severity so continuation lines inherit proper level.
@@ -749,7 +763,31 @@ static bool llama_dart_exit_admit(llama_dart_exit_registry &registry,
   }
 }
 
-#if defined(__APPLE__)
+#if LLAMA_DART_EXIT_ON_LINUX
+// Set while teardown waits for the calls in flight, and for good when it gave
+// up waiting. A decode or an encode on the CPU backend ends then. One that
+// outlasts the wait is still running when the exit reaches the handlers of
+// other libraries, and the destructor of OpenBLAS never returns while its
+// threads are at work.
+static std::atomic<bool> llama_dart_exit_ending_calls{false};
+
+static bool llama_dart_exit_abort_callback(void *) {
+  return llama_dart_exit_ending_calls.load(std::memory_order_relaxed);
+}
+
+// Set when C exit() runs teardown, which then frees nothing. Nothing on Linux
+// needs the objects freed, and the exit handlers of a GPU driver may have run
+// already: an exit with a model left loaded is known to be clean, a free
+// among those handlers is not.
+static std::atomic<bool> llama_dart_exit_keeps_objects{false};
+
+static void llama_dart_exit_wait_at_exit() {
+  llama_dart_exit_keeps_objects.store(true);
+  llama_dart_exit_teardown();
+}
+#endif
+
+#if LLAMA_DART_EXIT_AT_PROCESS_EXIT
 struct llama_dart_exit_static_destructor {
   void (*destroy)(void *);
   void *object;
@@ -759,7 +797,11 @@ static void llama_dart_exit_destroy_static(void *argument) {
   const auto destructor =
       *static_cast<llama_dart_exit_static_destructor *>(argument);
   free(argument);
+#if LLAMA_DART_EXIT_ON_LINUX
+  llama_dart_exit_wait_at_exit();
+#else
   llama_dart_exit_teardown();
+#endif
   destructor.destroy(destructor.object);
 }
 
@@ -813,6 +855,23 @@ static void llama_dart_exit_arm() {
 #if defined(__APPLE__)
   if (!llama_dart_exit_state().armed.exchange(true)) {
     atexit(llama_dart_exit_teardown);
+  }
+#elif LLAMA_DART_EXIT_ON_LINUX
+  if (!llama_dart_exit_state().armed.exchange(true)) {
+    atexit(llama_dart_exit_wait_at_exit);
+  }
+#endif
+}
+
+// On Linux llama.cpp is not part of this image and its libraries register no
+// static destructors (llama_dart_static_destructors.c), so only a handler
+// runs the wait at exit, and the exit that arrives during the first creating
+// call needs one that was registered before anything is tracked.
+static void llama_dart_exit_arm_creating_call() {
+#if LLAMA_DART_EXIT_ON_LINUX
+  static std::atomic<bool> armed{false};
+  if (!armed.exchange(true)) {
+    atexit(llama_dart_exit_wait_at_exit);
   }
 #endif
 }
@@ -923,7 +982,10 @@ struct llama_dart_exit_call {
 // A call in flight that tracks what it creates. Teardown waits for it even
 // when nothing is tracked yet.
 struct llama_dart_exit_creating_call {
-  llama_dart_exit_creating_call() { llama_dart_exit_begin_call(true); }
+  llama_dart_exit_creating_call() {
+    llama_dart_exit_arm_creating_call();
+    llama_dart_exit_begin_call(true);
+  }
   ~llama_dart_exit_creating_call() {
     {
       auto &registry = llama_dart_exit_state();
@@ -1106,15 +1168,27 @@ LLAMADART_API void llama_dart_exit_teardown(void) {
     }
     // A call in flight on this thread cannot end while teardown runs.
     const int32_t own_calls = llama_dart_exit_call_depth > 0 ? 1 : 0;
+#if LLAMA_DART_EXIT_ON_LINUX
+    llama_dart_exit_ending_calls.store(true);
+#endif
     const bool idle = registry.idle.wait_for(
         lock, std::chrono::milliseconds(registry.wait_ms),
         [&registry, own_calls] { return registry.calls == own_calls; });
     if (!idle) {
       return;
     }
+#if LLAMA_DART_EXIT_ON_LINUX
+    // The free functions that run next may evaluate.
+    llama_dart_exit_ending_calls.store(false);
+#endif
     registry.idle.wait_until(
         lock, registry.last_call_end + llama_dart_exit_settle_time,
         [] { return false; });
+#if LLAMA_DART_EXIT_ON_LINUX
+    if (llama_dart_exit_keeps_objects.load()) {
+      return;
+    }
+#endif
     std::copy_if(registry.objects.begin(), registry.objects.end(),
                  std::back_inserter(objects), can_free);
   }
@@ -1157,6 +1231,11 @@ llama_dart_init_from_model(struct llama_model *model,
                            struct llama_context_params params) {
   return llama_dart_barrier<llama_context *>(nullptr, [model, &params] {
     llama_dart_exit_creating_call call;
+#if LLAMA_DART_EXIT_ON_LINUX
+    if (params.abort_callback == nullptr) {
+      params.abort_callback = llama_dart_exit_abort_callback;
+    }
+#endif
     return llama_dart_exit_track_created(
         llama_init_from_model(model, params), llama_dart_exit_free_context,
         LLAMA_DART_EXIT_STAGE_CONTEXT);

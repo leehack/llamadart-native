@@ -188,6 +188,30 @@ endif()
 
 llamadart_attach_android_cpu_backend_score(ggml-cpu)
 
+# Adds src/llama_dart_static_destructors.c to every shared library and backend
+# module that llama.cpp builds, whatever backends are enabled.
+function(llamadart_drop_static_destructors directory)
+    get_property(target_names DIRECTORY "${directory}" PROPERTY BUILDSYSTEM_TARGETS)
+    foreach(target_name IN LISTS target_names)
+        get_target_property(target_type ${target_name} TYPE)
+        if (target_type STREQUAL "SHARED_LIBRARY" OR target_type STREQUAL "MODULE_LIBRARY")
+            target_sources(${target_name} PRIVATE
+                $<TARGET_OBJECTS:llamadart_static_destructors>)
+        endif()
+    endforeach()
+    get_property(subdirectories DIRECTORY "${directory}" PROPERTY SUBDIRECTORIES)
+    foreach(subdirectory IN LISTS subdirectories)
+        llamadart_drop_static_destructors("${subdirectory}")
+    endforeach()
+endfunction()
+
+if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    add_library(llamadart_static_destructors OBJECT
+        "src/llama_dart_static_destructors.c")
+    llamadart_drop_static_destructors(
+        "${CMAKE_CURRENT_SOURCE_DIR}/third_party/llama.cpp")
+endif()
+
 add_library(llamadart_lib SHARED
     "src/llama_dart_wrapper.cpp"
     "src/llama_dart_vulkan_device_info.cpp")
@@ -306,8 +330,8 @@ if (LLAMADART_BUILD_TESTS)
         src
     )
     foreach(scenario dispose order repeat in-flight nested settle timeout
-            idle-wait own-call blocked exit late-static free-in-flight
-            free-timeout barrier-free barrier-free-idle)
+            idle-wait own-call blocked exit exit-in-flight late-static
+            free-in-flight free-timeout barrier-free barrier-free-idle)
         add_test(NAME llamadart_exit_teardown_${scenario}
             COMMAND llamadart_exit_teardown_test ${scenario})
     endforeach()
@@ -325,14 +349,19 @@ if (LLAMADART_BUILD_TESTS)
             "${exit_teardown_vocabulary_model}")
     set_tests_properties(llamadart_exit_teardown_barrier-grammar PROPERTIES
         FIXTURES_REQUIRED llamadart_exit_teardown_vocabulary_model)
-    # Teardown runs at exit on Apple only, and only there are the backends part
-    # of libllamadart, so the scenarios that load a model run there. They use a
-    # model the test writes itself unless one is given.
+    # Teardown runs at exit on Apple and Linux, so the scenarios that load a
+    # model run there. They use a model the test writes itself unless one is
+    # given. On Linux the backends are modules, of which the test loads the
+    # CPU one.
     set(LLAMADART_EXIT_TEARDOWN_TEST_MODEL "" CACHE FILEPATH
         "GGUF model for the exit teardown tests instead of the generated one")
     set(LLAMADART_EXIT_TEARDOWN_TEST_MMPROJ "" CACHE FILEPATH
         "GGUF multimodal projector of that model for the mtmd exit teardown tests")
-    if (APPLE)
+    if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        target_compile_definitions(llamadart_exit_teardown_test PRIVATE
+            LLAMADART_TEST_CPU_BACKEND="$<TARGET_FILE:ggml-cpu>")
+    endif()
+    if (APPLE OR CMAKE_SYSTEM_NAME STREQUAL "Linux")
         add_test(NAME llamadart_exit_teardown_graph
             COMMAND llamadart_exit_teardown_test graph)
         set(exit_teardown_model "${LLAMADART_EXIT_TEARDOWN_TEST_MODEL}")
@@ -356,6 +385,18 @@ if (LLAMADART_BUILD_TESTS)
             set_tests_properties(llamadart_exit_teardown_${scenario} PROPERTIES
                 FIXTURES_REQUIRED llamadart_exit_teardown_model)
         endforeach()
+        # What only Linux does: teardown ends a decode on the CPU backend,
+        # and the statics of llama.cpp outlive an exit.
+        if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
+            foreach(scenario model-decode-ended model-decode-outlasts-wait)
+                add_test(NAME llamadart_exit_teardown_${scenario}
+                    COMMAND llamadart_exit_teardown_test ${scenario}
+                        "${exit_teardown_model}")
+                set_tests_properties(llamadart_exit_teardown_${scenario}
+                    PROPERTIES
+                    FIXTURES_REQUIRED llamadart_exit_teardown_model)
+            endforeach()
+        endif()
         if (LLAMADART_EXIT_TEARDOWN_TEST_MODEL)
             add_test(NAME llamadart_exit_teardown_model-speculative-process
                 COMMAND llamadart_exit_teardown_test model-speculative-process

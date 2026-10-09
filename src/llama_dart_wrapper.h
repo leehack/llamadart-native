@@ -352,8 +352,26 @@ LLAMADART_API int32_t llama_dart_vulkan_get_device_info(
 // or hot restart does. ggml-metal aborts in its static destructor while any
 // Metal buffer is still allocated, so teardown has to run before that
 // destructor. On Apple platforms it runs during exit, before the first static
-// of libllamadart is destroyed. Elsewhere it runs only when
-// llama_dart_exit_teardown is called.
+// of libllamadart is destroyed.
+//
+// On Linux, Android excepted, C exit() runs the wait of teardown and frees
+// nothing. By the time the exit goes on to what other libraries do at exit,
+// the calls in flight have ended and every thread that reaches libllamadart
+// is blocked. Nothing on Linux needs the objects freed, and an exit with a
+// model left loaded is known to be clean, which a free among the exit
+// handlers of a GPU driver is not. llama.cpp is not part of libllamadart
+// there, and its libraries register no static destructors: their statics stay
+// valid until the process is gone, also under a call that the wait does not
+// cover. The wait begins when the exit reaches the handler that libllamadart
+// registers at the first creating call and again when the first object is
+// tracked, so an exit handler that another library registers later runs
+// before it. While teardown waits, on Linux a decode or an encode on the CPU
+// backend ends with the status llama.cpp has for an aborted one, 2, unless
+// its context has an abort callback of its own. quick_exit and _exit run
+// nothing.
+//
+// Elsewhere nothing runs at exit. llama_dart_exit_teardown runs teardown, and
+// frees, on every platform.
 //
 // Objects are tracked, before the creating call returns, by
 // llama_dart_model_load_from_file, llama_dart_init_from_model,
@@ -449,7 +467,9 @@ LLAMADART_API struct llama_model * llama_dart_model_load_from_file(
     struct llama_model_params params);
 
 // llama_init_from_model that tracks the context in the CONTEXT stage. Free it
-// with llama_dart_exit_free. Blocks after teardown.
+// with llama_dart_exit_free. On Linux, when params has no abort callback, the
+// context gets the one that ends its evaluations while teardown waits;
+// llama_set_abort_callback replaces it. Blocks after teardown.
 LLAMADART_API struct llama_context * llama_dart_init_from_model(
     struct llama_model * model,
     struct llama_context_params params);

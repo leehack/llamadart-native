@@ -464,15 +464,49 @@ int test_blocked() {
   return 0;
 }
 
+// C exit() runs teardown on Apple platforms. On Linux it runs the wait of
+// teardown and frees nothing, and teardown ends a decode or an encode on the
+// CPU backend while it waits for the calls in flight, with llama.cpp's status
+// for an aborted one.
 #if defined(__APPLE__)
-const bool kTeardownRunsAtExit = true;
+const bool kExitFreesObjects = true;
+const bool kExitWaitsForCalls = true;
+const bool kTeardownEndsEvaluations = false;
+#elif defined(__linux__) && !defined(__ANDROID__)
+const bool kExitFreesObjects = false;
+const bool kExitWaitsForCalls = true;
+const bool kTeardownEndsEvaluations = true;
 #else
-const bool kTeardownRunsAtExit = false;
+const bool kExitFreesObjects = false;
+const bool kExitWaitsForCalls = false;
+const bool kTeardownEndsEvaluations = false;
 #endif
+
+// Set by a scenario before the teardown that an evaluation may run into.
+std::atomic<bool> g_teardown_expected{false};
+
+bool evaluated(int32_t status) {
+  return status == 0 || (status == 2 && kTeardownEndsEvaluations &&
+                         g_teardown_expected.load());
+}
+
+// Where the backends are modules next to the llama.cpp libraries and not part
+// of libllamadart, a scenario that computes has to load one. The CPU backend
+// alone keeps the scenarios the same whatever other modules the build has.
+void load_backend_modules() {
+#if defined(LLAMADART_TEST_CPU_BACKEND)
+  assert(ggml_backend_load(LLAMADART_TEST_CPU_BACKEND) != nullptr);
+#endif
+}
+
+void init_backends() {
+  llama_backend_init();
+  load_backend_modules();
+}
 
 void expect_freed_at_exit() {
   const std::vector<std::string> expected =
-      kTeardownRunsAtExit ? kStageOrder : std::vector<std::string>();
+      kExitFreesObjects ? kStageOrder : std::vector<std::string>();
   if (recorded() != expected) {
     fprintf(stderr, "exit teardown freed %zu objects, expected %zu\n",
             recorded().size(), expected.size());
@@ -484,6 +518,37 @@ int test_exit() {
   // Registered first, so it runs after the teardown registered by tracking.
   assert(atexit(expect_freed_at_exit) == 0);
   track_out_of_stage_order();
+  return 0;
+}
+
+std::atomic<bool> g_call_ended{false};
+
+void expect_call_ended_at_exit() {
+  if (kExitWaitsForCalls && !g_call_ended.load()) {
+    fprintf(stderr, "the exit did not wait for the call in flight\n");
+    _Exit(EXIT_FAILURE);
+  }
+}
+
+// The exit waits for a call in flight when objects were only tracked, with
+// no creating call.
+int test_exit_in_flight() {
+  // Registered first, so it runs after the teardown registered by tracking.
+  assert(atexit(expect_call_ended_at_exit) == 0);
+  static char object[] = "object";
+  assert(llama_dart_exit_track(object, free_named,
+                               LLAMA_DART_EXIT_STAGE_MODEL));
+  static std::atomic<bool> started{false};
+  std::thread([] {
+    llama_dart_exit_call_begin();
+    started.store(true);
+    sleep_ms(400);
+    g_call_ended.store(true);
+    llama_dart_exit_call_end();
+  }).detach();
+  while (!started.load()) {
+    sleep_ms(1);
+  }
   return 0;
 }
 
@@ -511,7 +576,7 @@ int test_late_static() {
   g_system_info = llama_print_system_info();
   // The reader needs text that lives on the heap for a sanitizer to see a use
   // after the static is gone. There is none where no backend is loaded.
-  assert(!kTeardownRunsAtExit || g_system_info.size() > 64);
+  assert(!kExitFreesObjects || g_system_info.size() > 64);
   return 0;
 }
 
@@ -661,6 +726,7 @@ struct model_options {
   bool cpu_only = false;
   bool embeddings = false;
   ggml_backend_sched_eval_callback eval_callback = nullptr;
+  ggml_abort_callback abort_callback = nullptr;
 };
 
 struct model_fixture {
@@ -670,7 +736,7 @@ struct model_fixture {
 };
 
 model_fixture load_model(const char *path, model_options options = {}) {
-  llama_backend_init();
+  init_backends();
   model_fixture fixture;
   auto model_params = llama_model_default_params();
   static ggml_backend_dev_t no_devices[] = {nullptr};
@@ -685,6 +751,7 @@ model_fixture load_model(const char *path, model_options options = {}) {
   context_params.n_ctx = 256;
   context_params.embeddings = options.embeddings;
   context_params.cb_eval = options.eval_callback;
+  context_params.abort_callback = options.abort_callback;
   fixture.context =
       options.tracked
           ? llama_dart_init_from_model(fixture.model, context_params)
@@ -716,8 +783,11 @@ llama_sampler *greedy_sampler() {
 // One generation step as the Dart side runs it: decode, then sample.
 llama_token decode_and_sample(model_fixture &fixture, llama_sampler *sampler) {
   clear_memory(fixture);
-  assert(llama_dart_decode(fixture.context, prompt(fixture)) == 0);
-  return llama_dart_sampler_sample(sampler, fixture.context, -1);
+  const int32_t status = llama_dart_decode(fixture.context, prompt(fixture));
+  assert(evaluated(status));
+  // A decode that teardown ended has left nothing to sample.
+  return status == 0 ? llama_dart_sampler_sample(sampler, fixture.context, -1)
+                     : 0;
 }
 
 // Exits with a loaded model and context that nothing frees.
@@ -838,7 +908,7 @@ int test_model_wrappers(const char *path) {
 }
 
 int test_graph() {
-  llama_backend_init();
+  init_backends();
   ggml_backend_t backend = llama_dart_ggml_backend_dev_init(
       ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU), nullptr);
   assert(backend != nullptr);
@@ -1155,6 +1225,7 @@ int test_evaluation_wait(const char *path, void (*evaluate)(model_fixture &),
   llama_dart_exit_set_wait_ms(30000);
   held_evaluate = evaluate;
   g_hold_evaluation.store(true);
+  g_teardown_expected.store(true);
   std::thread([] { held_evaluate(fixture); }).detach();
   while (!g_evaluation_held.load()) {
     sleep_ms(1);
@@ -1169,11 +1240,11 @@ int test_evaluation_wait(const char *path, void (*evaluate)(model_fixture &),
 }
 
 void decode_prompt(model_fixture &fixture) {
-  assert(llama_dart_decode(fixture.context, prompt(fixture)) == 0);
+  assert(evaluated(llama_dart_decode(fixture.context, prompt(fixture))));
 }
 
 void encode_prompt(model_fixture &fixture) {
-  assert(llama_dart_encode(fixture.context, prompt(fixture)) == 0);
+  assert(evaluated(llama_dart_encode(fixture.context, prompt(fixture))));
 }
 
 // Evaluates a text chunk, which needs no mtmd context.
@@ -1182,9 +1253,13 @@ void eval_text_chunk(model_fixture &fixture) {
   const mtmd_input_chunk *text = mtmd_input_chunks_get(chunks, 0);
   assert(mtmd_input_chunk_get_type(text) == MTMD_INPUT_CHUNK_TYPE_TEXT);
   llama_pos position = 0;
-  assert(llama_dart_mtmd_helper_eval_chunk_single(
-             nullptr, fixture.context, text, 0, 0, 16, true, &position) == 0);
-  assert(position == 5);
+  const int32_t status = llama_dart_mtmd_helper_eval_chunk_single(
+      nullptr, fixture.context, text, 0, 0, 16, true, &position);
+  if (status == 0) {
+    assert(position == 5);
+  } else {
+    assert(kTeardownEndsEvaluations && g_teardown_expected.load());
+  }
   mtmd_input_chunks_free(chunks);
 }
 
@@ -1221,6 +1296,7 @@ int exit_while_generating(model_fixture &fixture) {
   while (steps.load() < 4) {
     sleep_ms(1);
   }
+  g_teardown_expected.store(true);
   g_exiting.store(true);
   return 0;
 }
@@ -1230,6 +1306,83 @@ int test_model_decode(const char *path) {
   static model_fixture fixture;
   fixture = load_model(path);
   return exit_while_generating(fixture);
+}
+
+std::atomic<int> g_computed_after_release{0};
+
+// Holds the evaluation and, once it is released, has each tensor computed on
+// its own so that the ones computed from then on can be counted.
+bool hold_then_count_evaluation(ggml_tensor *tensor, bool ask, void *data) {
+  if (!ask) {
+    g_computed_after_release.fetch_add(1);
+    return true;
+  }
+  hold_evaluation(tensor, ask, data);
+  return g_release_evaluation.load();
+}
+
+void finish_held_evaluation_at_exit() {
+  g_release_evaluation.store(true);
+  const int64_t started = now_ms();
+  while (g_computed_after_release.load() < 16) {
+    if (now_ms() - started > 10000) {
+      fprintf(stderr, "the held decode did not go on during the exit\n");
+      _Exit(EXIT_FAILURE);
+    }
+    sleep_ms(1);
+  }
+}
+
+// On Linux teardown ends a decode in flight on the CPU backend instead of
+// sitting it out: the held decode computes no tensor to the end once teardown
+// waits for it.
+int test_model_decode_ended(const char *path) {
+  static model_fixture fixture;
+  model_options options;
+  options.eval_callback = hold_then_count_evaluation;
+  fixture = load_model(path, options);
+  decode_prompt(fixture);
+  clear_memory(fixture);
+  llama_dart_exit_set_wait_ms(30000);
+  g_hold_evaluation.store(true);
+  g_teardown_expected.store(true);
+  std::thread([] { decode_prompt(fixture); }).detach();
+  while (!g_evaluation_held.load()) {
+    sleep_ms(1);
+  }
+  start_beat();
+  std::thread(release_when_teardown_waits).detach();
+  llama_dart_exit_teardown();
+  assert(!g_released_before_teardown.load());
+  assert(g_computed_after_release.load() == 0);
+  assert(llama_dart_exit_tracked_count() == 0);
+  return 0;
+}
+
+// Exits while another thread is inside a decode that outlasts teardown's
+// wait. On Linux the llama.cpp libraries register no static destructors, so
+// the decode computes on, with the statics the model load created, after the
+// exit has run its handlers.
+int test_model_decode_outlasts_wait(const char *path) {
+  // Registered first, so it runs after teardown and after the destructors of
+  // the statics that the load creates, where those are registered.
+  assert(atexit(finish_held_evaluation_at_exit) == 0);
+  static model_fixture fixture;
+  model_options options;
+  options.eval_callback = hold_then_count_evaluation;
+  // The caller's own callback, which libllamadart leaves in place: teardown
+  // does not end this decode.
+  options.abort_callback = [](void *) { return false; };
+  fixture = load_model(path, options);
+  decode_prompt(fixture);
+  clear_memory(fixture);
+  llama_dart_exit_set_wait_ms(100);
+  g_hold_evaluation.store(true);
+  std::thread([] { decode_prompt(fixture); }).detach();
+  while (!g_evaluation_held.load()) {
+    sleep_ms(1);
+  }
+  return 0;
 }
 
 // Exits while another thread generates on a model whose load created statics
@@ -1248,9 +1401,21 @@ int test_model_late_load(const char *path) {
   return exit_while_generating(second);
 }
 
+std::atomic<bool> g_load_resumed{false};
+
+void expect_exit_waited_for_load() {
+  if (kExitWaitsForCalls && !g_load_resumed.load()) {
+    fprintf(stderr, "the exit did not wait for the load in flight\n");
+    _Exit(EXIT_FAILURE);
+  }
+}
+
 // Exits while another thread is loading the model.
 int test_model_load(const char *path) {
-  llama_backend_init();
+  // Registered first, so it runs after teardown, which nothing but the load
+  // in flight makes run: nothing is tracked.
+  assert(atexit(expect_exit_waited_for_load) == 0);
+  init_backends();
   static std::atomic<bool> loading{false};
   static const char *model_path = nullptr;
   model_path = path;
@@ -1269,6 +1434,7 @@ int test_model_load(const char *path) {
       sleep_ms(1);
     }
     sleep_ms(500);
+    g_load_resumed.store(true);
     return true;
   };
   std::thread([params] {
@@ -1285,7 +1451,7 @@ int test_model_load(const char *path) {
 
 // Teardown waits for a load in flight although nothing is tracked yet.
 int test_model_load_wait(const char *path) {
-  llama_backend_init();
+  init_backends();
   static std::atomic<bool> loading{false};
   static std::atomic<bool> held{false};
   static const char *model_path = nullptr;
@@ -2137,7 +2303,7 @@ using tokens = std::vector<llama_token>;
 // and stops at an end-of-generation token that the draft predicted, as
 // llama.cpp's common_sampler_sample_and_accept_n does.
 int test_model_sample_accept(const char *path) {
-  llama_backend_init();
+  init_backends();
   auto model_params = llama_model_default_params();
   // On the CPU, where every device can run the backend sampler's argmax: the
   // Metal device of a virtual machine cannot.
@@ -2288,6 +2454,9 @@ int main(int argc, char **argv) {
   if (scenario == "exit") {
     return test_exit();
   }
+  if (scenario == "exit-in-flight") {
+    return test_exit_in_flight();
+  }
   if (scenario == "late-static") {
     return test_late_static();
   }
@@ -2366,6 +2535,12 @@ int main(int argc, char **argv) {
     }
     if (scenario == "model-decode") {
       return test_model_decode(first);
+    }
+    if (scenario == "model-decode-ended") {
+      return test_model_decode_ended(first);
+    }
+    if (scenario == "model-decode-outlasts-wait") {
+      return test_model_decode_outlasts_wait(first);
     }
     if (scenario == "model-late-load") {
       return test_model_late_load(first);
