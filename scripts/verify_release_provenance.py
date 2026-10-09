@@ -616,9 +616,24 @@ def verify_documentation_contract(errors: list[str]) -> None:
         "maintainer docs must explain exact-transaction partial-publication recovery",
         errors,
     )
+    require(
+        "llama_cpp_patches" in documentation and "patches/llama.cpp" in documentation,
+        "maintainer docs must say that a release may carry llama.cpp patches and where "
+        "the manifest records them",
+        errors,
+    )
 
 
 def verify_manifest_contract(errors: list[str]) -> None:
+    patches_dir = ROOT / "patches/llama.cpp"
+    carried_patches = [
+        {
+            "file": entry["file"],
+            "sha256": hashlib.sha256((patches_dir / entry["file"]).read_bytes()).hexdigest(),
+            "tracking": entry["tracking"],
+        }
+        for entry in json.loads((patches_dir / "series.json").read_text())["patches"]
+    ]
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)
         fixtures = (
@@ -678,12 +693,14 @@ def verify_manifest_contract(errors: list[str]) -> None:
                     "native_release_tag",
                     "llama_cpp_tag",
                     "llama_cpp_commit",
+                    "llama_cpp_patches",
                     "native_commit",
                     "generated_at",
                     "hook_contract_version",
                     "artifacts",
                 }
                 and manifest.get("hook_contract_version") == 1
+                and manifest.get("llama_cpp_patches") == carried_patches
                 and re.fullmatch(
                     r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z",
                     manifest.get("generated_at", ""),

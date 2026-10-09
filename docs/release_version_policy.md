@@ -119,6 +119,17 @@ The historical `tag` field remains as a compatibility alias for
 valid. New manifests and release notes also bind the caller correlation ID,
 smoke policy/conclusion, exact workflow run, and workflow head SHA.
 
+Every release is built with the llama.cpp patches its native commit carries
+(`patches/llama.cpp/README.md`): each build applies all of them or fails.
+`llama_cpp_patches` in `assets.json` lists the `file`, `sha256` and `tracking`
+issue of each one and is an empty list for unmodified upstream source.
+`llama_cpp_commit` stays the upstream commit the patches apply to: with a
+non-empty `llama_cpp_patches` the artifacts are that commit plus exactly those
+patches, and a comparison against upstream `llama.cpp` at the same commit must
+account for them. A rebuild that only adds, refreshes or drops a patch is a
+wrapper-only rebuild for the tag grammar: the upstream ref is unchanged and
+the rebuild counter increases.
+
 Do not mutate, republish, or reuse a tag. For a wrapper-only fix, keep the same
 `llama_cpp_tag`, choose the next policy-compliant native rebuild tag, and run the
 full build matrix. Publication, downstream pin updates, and downstream releases

@@ -139,6 +139,8 @@ if (APPLE)
 endif()
 
 add_subdirectory(third_party/llama.cpp)
+include(cmake/llama_cpp_patches.cmake)
+llamadart_apply_llama_cpp_patches()
 include(cmake/kleidiai_windows.cmake)
 llamadart_configure_kleidiai_windows_assembly()
 
