@@ -18,12 +18,15 @@ the procedure. In short:
   already add sources to upstream targets from this repository's CMake; this
   replaces one.
 - A hunk applies only where its context and removed lines occur exactly once.
-  Every configuration applies every patch, so a patch that upstream has
-  outgrown fails every lane, including the automatic stable release.
+  A patch that does not fit the llama.cpp being built is skipped with a CMake
+  warning, because the qualification lanes build older upstream commits:
+  patch 0001 does not fit the `post-v0.4.0` commit.
+- `tools/validate_android_artifacts.py` fails an Android bundle in which a
+  library lacks the text that a patch compiles into it. The release runs it,
+  so a release, the automatic stable one included, cannot lose a patch that
+  upstream has outgrown: it fails until the patch is refreshed or deleted.
 - `assets.json` gains `llama_cpp_patches`, the `file`, `sha256` and `tracking`
   issue of each patch, and `[]` for a release without any.
-- `tools/validate_android_artifacts.py` fails an Android bundle in which a
-  library lacks the text that a patch compiles into it.
 
 A consumer that compares against upstream `llama.cpp` at `llama_cpp_commit`
 (`docs/parity_tools.md`) compares against unpatched source. The patches of
@@ -172,8 +175,8 @@ ctest --test-dir build/v060 --output-on-failure
 ```
 
 `tests/test_llama_cpp_patches.py` covers the patch tool on its own sources and,
-with the submodule checked out, applies the carried series to it. The
+with the submodule checked out, requires the carried series to fit it. The
 `android-vulkan-shaders` lane of `validate_wrapper.yml` compiles the patched
 `ggml-vulkan.cpp` with the release NDK against the pinned, `v0.5.0` and
-`v0.6.0` upstreams and, on the pinned one, validates the bundle. No lane runs
-ggml-vulkan on a device.
+`v0.6.0` upstreams, which both patches fit, and on the pinned one validates
+the bundle, markers included. No lane runs ggml-vulkan on a device.

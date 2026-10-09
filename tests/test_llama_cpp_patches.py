@@ -56,6 +56,7 @@ class Fixture:
                 "file": file,
                 "tracking": "https://example.invalid/issue",
                 "upstream": "https://example.invalid/pull",
+                "android_markers": [{"library": "libthing.so", "text": "marker " + file}],
             })
         self.write_series()
 
@@ -95,15 +96,22 @@ class ApplyTests(unittest.TestCase):
         self.assertEqual("int a = 1;\nint b = 20;\nint b2 = 21;\nint c = 3;\nint d = 4;\n",
                          fixture.apply()[SOURCE])
 
-    def test_upstream_drift_fails_instead_of_applying_elsewhere(self) -> None:
-        fixture = self.fixture(**{"0001_edit_b": EDIT_B})
+    def test_a_patch_that_does_not_fit_is_skipped_whole_and_never_applied_elsewhere(self) -> None:
+        fixture = self.fixture(**{"0001_edit_b": EDIT_B, "0002_edit_d": EDIT_D})
         (fixture.upstream / SOURCE).write_text(
-            ORIGINAL.replace("int c = 3;", "int c = 30;"), encoding="utf-8")
+            ORIGINAL.replace("int a = 1;", "int a = 10;"), encoding="utf-8")
+        patched, skipped = patches.apply_available(fixture.upstream, fixture.patches)
+        self.assertEqual({SOURCE: "int a = 10;\nint b = 2;\nint c = 3;\nint d = 40;\n"}, patched)
+        self.assertEqual(1, len(skipped), skipped)
+        self.assertIn("0001-edit-b.patch", skipped[0])
+        self.assertIn("matches src/thing.cpp 0 times, expected 1", skipped[0])
         self.assert_rejected(fixture, "matches src/thing.cpp 0 times, expected 1")
 
-    def test_an_ambiguous_hunk_fails(self) -> None:
+    def test_an_ambiguous_hunk_does_not_fit(self) -> None:
         fixture = self.fixture(**{"0001_edit_b": EDIT_B})
         (fixture.upstream / SOURCE).write_text(ORIGINAL + ORIGINAL, encoding="utf-8")
+        self.assertEqual(({}, 1), (lambda result: (result[0], len(result[1])))(
+            patches.apply_available(fixture.upstream, fixture.patches)))
         self.assert_rejected(fixture, "matches src/thing.cpp 2 times, expected 1")
 
     def test_only_an_existing_compiled_source_can_be_patched(self) -> None:
@@ -136,10 +144,15 @@ class ApplyTests(unittest.TestCase):
         fixture.series = [dict(fixture.series[0], upstream="https://example.invalid", note="x")]
         fixture.write_series()
         self.assert_rejected(fixture, "unknown keys ['note']")
+        fixture.series = [dict(fixture.series[0], upstream="https://example.invalid")]
+        del fixture.series[0]["note"]
+        del fixture.series[0]["android_markers"]
+        fixture.write_series()
+        self.assert_rejected(fixture, '"android_markers" must list at least one')
 
     def test_an_unchanged_copy_keeps_its_timestamp(self) -> None:
         fixture = self.fixture(**{"0001_edit_b": EDIT_B})
-        self.assertEqual([SOURCE],
+        self.assertEqual(([SOURCE], []),
                          patches.write_patched(fixture.upstream, fixture.output, fixture.patches))
         copy = fixture.output / SOURCE
         os.utime(copy, (1, 1))
@@ -151,23 +164,32 @@ class ApplyTests(unittest.TestCase):
         self.assertNotEqual(1, copy.stat().st_mtime)
         self.assertIn("int b2 = 22;", copy.read_text(encoding="utf-8"))
 
-    def test_the_tool_prints_what_cmake_reads_and_fails_with_the_reason(self) -> None:
+    def test_the_tool_prints_what_cmake_reads_and_names_a_skipped_patch(self) -> None:
         fixture = self.fixture(**{"0001_edit_b": EDIT_B})
         command = [sys.executable, str(ROOT / "tools/llama_cpp_patches.py"),
                    "--patches", str(fixture.patches), "apply",
                    "--upstream", str(fixture.upstream), "--output", str(fixture.output)]
         result = subprocess.run(command, capture_output=True, text=True)
-        self.assertEqual((0, SOURCE + "\n"), (result.returncode, result.stdout))
+        self.assertEqual((0, SOURCE + "\n", ""),
+                         (result.returncode, result.stdout, result.stderr))
         (fixture.upstream / SOURCE).write_text("int z;\n", encoding="utf-8")
         result = subprocess.run(command, capture_output=True, text=True)
+        self.assertEqual((0, "\n"), (result.returncode, result.stdout))
+        self.assertIn("skipped 0001-edit-b.patch", result.stderr)
+        result = subprocess.run(command + ["--strict"], capture_output=True, text=True)
         self.assertEqual(1, result.returncode)
         self.assertIn("0001-edit-b.patch", result.stderr)
-        self.assertIn("re-qualify the patch", result.stderr)
+        fixture.series[0]["tracking"] = "none"
+        fixture.write_series()
+        result = subprocess.run(command, capture_output=True, text=True)
+        self.assertEqual(1, result.returncode, "a malformed series is never skipped")
 
     def test_a_bundle_library_without_its_marker_is_reported(self) -> None:
         fixture = self.fixture(**{"0001_edit_b": EDIT_B})
         fixture.series[0]["android_markers"] = [{"library": "libthing.so", "text": "b2 marker"}]
         fixture.write_series()
+        # The check reads the bundle only, so it also catches a patch that the
+        # build skipped.
         bundle = fixture.output
         bundle.mkdir()
         self.assertEqual([], patches.android_marker_errors(bundle, fixture.patches))
@@ -208,7 +230,7 @@ class CarriedSeriesTests(unittest.TestCase):
             path = patches.parse_patch(entry["file"], (patches.PATCHES_DIR / entry["file"])
                                        .read_text(encoding="utf-8")).path
             original = (UPSTREAM / path).read_text(encoding="utf-8")
-            for marker in entry.get("android_markers", []):
+            for marker in entry["android_markers"]:
                 # A marker tells a patched library from an unpatched one only
                 # if the patch is what introduces it.
                 self.assertNotIn(marker["text"], original, entry["file"])

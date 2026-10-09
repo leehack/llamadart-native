@@ -23,8 +23,9 @@ function(llamadart_apply_llama_cpp_patches)
         "${CMAKE_CURRENT_SOURCE_DIR}/tools/llama_cpp_patches.py")
 
     find_package(Python3 COMPONENTS Interpreter REQUIRED)
-    # Every configuration applies the whole series, also one that builds none
-    # of the patched sources, so a patch that no longer applies fails them all.
+    # A patch that does not fit this llama.cpp is skipped: lanes here build
+    # other upstream commits than the pinned one. What keeps a release from
+    # losing a patch is tools/validate_android_artifacts.py on the bundle.
     execute_process(
         COMMAND "${Python3_EXECUTABLE}"
             "${CMAKE_CURRENT_SOURCE_DIR}/tools/llama_cpp_patches.py"
@@ -36,6 +37,9 @@ function(llamadart_apply_llama_cpp_patches)
         OUTPUT_STRIP_TRAILING_WHITESPACE)
     if (NOT result EQUAL 0)
         message(FATAL_ERROR "Could not apply patches/llama.cpp:\n${error}")
+    endif()
+    if (error)
+        message(WARNING "patches/llama.cpp does not fit this llama.cpp:\n${error}")
     endif()
     if (NOT patched_sources)
         return()

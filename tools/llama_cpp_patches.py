@@ -26,6 +26,10 @@ class PatchError(Exception):
     pass
 
 
+class NotApplicable(PatchError):
+    """The patch is well formed but does not fit this upstream source."""
+
+
 @dataclass(frozen=True)
 class Hunk:
     header: str
@@ -68,15 +72,18 @@ def load_series(patches_dir: Path = PATCHES_DIR) -> list[dict]:
         for key in ("tracking", "upstream"):
             if not str(entry.get(key, "")).startswith("https://"):
                 raise PatchError(f"{series_path}: {name}: \"{key}\" must be an https URL")
-        markers = entry.get("android_markers", [])
-        if not isinstance(markers, list) or not all(
+        # The artifact check is what keeps a release from losing a patch, so
+        # every patch must give it something to find.
+        markers = entry.get("android_markers")
+        if not isinstance(markers, list) or not markers or not all(
             isinstance(marker, dict)
             and set(marker) == MARKER_KEYS
             and all(isinstance(value, str) and value for value in marker.values())
             for marker in markers
         ):
             raise PatchError(
-                f"{series_path}: {name}: \"android_markers\" must list {{library, text}}"
+                f"{series_path}: {name}: \"android_markers\" must list at least one "
+                "{library, text}"
             )
         names.append(name)
     if names != sorted(set(names)):
@@ -145,32 +152,46 @@ def parse_patch(name: str, text: str) -> Patch:
     return Patch(name, paths[0], tuple(hunks))
 
 
-def apply_series(upstream: Path, patches_dir: Path = PATCHES_DIR) -> dict[str, str]:
-    """Returns the patched text of every upstream source the series edits.
+def apply_available(
+    upstream: Path, patches_dir: Path = PATCHES_DIR
+) -> tuple[dict[str, str], list[str]]:
+    """Returns the patched text of each edited source, and why a patch was skipped.
 
     A hunk applies only where its context and removed lines occur exactly
-    once: there is no fuzz and no offset search, so upstream drift fails.
+    once: there is no fuzz and no offset search. A patch that does not fit
+    this upstream is skipped whole.
     """
     patched: dict[str, str] = {}
+    skipped: list[str] = []
     for entry in load_series(patches_dir):
         name = entry["file"]
         patch = parse_patch(name, _read_text(patches_dir / name))
-        if patch.path not in patched:
-            source = upstream / patch.path
-            if not source.is_file():
-                raise PatchError(f"{name}: {source} does not exist")
-            patched[patch.path] = _read_text(source)
-        text = patched[patch.path]
-        for hunk in patch.hunks:
-            count = text.count(hunk.before)
-            if count != 1:
-                raise PatchError(
-                    f"{name}: {hunk.header} matches {patch.path} {count} times, expected 1. "
-                    "Upstream changed these lines: re-qualify the patch for this llama.cpp "
-                    "or remove it (patches/llama.cpp/README.md)."
-                )
-            text = text.replace(hunk.before, hunk.after)
+        try:
+            text = patched.get(patch.path)
+            if text is None:
+                source = upstream / patch.path
+                if not source.is_file():
+                    raise NotApplicable(f"{name}: {source} does not exist")
+                text = _read_text(source)
+            for hunk in patch.hunks:
+                count = text.count(hunk.before)
+                if count != 1:
+                    raise NotApplicable(
+                        f"{name}: {hunk.header} matches {patch.path} {count} times, expected 1"
+                    )
+                text = text.replace(hunk.before, hunk.after)
+        except NotApplicable as error:
+            skipped.append(str(error))
+            continue
         patched[patch.path] = text
+    return patched, skipped
+
+
+def apply_series(upstream: Path, patches_dir: Path = PATCHES_DIR) -> dict[str, str]:
+    """Like apply_available, but a patch that does not fit is an error."""
+    patched, skipped = apply_available(upstream, patches_dir)
+    if skipped:
+        raise NotApplicable("\n".join(skipped))
     return patched
 
 
@@ -190,7 +211,7 @@ def android_marker_errors(out_dir: Path, patches_dir: Path = PATCHES_DIR) -> lis
     """Names each bundled library that lacks the text a carried patch compiles in."""
     errors: list[str] = []
     for entry in load_series(patches_dir):
-        for marker in entry.get("android_markers", []):
+        for marker in entry["android_markers"]:
             library = out_dir / marker["library"]
             if library.is_file() and marker["text"].encode() not in library.read_bytes():
                 errors.append(
@@ -200,8 +221,14 @@ def android_marker_errors(out_dir: Path, patches_dir: Path = PATCHES_DIR) -> lis
     return errors
 
 
-def write_patched(upstream: Path, output: Path, patches_dir: Path) -> list[str]:
-    patched = apply_series(upstream, patches_dir)
+def write_patched(
+    upstream: Path, output: Path, patches_dir: Path, strict: bool = False
+) -> tuple[list[str], list[str]]:
+    """Writes the patched copies; returns their paths and the skipped patches."""
+    if strict:
+        patched, skipped = apply_series(upstream, patches_dir), []
+    else:
+        patched, skipped = apply_available(upstream, patches_dir)
     for relative, text in patched.items():
         target = output / relative
         # Keep the timestamp of an unchanged copy so reconfiguring rebuilds nothing.
@@ -210,7 +237,7 @@ def write_patched(upstream: Path, output: Path, patches_dir: Path) -> list[str]:
         target.parent.mkdir(parents=True, exist_ok=True)
         with target.open("w", encoding="utf-8", newline="\n") as handle:
             handle.write(text)
-    return sorted(patched)
+    return sorted(patched), skipped
 
 
 def main() -> int:
@@ -220,11 +247,17 @@ def main() -> int:
     apply = commands.add_parser("apply", help="write patched copies and print their paths")
     apply.add_argument("--upstream", type=Path, required=True)
     apply.add_argument("--output", type=Path, required=True)
+    apply.add_argument("--strict", action="store_true",
+                       help="fail when a patch does not apply instead of skipping it")
     commands.add_parser("manifest", help="print the carried patches as JSON")
     args = parser.parse_args()
     try:
         if args.command == "apply":
-            print(";".join(write_patched(args.upstream, args.output, args.patches)))
+            paths, skipped = write_patched(
+                args.upstream, args.output, args.patches, args.strict)
+            for reason in skipped:
+                print(f"skipped {reason}", file=sys.stderr)
+            print(";".join(paths))
         else:
             print(json.dumps(manifest_entries(args.patches)))
     except PatchError as error:

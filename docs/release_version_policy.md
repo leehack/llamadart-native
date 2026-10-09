@@ -120,9 +120,10 @@ valid. New manifests and release notes also bind the caller correlation ID,
 smoke policy/conclusion, exact workflow run, and workflow head SHA.
 
 Every release is built with the llama.cpp patches its native commit carries
-(`patches/llama.cpp/README.md`): each build applies all of them or fails.
-`llama_cpp_patches` in `assets.json` lists the `file`, `sha256` and `tracking`
-issue of each one and is an empty list for unmodified upstream source.
+(`patches/llama.cpp/README.md`): the Android artifact validation fails a
+release whose bundle lacks one. `llama_cpp_patches` in `assets.json` lists the
+`file`, `sha256` and `tracking` issue of each one and is an empty list for
+unmodified upstream source.
 `llama_cpp_commit` stays the upstream commit the patches apply to: with a
 non-empty `llama_cpp_patches` the artifacts are that commit plus exactly those
 patches, and a comparison against upstream `llama.cpp` at the same commit must
