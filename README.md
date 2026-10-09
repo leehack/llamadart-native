@@ -175,7 +175,8 @@ Assets are suffixed with platform/arch, for example:
 - `tools/package_linux_artifact.py`: preserves Linux ELF version files and
   SONAME symlinks while transporting split CI artifacts.
 - `tools/validate_linux_artifact.py`: checks Linux archive members, symlinks,
-  SONAMEs, and local `DT_NEEDED` dependencies.
+  SONAMEs, and local `DT_NEEDED` dependencies, and that no library built here
+  imports `__cxa_atexit`.
 - `tools/package_apple_xcframework.py`: packages Apple `libllamadart` slices as
   an SPM-compatible XCFramework zip.
 - `tools/apple/PrivacyInfo.xcprivacy`: privacy manifest embedded in every
@@ -286,15 +287,37 @@ left of it at exit:
   upstream function is tracked but not freed at exit, so a caller that has not
   switched to the tracked functions keeps its previous exit behavior.
 
-On other platforms nothing runs at exit; `llama_dart_exit_teardown` runs the
-same teardown on request and must be followed directly by `exit`. It is for
-native hosts: like `llama_dart_exit_call_begin` and `llama_dart_exit_call_end`,
-it is not meant to be bound from Dart.
+On Linux, Android excepted, C `exit` destroyed the statics of llama.cpp under
+the threads that were still inside it, and those crashed
+([llamadart#949](https://github.com/leehack/llamadart/issues/949)). There:
+
+- The llama.cpp libraries of the bundle register no static destructors
+  (`src/llama_dart_static_destructors.c`), so their statics stay valid until
+  the process is gone. On Linux they are separate libraries, and no exit
+  handler of `libllamadart` can be ordered before the destructor of a static
+  that another library creates later.
+- C `exit` runs the wait of teardown and frees nothing: it waits for the
+  calls in flight as above, cancels a model load, ends a decode or an encode
+  on the CPU backend (status 2, unless the context has an abort callback of
+  its own), and blocks the threads that reach `libllamadart` afterwards. The
+  exit handlers and destructors of other libraries, such as a GPU driver or
+  OpenBLAS, then run with no call in flight.
+- The wait runs at the handler registered at the first creating call and
+  again at the first tracked object. An exit handler that another library
+  registers later runs before it.
+
+[`docs/v060_2_wrapper_rebuild.md`](docs/v060_2_wrapper_rebuild.md) has the
+measurements and what is not verified.
+
+On other platforms nothing runs at exit. `llama_dart_exit_teardown` runs
+teardown on request on every platform, frees included, and must be followed
+directly by `exit`. It is for native hosts: like `llama_dart_exit_call_begin`
+and `llama_dart_exit_call_end`, it is not meant to be bound from Dart.
 `src/llama_dart_wrapper.h` documents each function.
 
 `llamadart_exit_teardown_test` covers the registry on every platform. On macOS
-it also writes a small decoder and a small encoder model and runs the
-scenarios that load one, so ctest needs no model file:
+and Linux it also writes a small decoder and a small encoder model and runs
+the scenarios that load one, so ctest needs no model file:
 
 ```bash
 cmake -S . -B build/exit-teardown -G Ninja -DLLAMADART_BUILD_TESTS=ON
