@@ -11,7 +11,9 @@
 //
 // <bundle-dir> holds libllamadart.so and the backend modules. A run is clean
 // when it prints EXIT_PROBE_REACHED and exits with code 0. Append -slow-exit
-// to a scenario for a host whose own exit handler takes 300 ms.
+// to a scenario for a host whose own exit handler takes 300 ms, or
+// -late-slow-exit to a generating one for a handler that was registered after
+// the one of libllamadart.
 import 'dart:async';
 import 'dart:convert';
 import 'dart:ffi';
@@ -132,11 +134,17 @@ Future<void> main(List<String> args) async {
   // A scenario with -slow-exit appended has an exit handler that takes 300 ms.
   // It is registered before libllamadart is opened, and so runs after the
   // handler of libllamadart.
+  // With -late-slow-exit the handler is registered right before the exit
+  // instead, and so runs before the handler of libllamadart.
   const slowExit = '-slow-exit';
-  final scenario = requested.endsWith(slowExit)
+  const lateSlowExit = '-late-slow-exit';
+  final late = requested.endsWith(lateSlowExit);
+  final scenario = late
+      ? requested.substring(0, requested.length - lateSlowExit.length)
+      : requested.endsWith(slowExit)
       ? requested.substring(0, requested.length - slowExit.length)
       : requested;
-  if (scenario != requested) sleepingAtexit(300);
+  if (!late && scenario != requested) sleepingAtexit(300);
 
   switch (scenario) {
     case 'control-spin': // no native library at all
@@ -173,6 +181,7 @@ Future<void> main(List<String> args) async {
         await ready.first;
         if (scenario == 'generating-spin') await spin();
       }
+      if (late) sleepingAtexit(300);
       _cExit();
     case 'loaded-worker-idle': // llamadart's quit-loaded shape
     case 'loaded-worker-idle-timer': // the same with a periodic timer in main's group

@@ -175,8 +175,8 @@ Assets are suffixed with platform/arch, for example:
 - `tools/package_linux_artifact.py`: preserves Linux ELF version files and
   SONAME symlinks while transporting split CI artifacts.
 - `tools/validate_linux_artifact.py`: checks Linux archive members, symlinks,
-  SONAMEs, and local `DT_NEEDED` dependencies, and that no library built here
-  imports `__cxa_atexit`.
+  SONAMEs, and local `DT_NEEDED` dependencies, that no library built here
+  imports `__cxa_atexit`, and that `libllamadart.so` cannot be unloaded.
 - `tools/package_apple_xcframework.py`: packages Apple `libllamadart` slices as
   an SPM-compatible XCFramework zip.
 - `tools/apple/PrivacyInfo.xcprivacy`: privacy manifest embedded in every
@@ -287,28 +287,29 @@ left of it at exit:
   upstream function is tracked but not freed at exit, so a caller that has not
   switched to the tracked functions keeps its previous exit behavior.
 
-On Linux, Android excepted, C `exit` destroyed the statics of llama.cpp under
-the threads that were still inside it, and those crashed
+On Linux with glibc, C `exit` destroyed the statics of llama.cpp under the
+threads that were still inside it, and those crashed
 ([llamadart#949](https://github.com/leehack/llamadart/issues/949)). There:
 
-- The llama.cpp libraries of the bundle register no static destructors
+- No library of the bundle registers static destructors
   (`src/llama_dart_static_destructors.c`), so their statics stay valid until
   the process is gone. On Linux they are separate libraries, and no exit
   handler of `libllamadart` can be ordered before the destructor of a static
   that another library creates later.
-- C `exit` runs the wait of teardown and nothing else. It waits for the calls
-  in flight as above, cancels a model load and ends a decode or an encode on
-  the CPU backend (status 2, unless the context has an abort callback of its
-  own). With no call in flight it returns at once. The exit handlers and
-  destructors of other libraries, such as a GPU driver or OpenBLAS, then run
-  with no call in flight.
-- It frees nothing and blocks no thread. After it, a guarded call that begins
-  on another thread returns its failure value with `the process is exiting`
-  as the last error, and `llama_dart_exit_free` frees nothing, so a host whose
-  own exit handler joins a worker gets it back.
-- The wait runs at the handler registered at the first creating call and
-  again at the first tracked object. An exit handler that another library
-  registers later runs before it.
+- C `exit` does not run teardown. With a call in flight on another thread it
+  ends the process at once, as `_exit` does: with the exit status and the
+  standard streams flushed, and without the exit handlers and destructors
+  that would have run next, the host's among them. Those would run under the
+  call, and waiting for the call is not harmless: a Dart VM aborts when its
+  isolates run while `exit` takes its time.
+- With no call in flight the exit goes on at once. Nothing is freed and no
+  thread is blocked. Afterwards a guarded call that begins on another thread
+  returns its failure value with `the process is exiting` as the last error,
+  and `llama_dart_exit_free` frees nothing, so a host whose own exit handler
+  joins a worker gets it back.
+- The handler is registered at the first creating call and again at the first
+  tracked object. An exit handler that another library registers later runs
+  before it. `libllamadart.so` is linked with `-z nodelete`.
 
 [`docs/v060_2_wrapper_rebuild.md`](docs/v060_2_wrapper_rebuild.md) has the
 measurements and what is not verified.

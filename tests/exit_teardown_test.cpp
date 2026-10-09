@@ -576,12 +576,19 @@ int test_exit_in_flight() {
 }
 
 char kLateObject[] = "late-object";
+llama_dart_ngram *g_created_at_exit = nullptr;
 
 // What a thread other than the exiting one gets from libllamadart once the
 // exit has waited, on Linux: nothing blocks, a free frees nothing, and a call
 // in flight is refused before it starts.
 void make_late_calls() {
   g_exit_expected.store(true);
+  // The exiting thread is exempt: a host's later exit handlers may still use
+  // libllamadart. What it creates is not tracked, and stays allocated.
+  g_created_at_exit = llama_dart_ngram_simple_init(4, 8);
+  assert(g_created_at_exit != nullptr);
+  assert(llama_dart_last_error() == nullptr);
+  assert(llama_dart_exit_tracked_count() == 1);
   std::thread([] {
     llama_dart_exit_free(kLateObject);
     assert(recorded().empty());
@@ -598,6 +605,7 @@ void make_late_calls() {
     llama_dart_exit_call_begin();
     llama_dart_exit_call_end();
     assert(!llama_dart_exit_untrack(kLateObject));
+    assert(!llama_dart_exit_untrack(g_created_at_exit));
     assert(llama_dart_exit_tracked_count() == 1);
     g_call_ended.store(true);
   }).detach();

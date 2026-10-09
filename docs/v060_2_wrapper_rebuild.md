@@ -30,106 +30,139 @@ looks for the best backend.
 
 ### What changes
 
-1. The llama.cpp libraries register no static destructors.
+1. No library of the bundle registers static destructors.
    `src/llama_dart_static_destructors.c` defines a hidden `__cxa_atexit` that
-   registers nothing, and `CMakeLists.txt` adds it to every shared library and
-   backend module under `third_party/llama.cpp`, whatever backends the build
-   enables. The statics stay valid until the process is gone: also for a call
-   that teardown does not wait for, and for one that outlasts its wait.
+   registers nothing, and `CMakeLists.txt` adds it to libllamadart and to
+   every shared library and backend module under `third_party/llama.cpp`,
+   whatever backends the build enables. The statics stay valid until the
+   process is gone, also for a call that libllamadart does not count.
    Upstream sources are not patched.
-2. C `exit()` runs the wait of exit teardown and nothing else. libllamadart
-   registers the handler at the first creating call
-   (`llama_dart_model_load_from_file`, `llama_dart_init_from_model`,
-   `llama_dart_mtmd_init_from_file`, the TTS, speculative, MTP and n-gram init
-   functions), so that an exit during the first load finds one, and again when
-   the first object is tracked. It waits up to 2 s
-   (`llama_dart_exit_set_wait_ms`) for the calls in flight and cancels a model
-   load. With no call in flight it returns at once: it does not let the
-   threads settle for 250 ms as `llama_dart_exit_teardown` does, because it
-   frees nothing, and because time spent inside `exit()` is not harmless (see
-   "Dart").
-3. The exit frees nothing. Apple frees the tracked objects because
-   ggml-metal aborts over a live buffer. Nothing on Linux does, the issue
-   found an exit with a model left loaded clean on CPU, Vulkan and CUDA, and a
-   free during `exit()` would run among the exit handlers of the GPU driver in
-   an order that nothing controls. `llama_dart_exit_teardown` called by a
-   native host still frees.
-4. The exit blocks no thread. Apple blocks every thread that reaches
+2. libllamadart registers an exit handler with `on_exit`, which gets the exit
+   status: at the first creating call (`llama_dart_model_load_from_file`,
+   `llama_dart_init_from_model`, `llama_dart_mtmd_init_from_file`, the TTS,
+   speculative, MTP and n-gram init functions), so that an exit during the
+   first load finds one, and again when the first object is tracked.
+3. With a call in flight on another thread, the handler ends the process:
+   `fflush(NULL)` and `_exit(status)`. That is what `exit()` from `dart:io`
+   does on Linux. The handlers that would have run next are those of other
+   libraries, a GPU driver or OpenBLAS among them, and they would run under
+   the call. It does not wait for the call first. An earlier version of this
+   change did, and time inside `exit()` turned out not to be harmless: see
+   "Why the exit does not wait".
+4. With no call in flight the handler returns at once and the exit goes on.
+   It frees nothing. Apple frees the tracked objects because ggml-metal
+   aborts over a live buffer. Nothing on Linux does, the issue found an exit
+   with a model left loaded clean on CPU, Vulkan and CUDA, and a free during
+   `exit()` would run among the exit handlers of the GPU driver in an order
+   that nothing controls. `llama_dart_exit_teardown` called by a native host
+   still waits and frees, as on every platform.
+5. The exit blocks no thread. Apple blocks every thread that reaches
    libllamadart after teardown, because the objects it holds are gone. On
    Linux they are not, and a blocked thread hangs a host whose own exit
-   handler joins it. After the wait, on a thread other than the exiting one:
+   handler joins it. Once the exit has passed libllamadart, on a thread other
+   than the exiting one:
    - `llama_dart_exit_free` and the session free functions free nothing, and
      `llama_dart_exit_track` and `llama_dart_exit_untrack` return `false`;
    - a call in flight that begins returns the failure value of its function,
      with `the process is exiting` as `llama_dart_last_error`, and starts
-     nothing: the exit no longer waits for it;
-   - `llama_dart_exit_call_begin` counts nothing;
-   - the call that the exit waited for returns to its caller.
-5. While teardown waits, and from then on after an exit, a decode or an
-   encode on the CPU backend ends with llama.cpp's status for an aborted
-   evaluation (2). `llama_dart_init_from_model` sets the context's abort
-   callback for that when the caller passes none, and the draft contexts of
-   the speculative and MTP state get it too. Without it a long decode outlasts
-   the wait and is still running when the exit reaches other libraries: with
-   the BLAS module, OpenBLAS's destructor then never returns (see
-   "Measurements"). llama.cpp logs three error lines for the ended decode.
-6. libllamadart itself binds `__cxa_atexit` to the definition that Apple
-   uses, so a static of its own is destroyed only after the wait.
+     nothing;
+   - `llama_dart_exit_call_begin` counts nothing.
+6. `libllamadart.so` is linked with `-z nodelete`: `on_exit` handlers are not
+   removed by `dlclose`, so the library must stay loaded.
 
 `tools/validate_linux_artifact.py`, which the release runs on every Linux
 archive, fails an archive in which a library built here imports
-`__cxa_atexit`.
+`__cxa_atexit`, or in which `libllamadart.so` can be unloaded.
+
+### Why the exit does not wait
+
+The first two versions of this change waited at exit for the call in flight,
+as Apple does, and then let the exit go on. Two rows of the measurements got
+worse than `v0.6.0-1` that way:
+
+- A Dart VM aborts when one of its isolates collects garbage while C `exit()`
+  is under way (`runtime/vm/handles_impl.h: 39: error: unreachable code`,
+  [llamadart#977](https://github.com/leehack/llamadart/issues/977)). A Dart
+  program with an isolate that decodes UTF-8 in a loop and an exit handler
+  that sleeps 300 ms, with no llama.cpp in the process, aborts 10 of 10. An
+  exit inside a decode of 1500 tokens with such an isolate aborted 17 of 30
+  when the exit waited for the decode to end, against 10 of 30 before the
+  change. Waiting 20 ms and then ending the process: 17 of 30 as well. Ending
+  the process at once: 0 of 30.
+- A decode on a GPU backend cannot be ended, as ggml-vulkan does not read the
+  abort callback. On lavapipe a decode of 1500 tokens outlasted the two
+  seconds, and the exit that then went on under it failed 2 of 50 (6 of 50 in
+  the audit) where it had been clean before, with the driver's own exit
+  handlers meeting a decode that was still running.
+
+Not waiting at all, and letting the exit go on at once, does not do either:
+in the audit that brought the Dart row down to 2 of 30, but OpenBLAS's
+destructor then hung under a decode 4 of 10, and the lavapipe decode with a
+slow host failed 26 of 50, as it did before the change.
+
+Both are the exit going on, or taking its time, under a call in flight, and
+ending the process is what removes that. So the handler does it for every
+call in flight, also for one on the CPU backend that would have ended in a
+millisecond: that keeps what an exit does from depending on how long a decode
+happens to take. The cost is the same in every case and is listed under "What
+it does not cover".
 
 ### Why not a gate in front of every destructor
 
 [`v060_1_wrapper_rebuild.md`](v060_1_wrapper_rebuild.md) recommended a hidden
 `__cxa_atexit` in every library that registers each destructor behind a gate
-exported by `libggml-base.so`, which libllamadart points at teardown. The wait
-without frees is taken from there. The gate is not:
+exported by `libggml-base.so`, which libllamadart points at teardown. Not
+freeing at exit is taken from there. The gate is not:
 
 - ggml unloads a backend module that it loaded only to score it, or that
   failed to initialize. `dlclose` runs the destructors that the module
-  registered, and each would run the gate, which is teardown, in the middle of
-  a run.
-- A destructor behind a gate still runs once the wait is over. A call that
-  outlasts the wait would crash as before, which was 10 of 10 for a long
-  decode with a slow host below.
+  registered, and each would run the gate in the middle of a run.
+- A gate waits, which is what "Why the exit does not wait" rules out.
 - It would add an exported symbol to an upstream library.
 
 ### What it does not cover
 
-- A Dart process in which another isolate runs Dart code while the exit
-  waits for a call in flight. The Dart VM aborts
-  (`runtime/vm/handles_impl.h: 39: error: unreachable code`,
-  [llamadart#977](https://github.com/leehack/llamadart/issues/977)) when an
-  isolate collects garbage while C `exit()` is taking its time, whatever
-  takes it: a 300 ms exit handler with no llama.cpp in the process does it
-  10 of 10. The wait is what fixes the crash, so it stays, and it is as short
-  as the call: see "Dart" for the rates.
-- A call in flight that outlasts the wait and cannot be ended: a decode on a
-  GPU backend, which does not read the abort callback, an image or audio
-  evaluation, or a context with an abort callback of its own. The exit then
-  goes on with the call running, two seconds later than it would have, and
-  what the call uses of other libraries may be gone. The lavapipe decode of
-  1500 tokens in "Measurements" is such a call.
-- An exit handler that another library registers after the two handlers above
-  runs before the wait, under the calls in flight. A GPU driver that
-  registers one late, during a decode for example, is in that position.
-  Statics that llama.cpp creates late no longer matter.
-- A call that is not a call in flight is not waited for, as on Apple. Its
-  statics stay valid on Linux; what it uses of other libraries may not.
+- An exit with a call in flight skips what the exit would have run after
+  libllamadart's handler: the exit handlers that were registered before it,
+  the host's among them, the static destructors of the host and of other
+  libraries, and the flush of anything but the standard C streams. A host
+  that needs those has to stop its calls before it exits. `std::cout` is
+  flushed only as far as it is synchronized with `stdout`.
+- An exit handler that another library registers after the two of
+  libllamadart runs before them, under the calls in flight. A GPU driver that
+  registers one late, during a decode for example, is in that position, and
+  so is a slow one in a Dart process.
+- A call that is not a call in flight is not counted, as on Apple: the exit
+  goes on under it. Its statics stay valid on Linux; what it uses of other
+  libraries may not.
+- An exit that falls between two guarded calls of a worker finds none in
+  flight and goes on. The worker's next call is then refused: a native host
+  gets the failure value (`INT32_MIN`, -1, `NULL` or `false`) with `the
+  process is exiting`, where its thread used to crash or, in the first
+  versions of this change, to block.
+- `llama_dart_exit_teardown` still blocks the threads that reach libllamadart
+  after it, on Linux as elsewhere, because it frees what they hold. A host
+  that calls it and then joins such a thread in an exit handler hangs, as
+  before this change.
+- A Dart process in which an isolate runs Dart code during an exit that goes
+  on, that is one with no call in flight, still aborts in the Dart VM at the
+  rate it did before the change (see "Dart"). The handler of libllamadart
+  adds no time to such an exit.
 - `quick_exit` and `_exit` run no handler, as before. Neither destroys
   statics.
 - A child of `fork` that calls `exit()` runs the handler with the registry it
-  copied: it waits out the wait time for calls that are not its own.
-- An exit handler that code inside a llama.cpp library registers with
-  `atexit` binds to the same definition and is dropped. No backend built here
-  registers one; a library such as the CUDA runtime, which the modules load
-  as a library of its own, is not affected.
+  copied: with a call in flight in the parent at the time of the fork, the
+  child ends as with `_exit`.
+- `dlclose` no longer unloads `libllamadart.so` or the libraries it depends
+  on.
+- An exit handler that code inside a library of the bundle registers with
+  `atexit` binds to the same definition as the static destructors and is
+  dropped. No backend built here registers one; a library such as the CUDA
+  runtime, which the modules load as a library of its own, is not affected.
 - The standard streams of a host built against libstdc++ older than GCC 13.
   There `<iostream>` gives every translation unit a static `ios_base::Init`,
   and `std::cout` is flushed when the last of them is destroyed. One inside a
-  llama.cpp library is now never destroyed, so a host that turned off
+  library of the bundle is now never destroyed, so a host that turned off
   `sync_with_stdio` loses what `std::cout` still buffers at exit (seen in the
   audit with GCC 11.4 and a test library). The release builds its Linux
   libraries with GCC 13, where the stream initializer lives in libstdc++,
@@ -145,10 +178,9 @@ without frees is taken from there. The gate is not:
 
 ### Other platforms
 
-- musl: not supported and not run. No bundle is built for it. The audit found
-  that musl's `dlsym(RTLD_NEXT, "__cxa_atexit")` returns `NULL` in a library
-  opened with `dlopen`, so libllamadart's own definition would register
-  nothing there.
+- musl: not supported and not run. No bundle is built for it. `on_exit` is a
+  glibc function, so the handler is compiled only where `__GLIBC__` is
+  defined; a musl build would keep its statics and do nothing at exit.
 - Android: left as it was, by `!defined(__ANDROID__)` in the two sources and
   `CMAKE_SYSTEM_NAME STREQUAL "Linux"` in CMake. bionic orders exit handlers
   the same way, but the issue has no Android measurement and nothing here ran
@@ -186,104 +218,112 @@ than 0, a failed `GGML_ASSERT`, or no exit within 120 s.
 | --- | --- | --- | --- | --- |
 | while generating (decode and sample in a loop) | CPU | fast | 7 | 0 |
 | | CPU | slow | 10 | 0 |
+| | CPU, BLAS | fast | 10 | 0 |
 | | CPU, BLAS | slow | 10 | 0 |
-| | Vulkan | fast | 5 | 0 |
+| | Vulkan | fast | 4 | 0 |
 | | Vulkan | slow | 10 | 0 |
 | inside one decode of 1500 tokens | CPU | fast | 1 | 0 |
 | | CPU | slow | 10 | 0 |
+| | CPU, BLAS | fast | 6 | 0 |
 | | CPU, BLAS | slow | 10 | 0 |
-| | Vulkan | fast | 0 of 50 | 2 of 50 |
-| | Vulkan | slow | 24 of 50 | 2 of 50 |
-| 100 ms and 400 ms into the first load | CPU | slow | 9, 6 | 0, 0 |
+| | Vulkan | fast | 0 of 50 | 0 of 50 |
+| | Vulkan | slow | 16 of 50 | 0 of 50 |
+| 100 ms and 400 ms into the first load | CPU | slow | 8, 8 | 0, 0 |
 | 200 ms and 800 ms into the first load | CPU | fast | 0, 0 | 0, 0 |
 | 5 ms and 60 ms into the first load | Vulkan | fast | 0, 0 | 0, 0 |
-| | Vulkan | slow | 10, 10 | 0, 0 |
+| | Vulkan | slow | 10, 9 | 0, 0 |
 | first load, once tensors are loading | CPU, Vulkan | fast, slow | 0 | 0 |
-| halfway through a second load | CPU | slow | 1 | 0 |
+| halfway through a second load | CPU | slow | 5 | 0 |
 | | CPU, Vulkan | fast | 0 | 0 |
-| `return` from `main` while generating | CPU | fast | 8 | 0 |
-| | Vulkan | fast | 3 | 0 |
+| `return` from `main` while generating | CPU | fast | 5 | 0 |
+| | CPU | slow | 10 | 0 |
+| | Vulkan | fast | 7 | 0 |
+| | Vulkan | slow | 10 | 0 |
 | model idle; everything freed; `return` from `main` with a model idle | CPU, BLAS, Vulkan | fast, slow | 0 | 0 |
+| a host handler that joins an idle worker, which frees its model | CPU | fast | 0 | 0 |
+| a host handler that joins a worker that is generating | CPU | fast | 10 | 0 |
 
-Every failed run ended in a signal: `SIGSEGV`, and on lavapipe before the
-change also `SIGABRT` (`double free or corruption`). The scenarios that were
-clean before are clean after, with the model left loaded and not freed.
+Every failed run of `v0.6.0-1` ended in a signal: `SIGSEGV`, and on lavapipe
+also `SIGABRT` (`double free or corruption`). No row of this rebuild has a
+failed run, and none is worse than before. In the last row the host's handler
+does not run: the process ends at libllamadart's handler, with the exit
+status. In the row above it the handler runs and joins the worker, before and
+after.
 
-One row is worse than before. The decode of 1500 tokens on lavapipe cannot be
-ended: ggml-vulkan does not read the abort callback. It outlasts the two
-seconds, and the exit then goes on under it. With a fast host that fails 2 of
-50 (6 of 50 in the audit, with a backtrace in the LLVM compiler of lavapipe
-under a thread that waits in `ggml_vk_flash_attn`), where it was clean 50 of
-50 before, also when the exit came 2.3 s into the decode. Before, the
-destructor of ggml-vulkan's device list destroyed the device at once; now the
-device outlives the exit and the driver's own exit handlers meet a decode
-that is still running. With a slow host the same row goes from 24 of 50 to 2
-of 50. Whether a GPU driver behaves like lavapipe here is part of what is not
-verified.
+Other shapes of host, from the probe of the audit, CPU with a fast host
+unless it says otherwise, failed runs of 10:
 
-Two measurements on the way decided parts of the design:
+| Exit | `v0.6.0-1` | This rebuild |
+| --- | --- | --- |
+| from a worker thread while the main thread generates | 9 | 0 |
+| from inside an evaluation callback; from inside a load progress callback | 10, 10 | 0, 0 |
+| while two models generate | 10 | 0 |
+| while a thread generates with the upstream `llama_decode` on a tracked context | 5 | 0 |
+| while a thread generates on a model and context from the upstream functions | 8 | 0 |
+| while a thread tokenizes in a loop | 2 | 0 |
+| inside a long decode on a context with an abort callback of its own, BLAS, fast and slow host | 8, 10 | 0, 0 |
+| after `llama_dart_exit_teardown`; after `dlclose` of libllamadart; `quick_exit`; `_exit` | 0 | 0 |
+| ten load and free cycles, then right after a generation step | 9 | 3 |
 
-- Without the abort callback, the 1500-token decode with the BLAS module
-  hung in OpenBLAS's destructor (`gotoblas_quit`, `blas_thread_shutdown_`) in
-  6 of 10 exits and was killed after 120 s; with the callback, 0 of 10.
-  Without the BLAS module the same exit was clean 10 of 10 either way: the
-  decode outlasted the wait and ran on, with its statics intact, until the
-  process was gone.
-- A build that also freed the tracked objects during `exit()` was clean in
-  the 16 lavapipe scenarios it ran (10 of 10 each). That shows nothing about
-  the NVIDIA driver, which is why the frees stay out.
+The three failed runs of the last row are not crashes. The exit fell between
+two guarded calls of the worker, so it went on, the worker's next decode was
+refused (`INT32_MIN`, `the process is exiting`), and that probe ends the
+process with a code of its own when a decode fails. A host whose worker
+treats a failed call as fatal sees that during an exit; before, the same row
+crashed 9 of 10.
 
-A host whose own exit handler stops a worker and joins it, with the worker
-freeing its context and model through `llama_dart_exit_free`: clean 5 of 5
-before and after. The first version of this change blocked that worker and
-hung 5 of 5.
+The two rows that earlier versions of this change made worse are the long
+decode on lavapipe with a fast host (0 of 50 before, 2 of 50 when the exit
+waited two seconds and went on, 0 of 50 now) and the Dart row of "Why the
+exit does not wait".
 
 ### Dart
-
-The Dart VM aborts when one of its isolates collects garbage while C `exit()`
-is under way
-([llamadart#977](https://github.com/leehack/llamadart/issues/977)). A Dart
-program with one isolate that decodes UTF-8 in a loop and an exit handler
-that sleeps 300 ms, with no llama.cpp in the process, aborts 10 of 10. So
-whatever the handler of libllamadart takes, it takes at that price, and it
-takes time only while a guarded call is in flight.
 
 Dart 3.13.1, CPU. `tests/manual/dart_exit_probe.dart` calls a guarded decode
 and sample per step through a small C shim, on `stories15M`; llamadart rows
 are its own `test/fixtures/llama_cpp_exit_probe.dart` and a variant with an
 isolate that wakes on a 5 ms timer, on llamadart `9275de8` with the bundle
 under test and Qwen3.5 0.8B Q4_0. The main isolate calls C `exit()` through
-FFI. Failed runs of 10, or of 30 where it says so; "First version" is
-`c9bc619`, which waited 250 ms at every exit and blocked the threads that
-reached libllamadart afterwards.
+FFI. "Looping" is a second isolate that decodes UTF-8 in a loop. Failed runs
+of 30 unless it says otherwise.
 
-| Exit | Other isolate | `v0.6.0-1` | First version | This rebuild |
-| --- | --- | --- | --- | --- |
-| llamadart `quit-generating` | none | 10 | 0 | 0 |
-| llamadart `quit-loaded`, `quit-loading`, `return-loaded`, `kill-loading` | none | 0 | 0 | 0 |
-| llamadart, right after a generation finished | 5 ms timer | 0 | 10 | 0 |
-| llamadart, 1 s after a generation finished | 5 ms timer | 0 | 0 | 0 |
-| llamadart, while generating | 5 ms timer | 6 | 10 | 0 |
-| worker isolate generating | none | 13 of 30 | 0 | 0 of 30 |
-| worker isolate generating | decoding in a loop | 13 of 30 | 10 | 3 of 30 |
-| worker isolate inside one decode of 1500 tokens | decoding in a loop | 10 of 30 | 10 | 17 of 30 |
-| right after a guarded call returned | decoding in a loop | 7 of 30 | 10 | 10 of 30 |
-| worker isolate idle after a generation | 5 ms timer | 0 | 9 | 0 |
-| worker isolate idle after a generation | decoding in a loop | 4 of 30 | 10 | 3 of 30 |
-| model idle for 400 ms | decoding in a loop | 8 of 30 | 0 | 6 of 30 |
-| `dart:io` `exit()` while generating; `main` returns while generating | none | 0 | 0 | 0 |
+| Exit | Other isolate | `v0.6.0-1` | This rebuild |
+| --- | --- | --- | --- |
+| llamadart `quit-generating` | none | 18 | 0 |
+| llamadart `quit-loaded`, `quit-loading`, `return-loaded`, `kill-loading` | none | 0 | 0 |
+| llamadart, right after a generation finished | 5 ms timer | 0 | 0 |
+| llamadart, 1 s after a generation finished | 5 ms timer | 0 | 0 |
+| llamadart, while generating | 5 ms timer | 25 | 0 |
+| llamadart `throw-generating`, `throw-loading` (exit code 255 expected) | none | 255, 10 of 10 | 255, 10 of 10 |
+| worker isolate generating | none | 15 | 0 |
+| worker isolate generating | looping | 12 | 0 |
+| worker isolate generating, slow host | looping | 30 | 1 |
+| worker isolate inside one decode of 1500 tokens | looping | 15 of 50 | 0 of 50 |
+| worker isolate inside one decode of 1500 tokens, slow host | looping | 50 of 50 | 0 of 50 |
+| worker isolate idle after a generation | none | 0 | 0 |
+| worker isolate idle after a generation | 5 ms timer | 0 | 0 |
+| worker isolate idle after a generation | looping | 12 of 100 | 11 of 100 |
+| right after a guarded call returned | looping | 36 of 100 | 24 of 100 |
+| model idle for 400 ms | looping | 23 of 100 | 20 of 100 |
+| `dart:io` `exit()` while generating; `main` returns while generating | none | 0 | 0 |
+| worker generating; a 300 ms exit handler registered right before the exit | none | 25 | 19 |
+| worker inside the long decode; the same late handler | looping | 30 | 30 |
 
-The failures of `v0.6.0-1` while generating are the `SIGSEGV` of the issue.
-Those of this rebuild are all the abort of the Dart VM. An isolate that
-decodes in a loop makes the VM abort in about a fifth of the exits with a
-model loaded even where libllamadart has no handler at all (19 of 90 in the
-three rows of `v0.6.0-1` with no call in flight), so the rows with one
-compare rates: this rebuild is at the rate of `v0.6.0-1` where no call is in
-flight (19 of 90), and below it while generating. It is above it in one row,
-17 of 30 against 10 of 30: an exit inside a long decode while another isolate
-keeps collecting garbage. The exit waits there until the decode has ended,
-which takes as long as the tensor that is being computed, and the VM aborts
-in that time.
+The failures of `v0.6.0-1` with a call in flight are the `SIGSEGV` of the
+issue, or the abort of the Dart VM. All the failures of this rebuild are the
+abort of the Dart VM, in exits that go on:
+
+- The three rows with a looping isolate and no call in flight. The VM aborts
+  there whether libllamadart has a handler or not, and at a rate that moves
+  with the load of the machine: the 100 runs of a row were taken in turns of
+  ten for each build, an earlier sample of 30 gave 0 to 4 for `v0.6.0-1` and 0
+  to 1 for this rebuild, and the audit saw 1 of 90 and 0 of 90. The handler
+  returns at once in these exits and adds nothing to them.
+- The one of 30 with a slow host: the exit fell between two guarded calls of
+  the worker, found none in flight, and went on into the 300 ms handler.
+- The last two rows, where a handler that was registered after libllamadart's
+  runs before it and takes its 300 ms first. libllamadart cannot run before a
+  handler that is registered later.
 
 ## Checks
 
@@ -311,22 +351,27 @@ without `LD_LIBRARY_PATH`. In the container above:
   with leak detection off, with no report. With it on, `barrier-grammar`
   reports 80 bytes that llama.cpp leaks when a lazy grammar is rejected
   (`llama-sampler.cpp:2777`), as before this change, and nothing else does.
-- The same test source against the libraries of `v0.6.0-1`: `model-decode`,
-  `model-late-load` and `model-decode-outlasts-wait` end in `SIGSEGV`, and
-  `model-load` and `model-free-in-flight` report that the exit did not wait,
-  5 of 5 each.
+- The same test source against the libraries of `v0.6.0-1`, five runs each:
+  `model-decode`, `model-unguarded-decode` and `model-exit-join-generating`
+  end in `SIGSEGV` every time and `model-late-load` four times;
+  `exit-in-flight`, `exit-status`, `model-load` and `model-free-in-flight`
+  fail because the exit went on under a call in flight; `exit-late-calls` and
+  `model-exit-join-idle` fail because a free after the exit still freed.
 - Each part removed in turn fails a scenario:
 
   | Removed | Fails |
   | --- | --- |
-  | the static destructor object | `model-decode-outlasts-wait` (`SIGSEGV`); `validate_linux_artifact.py` names seven libraries |
+  | the static destructor object | `model-unguarded-decode` (`SIGSEGV`); `validate_linux_artifact.py` names the libraries |
+  | ending the process for a call in flight | `exit-in-flight`, `exit-status`, `model-load`, `model-free-in-flight` |
   | the handler at the first creating call | `model-load` |
-  | the handler at the first tracked object | `exit-in-flight` |
-  | the exit that frees nothing | `exit` |
-  | the abort callback | `model-decode-ended` |
-  | the return before the 250 ms | `model-exit-idle` (260 ms against a bound of 100 ms) |
-  | threads not blocked after the exit | `exit-late-calls`, `model-exit-join-idle`, `model-exit-join-generating` |
+  | the handler at the first tracked object | `exit-in-flight`, `exit-status`, `exit-late-calls` |
+  | the exit status | `exit-status` |
+  | the flush of the standard streams | `exit-status` |
+  | returning at once with no call in flight (250 ms added) | `model-exit-idle` |
+  | threads not blocked after the exit | `exit-late-calls`, `model-exit-join-idle` |
   | the refusal of a late call | `exit-late-calls` |
+  | the exemption of the exiting thread | `exit-late-calls` |
+  | `-z nodelete` | `validate_linux_artifact.py` |
 
 `validate_exports.py --forbid-import` now reads ELF imports with
 `--format readelf`. With `--format nm` it reads names as Mach-O ones, without
@@ -340,7 +385,7 @@ a build with `GGML_VULKAN=ON`, Mesa's `mesa-vulkan-drivers` and
 macOS arm64 (Apple M4 Max), `macos-arm64-full` preset: `libllamadart.dylib`
 built from this tree and from `v0.6.0-1` at the same path have the same
 SHA-256, and 46 of 46 CTest cases pass (45 before; `exit-in-flight` is new).
-186 Python tests pass (183 before), and the 20 of the Linux artifact tools
+186 Python tests pass (183 before), and the 22 of the Linux artifact tools
 (18 before).
 
 ## Not verified
@@ -352,10 +397,15 @@ SHA-256, and 46 of 46 CTest cases pass (45 before; `exit-in-flight` is new).
   `quit-loaded`, `quit-generating`, `quit-loading`, `return-loaded` and
   dispose-then-quit scenarios of llamadart's
   `test/fixtures/llama_cpp_exit_probe.dart` on the `v0.6.0-2` bundle, with the
-  CPU, Vulkan and CUDA backends, at least 10 runs each, and an exit inside a
-  prompt decode that takes longer than two seconds on each GPU backend, 50
-  runs, against `v0.6.0-1`.
+  CPU, Vulkan and CUDA backends, at least 10 runs each, against `v0.6.0-1`.
+  The scenarios with a call in flight end in `_exit` on every backend, which
+  the container shows; what a GPU host adds is the exits that go on: a model
+  left loaded, and a handler of the driver that was registered after
+  libllamadart's.
 - Linux x64 by hand. The measurements are arm64; `validate_wrapper.yml` runs
   the scenarios on x64.
 - HIP and musl builds, Android and Windows.
-- Flutter. The Dart rows are the standalone VM.
+- Flutter. The Dart rows are the standalone VM, and whether a Flutter Linux
+  window close reaches C `exit()` with a worker inside a guarded call is not
+  known. If it does, the exit ends there and the engine's own exit handlers
+  do not run.
