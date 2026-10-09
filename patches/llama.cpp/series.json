@@ -1,3 +1,12 @@
 {
-  "patches": []
+  "patches": [
+    {
+      "file": "0001-vulkan-adreno-750-matvec-shared-memory-reduction.patch",
+      "tracking": "https://github.com/leehack/llamadart-native/issues/79",
+      "upstream": "https://github.com/ggml-org/llama.cpp/pull/29165",
+      "android_markers": [
+        {"library": "libggml-vulkan.so", "text": "Adreno (TM) 750"}
+      ]
+    }
+  ]
 }
