@@ -354,21 +354,30 @@ LLAMADART_API int32_t llama_dart_vulkan_get_device_info(
 // destructor. On Apple platforms it runs during exit, before the first static
 // of libllamadart is destroyed.
 //
-// On Linux, Android excepted, C exit() runs the wait of teardown and frees
-// nothing. By the time the exit goes on to what other libraries do at exit,
-// the calls in flight have ended and every thread that reaches libllamadart
-// is blocked. Nothing on Linux needs the objects freed, and an exit with a
-// model left loaded is known to be clean, which a free among the exit
-// handlers of a GPU driver is not. llama.cpp is not part of libllamadart
-// there, and its libraries register no static destructors: their statics stay
-// valid until the process is gone, also under a call that the wait does not
-// cover. The wait begins when the exit reaches the handler that libllamadart
+// On Linux, Android excepted, C exit() runs the wait of teardown and nothing
+// else. It waits for the calls in flight, for no longer than they take: with
+// none in flight it returns at once. It frees nothing and blocks no thread.
+// Nothing on Linux needs the objects freed, and an exit with a model left
+// loaded is known to be clean, which a free among the exit handlers of a GPU
+// driver is not. llama.cpp is not part of libllamadart there, and its
+// libraries register no static destructors: their statics stay valid until
+// the process is gone, also under a call that the wait does not cover.
+//
+// Once that wait has begun, a thread other than the exiting one gets this
+// from libllamadart instead of being blocked: a call in flight that begins
+// returns the failure value of its function, with "the process is exiting"
+// as the last error, and starts nothing; llama_dart_exit_free frees nothing;
+// llama_dart_exit_track and llama_dart_exit_untrack return false;
+// llama_dart_exit_call_begin counts nothing. The call that the exit waited
+// for returns to its caller. While teardown waits, and from then on after an
+// exit, a decode or an encode on the CPU backend ends with the status
+// llama.cpp has for an aborted one, 2, unless its context has an abort
+// callback of its own.
+//
+// The wait begins when the exit reaches the handler that libllamadart
 // registers at the first creating call and again when the first object is
 // tracked, so an exit handler that another library registers later runs
-// before it. While teardown waits, on Linux a decode or an encode on the CPU
-// backend ends with the status llama.cpp has for an aborted one, 2, unless
-// its context has an abort callback of its own. quick_exit and _exit run
-// nothing.
+// before it. quick_exit and _exit run nothing.
 //
 // Elsewhere nothing runs at exit. llama_dart_exit_teardown runs teardown, and
 // frees, on every platform.
@@ -468,7 +477,8 @@ LLAMADART_API struct llama_model * llama_dart_model_load_from_file(
 
 // llama_init_from_model that tracks the context in the CONTEXT stage. Free it
 // with llama_dart_exit_free. On Linux, when params has no abort callback, the
-// context gets the one that ends its evaluations while teardown waits;
+// context gets the one that ends its evaluations while teardown waits, as do
+// the draft contexts that the speculative and MTP init functions create;
 // llama_set_abort_callback replaces it. Blocks after teardown.
 LLAMADART_API struct llama_context * llama_dart_init_from_model(
     struct llama_model * model,

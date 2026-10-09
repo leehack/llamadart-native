@@ -386,9 +386,14 @@ if (LLAMADART_BUILD_TESTS)
                 FIXTURES_REQUIRED llamadart_exit_teardown_model)
         endforeach()
         # What only Linux does: teardown ends a decode on the CPU backend,
-        # and the statics of llama.cpp outlive an exit.
+        # the statics of llama.cpp outlive an exit, and the exit takes time
+        # only for a call in flight and blocks no thread.
         if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
-            foreach(scenario model-decode-ended model-decode-outlasts-wait)
+            add_test(NAME llamadart_exit_teardown_exit-late-calls
+                COMMAND llamadart_exit_teardown_test exit-late-calls)
+            foreach(scenario model-decode-ended model-decode-outlasts-wait
+                    model-exit-idle model-exit-join-idle
+                    model-exit-join-generating)
                 add_test(NAME llamadart_exit_teardown_${scenario}
                     COMMAND llamadart_exit_teardown_test ${scenario}
                         "${exit_teardown_model}")
@@ -432,6 +437,16 @@ if (LLAMADART_BUILD_TESTS)
                         "${LLAMADART_EXIT_TEARDOWN_TEST_MMPROJ}")
             endforeach()
         endif()
+    endif()
+
+    # The Linux presets give every binary the run path $ORIGIN, which the
+    # bundle needs, while the build tree keeps the llama.cpp libraries in a
+    # directory of their own.
+    if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        get_property(llamadart_tests DIRECTORY PROPERTY TESTS)
+        set_tests_properties(${llamadart_tests} PROPERTIES
+            ENVIRONMENT_MODIFICATION
+            "LD_LIBRARY_PATH=path_list_prepend:$<TARGET_FILE_DIR:llama>;LD_LIBRARY_PATH=path_list_prepend:$<TARGET_FILE_DIR:llamadart_lib>")
     endif()
 
     # Contract assertions must execute against optimized Release libraries too.
