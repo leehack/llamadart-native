@@ -386,6 +386,7 @@ jobs:
           llamadart_tts_api_test
           llamadart_tts_eval_test
           llamadart_mtmd_compat_test
+          llamadart_image_token_limit_test
           llamadart_barrier_test
           llamadart_vulkan_device_info_test
           llamadart_exit_teardown_test
@@ -465,13 +466,14 @@ jobs:
           llamadart_exit_teardown_test
           llamadart_vulkan_device_info_test
           llamadart_tts_api_test
+          llamadart_image_token_limit_test
       - name: Run the barrier and Vulkan probe tests
         shell: pwsh
         run: |
           $wrapperDir = (Resolve-Path build/wx64).Path
           $upstreamDir = (Resolve-Path build/wx64/bin).Path
           $env:PATH = "$wrapperDir;$upstreamDir;$env:PATH"
-          ctest --test-dir build/wx64 -R "barrier|vocabulary|vulkan_device_info|tts_api" --timeout 120 --output-on-failure
+          ctest --test-dir build/wx64 -R "barrier|vocabulary|vulkan_device_info|tts_api|image_token_limit" --timeout 120 --output-on-failure
       - name: Validate wrapper exports
         shell: pwsh
         run: |
@@ -525,7 +527,9 @@ jobs:
           -DGGML_CCACHE=OFF
           -DLLAMADART_BUILD_TESTS=ON
       - name: Build the exit teardown test
-        run: cmake --build ${{ matrix.build_dir }} --target llamadart_exit_teardown_test
+        run: >-
+          cmake --build ${{ matrix.build_dir }} --target
+          llamadart_exit_teardown_test llamadart_image_token_limit_test
       - name: Validate wrapper exports and the static destructor binding
         run: >-
           python3 tools/validate_exports.py --format nm --tool nm
@@ -536,7 +540,7 @@ jobs:
       # the Metal library, which takes most of a minute.
       - name: Run the exit teardown scenarios
         run: >-
-          ctest --test-dir ${{ matrix.build_dir }} -R exit_teardown
+          ctest --test-dir ${{ matrix.build_dir }} -R "exit_teardown|image_token_limit"
           --timeout 300 --output-on-failure
       # A model that nothing tracks aborts at exit when Metal residency sets
       # are live. Whether a runner has them is outside this repository's
