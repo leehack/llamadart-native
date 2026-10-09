@@ -454,6 +454,16 @@ LLAMADART_API struct llama_context * llama_dart_init_from_model(
     struct llama_model * model,
     struct llama_context_params params);
 
+// Capability probe for an explicit mtmd_context_params.image_max_tokens.
+// Reads projector metadata only; does not load weights or initialize a GPU.
+// Returns 1 for a Gemma 4 vision projector (gemma4v/gemma4uv) and a limit
+// in [70, 1120], 0 for an unsupported projector/limit, -1 for a read error
+// or invalid arguments (llama_dart_last_error describes the error).
+// It is a vision-patch budget, not a limit on prompt/marker tokens. Defaults
+// are unchanged unless the caller explicitly sets image_max_tokens.
+LLAMADART_API int32_t llama_dart_mtmd_supports_image_token_limit(
+    const char * mmproj_fname, int32_t max_tokens);
+
 // mtmd_init_from_file that tracks the context in the MODEL_USER stage. Free it
 // with llama_dart_exit_free. Blocks after teardown.
 LLAMADART_API struct mtmd_context * llama_dart_mtmd_init_from_file(

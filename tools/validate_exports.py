@@ -26,6 +26,7 @@ DEFAULT_REQUIRED_SYMBOLS = [
     "llama_dart_model_load_from_file",
     "llama_dart_init_from_model",
     "llama_dart_mtmd_init_from_file",
+    "llama_dart_mtmd_supports_image_token_limit",
     "llama_dart_decode",
     "llama_dart_encode",
     "llama_dart_synchronize",

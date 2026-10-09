@@ -1,4 +1,5 @@
 #include "llama_dart_wrapper.h"
+#include "llama_dart_image_token_limit_internal.h"
 #include "llama_dart_barrier_internal.h"
 #include "llama_dart_mtp_internal.h"
 #include "llama_dart_mtmd_compat.h"
@@ -1160,6 +1161,17 @@ llama_dart_init_from_model(struct llama_model *model,
     return llama_dart_exit_track_created(
         llama_init_from_model(model, params), llama_dart_exit_free_context,
         LLAMA_DART_EXIT_STAGE_CONTEXT);
+  });
+}
+
+LLAMADART_API int32_t llama_dart_mtmd_supports_image_token_limit(
+    const char *mmproj_fname, int32_t max_tokens) {
+  return llama_dart_barrier<int32_t>(-1, [mmproj_fname, max_tokens] {
+    if (mmproj_fname == nullptr || max_tokens <= 0) {
+      throw std::invalid_argument("image token limit needs a projector and a positive limit");
+    }
+    llama_dart_exit_creating_call call;
+    return llama_dart_image_token_limit_supported(mmproj_fname, max_tokens);
   });
 }
 
