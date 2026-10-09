@@ -1543,6 +1543,7 @@ int test_model_exit_join_generating(const char *path) {
         sleep_ms(1);
       }
     }
+    llama_sampler_free(sampler);
     g_worker_done.store(true);
   }).detach();
   while (steps.load() < 3) {

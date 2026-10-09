@@ -296,12 +296,16 @@ the threads that were still inside it, and those crashed
   the process is gone. On Linux they are separate libraries, and no exit
   handler of `libllamadart` can be ordered before the destructor of a static
   that another library creates later.
-- C `exit` runs the wait of teardown and frees nothing: it waits for the
-  calls in flight as above, cancels a model load, ends a decode or an encode
-  on the CPU backend (status 2, unless the context has an abort callback of
-  its own), and blocks the threads that reach `libllamadart` afterwards. The
-  exit handlers and destructors of other libraries, such as a GPU driver or
-  OpenBLAS, then run with no call in flight.
+- C `exit` runs the wait of teardown and nothing else. It waits for the calls
+  in flight as above, cancels a model load and ends a decode or an encode on
+  the CPU backend (status 2, unless the context has an abort callback of its
+  own). With no call in flight it returns at once. The exit handlers and
+  destructors of other libraries, such as a GPU driver or OpenBLAS, then run
+  with no call in flight.
+- It frees nothing and blocks no thread. After it, a guarded call that begins
+  on another thread returns its failure value with `the process is exiting`
+  as the last error, and `llama_dart_exit_free` frees nothing, so a host whose
+  own exit handler joins a worker gets it back.
 - The wait runs at the handler registered at the first creating call and
   again at the first tracked object. An exit handler that another library
   registers later runs before it.
