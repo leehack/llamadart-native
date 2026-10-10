@@ -1,0 +1,22 @@
+diff --git a/ggml/src/ggml-vulkan/ggml-vulkan.cpp b/ggml/src/ggml-vulkan/ggml-vulkan.cpp
+index 5587dfc..b7074ad 100644
+--- a/ggml/src/ggml-vulkan/ggml-vulkan.cpp
++++ b/ggml/src/ggml-vulkan/ggml-vulkan.cpp
+@@ -2897,5 +2897,16 @@ void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
+     uint32_t rm_iq = 2 * rm_kq;
+ 
+-    const bool use_subgroups = device->subgroup_arithmetic;
++    bool use_subgroups = device->subgroup_arithmetic;
++#if defined(__ANDROID__)
++    // Carried by llamadart-native (leehack/llamadart-native#79, ggml-org/llama.cpp#29165):
++    // this Adreno 750 driver's shader compiler crashes in vkCreateComputePipelines on the
++    // subgroup-reduction dequant mul_mat_vec shaders; fall back to shared-memory reduction.
++    if (device->properties.vendorID == 0x5143u &&
++        device->driver_id == vk::DriverId::eQualcommProprietary &&
++        device->properties.driverVersion == 2150604839u &&
++        strcmp(device->properties.deviceName.data(), "Adreno (TM) 750") == 0) {
++        use_subgroups = false;
++    }
++#endif
+     // The Imagination proprietary compiler rejects the subgroup-only dequant mul_mat_vec
+     // shaders that require a subgroup size >= 16; fall back to shared-memory reduction.

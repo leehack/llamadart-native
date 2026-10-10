@@ -1,0 +1,18 @@
+diff --git a/ggml/src/ggml-vulkan/ggml-vulkan.cpp b/ggml/src/ggml-vulkan/ggml-vulkan.cpp
+index 5587dfc..bca8a3c 100644
+--- a/ggml/src/ggml-vulkan/ggml-vulkan.cpp
++++ b/ggml/src/ggml-vulkan/ggml-vulkan.cpp
+@@ -4769,4 +4769,13 @@ vk_device ggml_vk_get_device(size_t idx) {
+         device->device = device->physical_device.createDevice(device_create_info);
+ 
++        // Carried by llamadart-native (leehack/llamadart#782): a driver below Vulkan 1.2 has no
++        // core vkGetBufferDeviceAddress, whatever VkPhysicalDeviceVulkan12Features reads as.
++        if (device->buffer_device_address &&
++            vkGetDeviceProcAddr(device->device, "vkGetBufferDeviceAddress") == nullptr) {
++            GGML_LOG_WARN("ggml_vulkan: %s has no vkGetBufferDeviceAddress, not using buffer device addresses\n",
++                          device->properties.deviceName.data());
++            device->buffer_device_address = false;
++        }
++
+         if (device->device_fault) {
+             device->pfn_vkGetDeviceFaultInfoEXT = (PFN_vkGetDeviceFaultInfoEXT)
