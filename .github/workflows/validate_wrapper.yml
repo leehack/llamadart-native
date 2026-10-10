@@ -406,6 +406,14 @@ jobs:
           --format nm
           --tool nm
           build/wrapper-contract/libllamadart.so
+      # The release archives get the same check from
+      # validate_linux_artifact.py.
+      - name: Check that no library registers static destructors with the C library
+        run: |
+          for library in build/wrapper-contract/libllamadart.so build/wrapper-contract/bin/*.so; do
+            python3 tools/validate_exports.py --format readelf --tool readelf \
+              --imports-only --forbid-import __cxa_atexit "$library"
+          done
 
   msvc-mtmd-link-contract:
     needs: changes

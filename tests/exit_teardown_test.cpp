@@ -30,6 +30,11 @@
 #define LLAMADART_TEST_ADDRESS_SANITIZER 1
 #endif
 
+#if defined(__linux__) && defined(__GLIBC__) && !defined(__ANDROID__)
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
+
 #if defined(LLAMADART_TEST_ADDRESS_SANITIZER)
 #include <sanitizer/asan_interface.h>
 #elif defined(__APPLE__)
@@ -464,15 +469,65 @@ int test_blocked() {
   return 0;
 }
 
+// C exit() runs teardown on Apple platforms: it waits for the calls in
+// flight, frees, and blocks the threads that reach libllamadart afterwards.
+// Linux retains owned statics and leaves normal libc exit untouched.
+// Hosts stop workers and the managed runtime before C exit.
 #if defined(__APPLE__)
-const bool kTeardownRunsAtExit = true;
+const bool kExitFreesObjects = true;
+const bool kExitWaitsForCalls = true;
+const bool kExitEndsProcess = false;
+const bool kExitRefusesLateCalls = false;
+#elif defined(__linux__) && defined(__GLIBC__) && !defined(__ANDROID__)
+const bool kExitFreesObjects = false;
+const bool kExitWaitsForCalls = false;
+const bool kExitEndsProcess = false;
+const bool kExitRefusesLateCalls = false;
 #else
-const bool kTeardownRunsAtExit = false;
+const bool kExitFreesObjects = false;
+const bool kExitWaitsForCalls = false;
+const bool kExitEndsProcess = false;
+const bool kExitRefusesLateCalls = false;
 #endif
+
+// Set by a scenario before the exit that a call may run into.
+std::atomic<bool> g_exit_expected{false};
+
+// Whether the calling thread's last call was refused because C exit() had
+// passed libllamadart already.
+bool refused_by_exit() {
+  const char *error = llama_dart_last_error();
+  return kExitRefusesLateCalls && g_exit_expected.load() && error != nullptr &&
+         strcmp(error, "the process is exiting") == 0;
+}
+
+// For an exit handler that a scenario registers before libllamadart registers
+// its own, so that it runs after it. Where the exit ends the process for a
+// call in flight, the exit never gets this far in such a scenario.
+void expect_process_ended(const char *what) {
+  if (kExitEndsProcess) {
+    fprintf(stderr, "the exit went on under %s\n", what);
+    _Exit(EXIT_FAILURE);
+  }
+}
+
+// Where the backends are modules next to the llama.cpp libraries and not part
+// of libllamadart, a scenario that computes has to load one. The CPU backend
+// alone keeps the scenarios the same whatever other modules the build has.
+void load_backend_modules() {
+#if defined(LLAMADART_TEST_CPU_BACKEND)
+  assert(ggml_backend_load(LLAMADART_TEST_CPU_BACKEND) != nullptr);
+#endif
+}
+
+void init_backends() {
+  llama_backend_init();
+  load_backend_modules();
+}
 
 void expect_freed_at_exit() {
   const std::vector<std::string> expected =
-      kTeardownRunsAtExit ? kStageOrder : std::vector<std::string>();
+      kExitFreesObjects ? kStageOrder : std::vector<std::string>();
   if (recorded() != expected) {
     fprintf(stderr, "exit teardown freed %zu objects, expected %zu\n",
             recorded().size(), expected.size());
@@ -484,6 +539,119 @@ int test_exit() {
   // Registered first, so it runs after the teardown registered by tracking.
   assert(atexit(expect_freed_at_exit) == 0);
   track_out_of_stage_order();
+  return 0;
+}
+
+std::atomic<bool> g_call_ended{false};
+
+void expect_call_ended_at_exit() {
+  expect_process_ended("a call in flight");
+  if (kExitWaitsForCalls && !g_call_ended.load()) {
+    fprintf(stderr, "the exit did not wait for the call in flight\n");
+    _Exit(EXIT_FAILURE);
+  }
+}
+
+// The exit sees a call in flight when objects were only tracked, with no
+// creating call: it waits for the call, or on Linux ends the process.
+int test_exit_in_flight() {
+  // Registered first, so it runs after the teardown registered by tracking.
+  assert(atexit(expect_call_ended_at_exit) == 0);
+  static char object[] = "object";
+  assert(llama_dart_exit_track(object, free_named,
+                               LLAMA_DART_EXIT_STAGE_MODEL));
+  static std::atomic<bool> started{false};
+  std::thread([] {
+    llama_dart_exit_call_begin();
+    started.store(true);
+    sleep_ms(400);
+    g_call_ended.store(true);
+    llama_dart_exit_call_end();
+  }).detach();
+  while (!started.load()) {
+    sleep_ms(1);
+  }
+  return 0;
+}
+
+char kLateObject[] = "late-object";
+llama_dart_ngram *g_created_at_exit = nullptr;
+
+// An earlier host callback still owns normal wrapper cleanup. No Dart VM
+// is active here, and no wrapper teardown has begun.
+void make_late_calls() {
+  assert(llama_dart_exit_tracked_count() == 1);
+  g_created_at_exit = llama_dart_ngram_simple_init(4, 8);
+  assert(g_created_at_exit != nullptr);
+  assert(llama_dart_last_error() == nullptr);
+  assert(llama_dart_exit_tracked_count() == 2);
+  llama_dart_exit_free(g_created_at_exit);
+  llama_dart_exit_free(kLateObject);
+  assert(llama_dart_exit_tracked_count() == 0);
+  assert(recorded() == std::vector<std::string>{"late-object"});
+}
+
+int test_exit_late_calls() {
+  assert(atexit(make_late_calls) == 0);
+  assert(llama_dart_exit_track(kLateObject, free_named,
+                               LLAMA_DART_EXIT_STAGE_MODEL));
+  return 0;
+}
+
+#if defined(__linux__) && defined(__GLIBC__) && !defined(__ANDROID__)
+std::atomic<bool> status_worker_stop{false};
+std::thread *status_worker = nullptr;
+FILE *status_locked_stream = nullptr;
+void status_host_callback() {
+  status_worker_stop.store(true);
+  status_worker->join();
+  printf(";host handler ran");
+}
+#endif
+
+// Normal C exit preserves its status, earlier callbacks and buffered output.
+// A host callback releases a FILE lock held by a marked native worker: an
+// unconditional fflush before that callback would hang. This native-only
+// compatibility control does not authorize live-Dart-isolate C exit.
+int test_exit_status() {
+#if defined(__linux__) && defined(__GLIBC__) && !defined(__ANDROID__)
+  int output[2];
+  assert(pipe(output) == 0);
+  const pid_t child = fork();
+  assert(child >= 0);
+  if (child == 0) {
+    close(output[0]);
+    assert(dup2(output[1], STDOUT_FILENO) >= 0);
+    assert(atexit(status_host_callback) == 0);
+    static char object[] = "object";
+    assert(llama_dart_exit_track(object, free_named,
+                                 LLAMA_DART_EXIT_STAGE_MODEL));
+    status_locked_stream = tmpfile();
+    assert(status_locked_stream != nullptr);
+    static std::atomic<bool> started{false};
+    status_worker = new std::thread([] {
+      llama_dart_exit_call_begin();
+      flockfile(status_locked_stream);
+      started.store(true);
+      while (!status_worker_stop.load()) sleep_ms(1);
+      funlockfile(status_locked_stream);
+      llama_dart_exit_call_end();
+    });
+    while (!started.load()) sleep_ms(1);
+    printf("flushed at exit");
+    exit(37);
+  }
+  close(output[1]);
+  std::string text;
+  char buffer[64];
+  for (ssize_t count; (count = read(output[0], buffer, sizeof(buffer))) > 0;) {
+    text.append(buffer, static_cast<size_t>(count));
+  }
+  int status = 0;
+  assert(waitpid(child, &status, 0) == child);
+  assert(WIFEXITED(status) && WEXITSTATUS(status) == 37);
+  assert(text == "flushed at exit;host handler ran");
+#endif
   return 0;
 }
 
@@ -511,7 +679,7 @@ int test_late_static() {
   g_system_info = llama_print_system_info();
   // The reader needs text that lives on the heap for a sanitizer to see a use
   // after the static is gone. There is none where no backend is loaded.
-  assert(!kTeardownRunsAtExit || g_system_info.size() > 64);
+  assert(!kExitFreesObjects || g_system_info.size() > 64);
   return 0;
 }
 
@@ -670,7 +838,7 @@ struct model_fixture {
 };
 
 model_fixture load_model(const char *path, model_options options = {}) {
-  llama_backend_init();
+  init_backends();
   model_fixture fixture;
   auto model_params = llama_model_default_params();
   static ggml_backend_dev_t no_devices[] = {nullptr};
@@ -703,7 +871,8 @@ llama_batch prompt(model_fixture &fixture) {
 }
 
 void clear_memory(model_fixture &fixture) {
-  assert(llama_dart_memory_clear(llama_get_memory(fixture.context), true));
+  assert(llama_dart_memory_clear(llama_get_memory(fixture.context), true) ||
+         refused_by_exit());
 }
 
 llama_sampler *greedy_sampler() {
@@ -716,8 +885,11 @@ llama_sampler *greedy_sampler() {
 // One generation step as the Dart side runs it: decode, then sample.
 llama_token decode_and_sample(model_fixture &fixture, llama_sampler *sampler) {
   clear_memory(fixture);
-  assert(llama_dart_decode(fixture.context, prompt(fixture)) == 0);
-  return llama_dart_sampler_sample(sampler, fixture.context, -1);
+  const int32_t status = llama_dart_decode(fixture.context, prompt(fixture));
+  assert(status == 0 || refused_by_exit());
+  // A decode that was refused has left nothing to sample.
+  return status == 0 ? llama_dart_sampler_sample(sampler, fixture.context, -1)
+                     : 0;
 }
 
 // Exits with a loaded model and context that nothing frees.
@@ -838,7 +1010,7 @@ int test_model_wrappers(const char *path) {
 }
 
 int test_graph() {
-  llama_backend_init();
+  init_backends();
   ggml_backend_t backend = llama_dart_ggml_backend_dev_init(
       ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU), nullptr);
   assert(backend != nullptr);
@@ -1221,6 +1393,7 @@ int exit_while_generating(model_fixture &fixture) {
   while (steps.load() < 4) {
     sleep_ms(1);
   }
+  g_exit_expected.store(true);
   g_exiting.store(true);
   return 0;
 }
@@ -1230,6 +1403,149 @@ int test_model_decode(const char *path) {
   static model_fixture fixture;
   fixture = load_model(path);
   return exit_while_generating(fixture);
+}
+
+std::atomic<int> g_computed_after_release{0};
+
+// Holds the evaluation and, once it is released, has each tensor computed on
+// its own so that the ones computed from then on can be counted.
+bool hold_then_count_evaluation(ggml_tensor *tensor, bool ask, void *data) {
+  if (!ask) {
+    g_computed_after_release.fetch_add(1);
+    return true;
+  }
+  hold_evaluation(tensor, ask, data);
+  return g_release_evaluation.load();
+}
+
+void finish_held_evaluation_at_exit() {
+  g_release_evaluation.store(true);
+  const int64_t started = now_ms();
+  while (g_computed_after_release.load() < 16) {
+    if (now_ms() - started > 10000) {
+      fprintf(stderr, "the held decode did not go on during the exit\n");
+      _Exit(EXIT_FAILURE);
+    }
+    sleep_ms(1);
+  }
+}
+
+// Exits while another thread is inside a decode that is not a call in
+// flight, so that the exit goes on under it. On Linux no library of the
+// bundle registers static destructors, so the decode computes on, with the
+// statics the model load created, after the exit has run its handlers.
+int test_model_unguarded_decode(const char *path) {
+  // Registered first, so it runs after the handler of libllamadart and after
+  // the destructors of the statics that the load creates, where those are
+  // registered.
+  assert(atexit(finish_held_evaluation_at_exit) == 0);
+  static model_fixture fixture;
+  model_options options;
+  options.eval_callback = hold_then_count_evaluation;
+  fixture = load_model(path, options);
+  decode_prompt(fixture);
+  clear_memory(fixture);
+  g_hold_evaluation.store(true);
+  std::thread([] {
+    assert(llama_decode(fixture.context, prompt(fixture)) == 0);
+  }).detach();
+  while (!g_evaluation_held.load()) {
+    sleep_ms(1);
+  }
+  return 0;
+}
+
+std::atomic<int64_t> g_returned_from_main_ms{0};
+
+void expect_exit_took_no_time() {
+  const int64_t took = now_ms() - g_returned_from_main_ms.load();
+  if (took > 100) {
+    fprintf(stderr, "the exit took %lld ms with no call in flight\n",
+            static_cast<long long>(took));
+    _Exit(EXIT_FAILURE);
+  }
+}
+
+// On Linux an exit with no call in flight takes no time in libllamadart,
+// also right after a guarded call returned: a Dart VM aborts when its
+// isolates run while exit() takes its time.
+int test_model_exit_idle(const char *path) {
+  // Registered first, so it runs after the handler of libllamadart.
+  assert(atexit(expect_exit_took_no_time) == 0);
+  static model_fixture fixture;
+  fixture = load_model(path);
+  llama_sampler *sampler = greedy_sampler();
+  assert(decode_and_sample(fixture, sampler) >= 0);
+  llama_sampler_free(sampler);
+  g_returned_from_main_ms.store(now_ms());
+  return 0;
+}
+
+std::atomic<bool> g_worker_stop{false};
+std::atomic<bool> g_worker_done{false};
+
+// What a host does that stops its worker at exit: the worker must come back.
+void stop_and_join_worker() {
+  g_worker_stop.store(true);
+  const int64_t started = now_ms();
+  while (!g_worker_done.load()) {
+    if (now_ms() - started > 10000) {
+      fprintf(stderr, "the worker did not come back during the exit\n");
+      _Exit(EXIT_FAILURE);
+    }
+    sleep_ms(1);
+  }
+}
+
+// On Linux the exit blocks no thread: a worker that frees its model when the
+// host's own exit handler tells it to returns from the frees, which free
+// nothing any more.
+int test_model_exit_join_idle(const char *path) {
+  // Registered first, so it runs after the handler of libllamadart.
+  assert(atexit(stop_and_join_worker) == 0);
+  static model_fixture fixture;
+  fixture = load_model(path);
+  std::thread([] {
+    while (!g_worker_stop.load()) {
+      sleep_ms(1);
+    }
+    llama_dart_exit_free(fixture.context);
+    llama_dart_exit_free(fixture.model);
+    if (llama_dart_exit_tracked_count() != 0) {
+      fprintf(stderr, "host worker cleanup left tracked objects\n");
+      _Exit(EXIT_FAILURE);
+    }
+    g_worker_done.store(true);
+  }).detach();
+  return 0;
+}
+
+// The same with a worker that generates until it is told to stop. An exit
+// that finds its decode in flight ends the process; one that falls between
+// two calls goes on, every call the worker begins afterwards is refused, and
+// the worker comes back.
+int test_model_exit_join_generating(const char *path) {
+  assert(atexit(stop_and_join_worker) == 0);
+  static model_fixture fixture;
+  static std::atomic<int> steps{0};
+  fixture = load_model(path);
+  std::thread([] {
+    llama_sampler *sampler = greedy_sampler();
+    while (!g_worker_stop.load()) {
+      assert(decode_and_sample(fixture, sampler) >= 0);
+      steps.fetch_add(1);
+      if (refused_by_exit()) {
+        sleep_ms(1);
+      }
+    }
+    llama_sampler_free(sampler);
+    g_worker_done.store(true);
+  }).detach();
+  while (steps.load() < 3) {
+    sleep_ms(1);
+  }
+  g_exit_expected.store(true);
+  return 0;
 }
 
 // Exits while another thread generates on a model whose load created statics
@@ -1248,9 +1564,22 @@ int test_model_late_load(const char *path) {
   return exit_while_generating(second);
 }
 
+std::atomic<bool> g_load_resumed{false};
+
+void expect_exit_waited_for_load() {
+  expect_process_ended("a load in flight");
+  if (kExitWaitsForCalls && !g_load_resumed.load()) {
+    fprintf(stderr, "the exit did not wait for the load in flight\n");
+    _Exit(EXIT_FAILURE);
+  }
+}
+
 // Exits while another thread is loading the model.
 int test_model_load(const char *path) {
-  llama_backend_init();
+  // Registered first, so it runs after the handler of libllamadart, which
+  // nothing but the load in flight makes run: nothing is tracked.
+  assert(atexit(expect_exit_waited_for_load) == 0);
+  init_backends();
   static std::atomic<bool> loading{false};
   static const char *model_path = nullptr;
   model_path = path;
@@ -1269,6 +1598,7 @@ int test_model_load(const char *path) {
       sleep_ms(1);
     }
     sleep_ms(500);
+    g_load_resumed.store(true);
     return true;
   };
   std::thread([params] {
@@ -1285,7 +1615,7 @@ int test_model_load(const char *path) {
 
 // Teardown waits for a load in flight although nothing is tracked yet.
 int test_model_load_wait(const char *path) {
-  llama_backend_init();
+  init_backends();
   static std::atomic<bool> loading{false};
   static std::atomic<bool> held{false};
   static const char *model_path = nullptr;
@@ -1377,6 +1707,7 @@ void free_model_when_teardown_waits(void *object) {
 }
 
 void expect_free_finished_at_exit() {
+  expect_process_ended("a free in flight");
   if (!g_free_finished.load() || g_released_before_teardown.load()) {
     fprintf(stderr, "the exit did not wait for the free in flight\n");
     _Exit(EXIT_FAILURE);
@@ -1387,6 +1718,24 @@ void expect_free_finished_at_exit() {
 // Metal aborts in its static destructor when the exit does not wait for the
 // free; without Metal the check at exit shows it.
 int test_model_free_in_flight(const char *path) {
+#if defined(__linux__) && !defined(__ANDROID__)
+  // Linux waits in the host, before libc exit / dependency destructors.
+  assert(atexit([] { assert(g_free_finished.load()); }) == 0);
+  auto fixture = load_model(path);
+  llama_dart_exit_free(fixture.context);
+  assert(llama_dart_exit_track(fixture.model, [](void *object) {
+    g_free_started.store(true);
+    sleep_ms(300);
+    llama_model_free(static_cast<llama_model *>(object));
+    g_free_finished.store(true);
+  }, LLAMA_DART_EXIT_STAGE_MODEL));
+  std::thread worker([fixture] { llama_dart_exit_free(fixture.model); });
+  while (!g_free_started.load()) sleep_ms(1);
+  worker.join();
+  assert(g_free_finished.load());
+  assert(llama_dart_exit_tracked_count() == 0);
+  return 0;
+#else
   // Registered first, so it runs after teardown and after the Metal device,
   // which the load creates, is destroyed.
   assert(atexit(expect_free_finished_at_exit) == 0);
@@ -1407,6 +1756,7 @@ int test_model_free_in_flight(const char *path) {
   }
   assert(llama_dart_exit_tracked_count() == 0);
   return 0;
+#endif
 }
 
 // Evaluates an image prompt chunk by chunk, as the Dart side does.
@@ -2137,7 +2487,7 @@ using tokens = std::vector<llama_token>;
 // and stops at an end-of-generation token that the draft predicted, as
 // llama.cpp's common_sampler_sample_and_accept_n does.
 int test_model_sample_accept(const char *path) {
-  llama_backend_init();
+  init_backends();
   auto model_params = llama_model_default_params();
   // On the CPU, where every device can run the backend sampler's argmax: the
   // Metal device of a virtual machine cannot.
@@ -2253,6 +2603,10 @@ int main(int argc, char **argv) {
   const std::string scenario = argc > 1 ? argv[1] : "";
   const char *first = argc > 2 ? argv[2] : nullptr;
   const char *second = argc > 3 ? argv[3] : nullptr;
+  // Forks, so it runs before anything starts a thread.
+  if (scenario == "exit-status") {
+    return test_exit_status();
+  }
   // Keeps llama.cpp's device, load and decode logs out of the test output.
   llama_dart_set_log_level(3);
   if (scenario == "dispose") {
@@ -2287,6 +2641,12 @@ int main(int argc, char **argv) {
   }
   if (scenario == "exit") {
     return test_exit();
+  }
+  if (scenario == "exit-in-flight") {
+    return test_exit_in_flight();
+  }
+  if (scenario == "exit-late-calls") {
+    return test_exit_late_calls();
   }
   if (scenario == "late-static") {
     return test_late_static();
@@ -2366,6 +2726,18 @@ int main(int argc, char **argv) {
     }
     if (scenario == "model-decode") {
       return test_model_decode(first);
+    }
+    if (scenario == "model-exit-idle") {
+      return test_model_exit_idle(first);
+    }
+    if (scenario == "model-exit-join-idle") {
+      return test_model_exit_join_idle(first);
+    }
+    if (scenario == "model-exit-join-generating") {
+      return test_model_exit_join_generating(first);
+    }
+    if (scenario == "model-unguarded-decode") {
+      return test_model_unguarded_decode(first);
     }
     if (scenario == "model-late-load") {
       return test_model_late_load(first);

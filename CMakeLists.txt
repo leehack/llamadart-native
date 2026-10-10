@@ -190,9 +190,41 @@ endif()
 
 llamadart_attach_android_cpu_backend_score(ggml-cpu)
 
+# Adds src/llama_dart_static_destructors.c to every shared library and backend
+# module that llama.cpp builds, whatever backends are enabled. libllamadart
+# gets it below.
+function(llamadart_drop_static_destructors directory)
+    get_property(target_names DIRECTORY "${directory}" PROPERTY BUILDSYSTEM_TARGETS)
+    foreach(target_name IN LISTS target_names)
+        get_target_property(target_type ${target_name} TYPE)
+        if (target_type STREQUAL "SHARED_LIBRARY" OR target_type STREQUAL "MODULE_LIBRARY")
+            target_sources(${target_name} PRIVATE
+                $<TARGET_OBJECTS:llamadart_static_destructors>)
+        endif()
+    endforeach()
+    get_property(subdirectories DIRECTORY "${directory}" PROPERTY SUBDIRECTORIES)
+    foreach(subdirectory IN LISTS subdirectories)
+        llamadart_drop_static_destructors("${subdirectory}")
+    endforeach()
+endfunction()
+
+if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    add_library(llamadart_static_destructors OBJECT
+        "src/llama_dart_static_destructors.c")
+    llamadart_drop_static_destructors(
+        "${CMAKE_CURRENT_SOURCE_DIR}/third_party/llama.cpp")
+endif()
+
 add_library(llamadart_lib SHARED
     "src/llama_dart_wrapper.cpp"
     "src/llama_dart_vulkan_device_info.cpp")
+if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    target_sources(llamadart_lib PRIVATE
+        $<TARGET_OBJECTS:llamadart_static_destructors>)
+    # Held objects and native finalizer callbacks may outlive a dlclose.
+    # Retain the wrapper together with the owned statics.
+    target_link_options(llamadart_lib PRIVATE -Wl,-z,nodelete)
+endif()
 # The Vulkan device facts need only the Vulkan types: the loader is opened at
 # run time, so libllamadart links no Vulkan library and loads without one.
 set(LLAMADART_VULKAN_HEADERS_INCLUDE
@@ -308,8 +340,8 @@ if (LLAMADART_BUILD_TESTS)
         src
     )
     foreach(scenario dispose order repeat in-flight nested settle timeout
-            idle-wait own-call blocked exit late-static free-in-flight
-            free-timeout barrier-free barrier-free-idle)
+            idle-wait own-call blocked exit exit-in-flight late-static
+            free-in-flight free-timeout barrier-free barrier-free-idle)
         add_test(NAME llamadart_exit_teardown_${scenario}
             COMMAND llamadart_exit_teardown_test ${scenario})
     endforeach()
@@ -327,14 +359,19 @@ if (LLAMADART_BUILD_TESTS)
             "${exit_teardown_vocabulary_model}")
     set_tests_properties(llamadart_exit_teardown_barrier-grammar PROPERTIES
         FIXTURES_REQUIRED llamadart_exit_teardown_vocabulary_model)
-    # Teardown runs at exit on Apple only, and only there are the backends part
-    # of libllamadart, so the scenarios that load a model run there. They use a
-    # model the test writes itself unless one is given.
+    # Apple automatic teardown and Linux retained statics are exercised
+    # with CPU models. They use a model the test writes itself unless one is
+    # given. On Linux the backends are modules, of which the test loads the
+    # CPU one.
     set(LLAMADART_EXIT_TEARDOWN_TEST_MODEL "" CACHE FILEPATH
         "GGUF model for the exit teardown tests instead of the generated one")
     set(LLAMADART_EXIT_TEARDOWN_TEST_MMPROJ "" CACHE FILEPATH
         "GGUF multimodal projector of that model for the mtmd exit teardown tests")
-    if (APPLE)
+    if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        target_compile_definitions(llamadart_exit_teardown_test PRIVATE
+            LLAMADART_TEST_CPU_BACKEND="$<TARGET_FILE:ggml-cpu>")
+    endif()
+    if (APPLE OR CMAKE_SYSTEM_NAME STREQUAL "Linux")
         add_test(NAME llamadart_exit_teardown_graph
             COMMAND llamadart_exit_teardown_test graph)
         set(exit_teardown_model "${LLAMADART_EXIT_TEARDOWN_TEST_MODEL}")
@@ -358,6 +395,25 @@ if (LLAMADART_BUILD_TESTS)
             set_tests_properties(llamadart_exit_teardown_${scenario} PROPERTIES
                 FIXTURES_REQUIRED llamadart_exit_teardown_model)
         endforeach()
+        # Linux preserves host callbacks and libc flushing. Live-worker raw
+        # exit cases are diagnostic CPU controls, not the host contract.
+        if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
+            foreach(scenario exit-late-calls exit-status)
+                add_test(NAME llamadart_exit_teardown_${scenario}
+                    COMMAND llamadart_exit_teardown_test ${scenario})
+            endforeach()
+            set_tests_properties(llamadart_exit_teardown_exit-status
+                PROPERTIES TIMEOUT 10)
+            foreach(scenario model-unguarded-decode model-exit-idle
+                    model-exit-join-idle model-exit-join-generating)
+                add_test(NAME llamadart_exit_teardown_${scenario}
+                    COMMAND llamadart_exit_teardown_test ${scenario}
+                        "${exit_teardown_model}")
+                set_tests_properties(llamadart_exit_teardown_${scenario}
+                    PROPERTIES
+                    FIXTURES_REQUIRED llamadart_exit_teardown_model)
+            endforeach()
+        endif()
         if (LLAMADART_EXIT_TEARDOWN_TEST_MODEL)
             add_test(NAME llamadart_exit_teardown_model-speculative-process
                 COMMAND llamadart_exit_teardown_test model-speculative-process
@@ -393,6 +449,16 @@ if (LLAMADART_BUILD_TESTS)
                         "${LLAMADART_EXIT_TEARDOWN_TEST_MMPROJ}")
             endforeach()
         endif()
+    endif()
+
+    # The Linux presets give every binary the run path $ORIGIN, which the
+    # bundle needs, while the build tree keeps the llama.cpp libraries in a
+    # directory of their own.
+    if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        get_property(llamadart_tests DIRECTORY PROPERTY TESTS)
+        set_tests_properties(${llamadart_tests} PROPERTIES
+            ENVIRONMENT_MODIFICATION
+            "LD_LIBRARY_PATH=path_list_prepend:$<TARGET_FILE_DIR:llama>;LD_LIBRARY_PATH=path_list_prepend:$<TARGET_FILE_DIR:llamadart_lib>")
     endif()
 
     # Contract assertions must execute against optimized Release libraries too.
