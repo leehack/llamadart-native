@@ -1484,7 +1484,7 @@ int test_model_exit_idle(const char *path) {
 std::atomic<bool> g_worker_stop{false};
 std::atomic<bool> g_worker_done{false};
 
-// What a host does that stops its worker at exit: the worker must come back.
+// Requests worker shutdown and waits for its native cleanup to complete.
 void stop_and_join_worker() {
   g_worker_stop.store(true);
   const int64_t started = now_ms();
@@ -1497,15 +1497,16 @@ void stop_and_join_worker() {
   }
 }
 
-// On Linux the exit blocks no thread: a worker that frees its model when the
-// host's own exit handler tells it to returns from the frees, which free
-// nothing any more.
+// Linux joins the worker before C exit. Other platforms retain their host
+// exit-handler compatibility coverage, with the fixture alive during the join.
 int test_model_exit_join_idle(const char *path) {
-  // Registered first, so it runs after the handler of libllamadart.
-  assert(atexit(stop_and_join_worker) == 0);
   static model_fixture fixture;
+#if !defined(__linux__) || defined(__ANDROID__)
+  // Before loading libllamadart, but after the fixture's destructor registration.
+  assert(atexit(stop_and_join_worker) == 0);
+#endif
   fixture = load_model(path);
-  std::thread([] {
+  std::thread worker([] {
     while (!g_worker_stop.load()) {
       sleep_ms(1);
     }
@@ -1516,20 +1517,26 @@ int test_model_exit_join_idle(const char *path) {
       _Exit(EXIT_FAILURE);
     }
     g_worker_done.store(true);
-  }).detach();
+  });
+#if defined(__linux__) && !defined(__ANDROID__)
+  stop_and_join_worker();
+  worker.join();
+#else
+  worker.detach();
+#endif
   return 0;
 }
 
-// The same with a worker that generates until it is told to stop. An exit
-// that finds its decode in flight ends the process; one that falls between
-// two calls goes on, every call the worker begins afterwards is refused, and
-// the worker comes back.
+// The same while generating: the prompt storage must outlive the worker.
+// Linux also frees tracked objects before entering ordinary C exit.
 int test_model_exit_join_generating(const char *path) {
-  assert(atexit(stop_and_join_worker) == 0);
   static model_fixture fixture;
   static std::atomic<int> steps{0};
+#if !defined(__linux__) || defined(__ANDROID__)
+  assert(atexit(stop_and_join_worker) == 0);
+#endif
   fixture = load_model(path);
-  std::thread([] {
+  std::thread worker([] {
     llama_sampler *sampler = greedy_sampler();
     while (!g_worker_stop.load()) {
       assert(decode_and_sample(fixture, sampler) >= 0);
@@ -1540,11 +1547,20 @@ int test_model_exit_join_generating(const char *path) {
     }
     llama_sampler_free(sampler);
     g_worker_done.store(true);
-  }).detach();
+  });
   while (steps.load() < 3) {
     sleep_ms(1);
   }
+#if defined(__linux__) && !defined(__ANDROID__)
+  stop_and_join_worker();
+  worker.join();
+  llama_dart_exit_free(fixture.context);
+  llama_dart_exit_free(fixture.model);
+  assert(llama_dart_exit_tracked_count() == 0);
+#else
+  worker.detach();
   g_exit_expected.store(true);
+#endif
   return 0;
 }
 
