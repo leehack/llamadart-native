@@ -16,7 +16,7 @@ Linux, Android excepted, retains the statics owned by the runtime bundle.
 owned static destructors; external libraries keep their ordinary exit behavior.
 The wrapper remains linked with `-z nodelete` so held objects and finalizer
 callbacks remain valid across `dlclose`. Artifact validators reject missing
-retention and owned imports of `__cxa_atexit` or the pre-GCC13 iostream initializer.
+retention and owned imports of `__cxa_atexit`.
 
 C exit registers no automatic Linux wrapper teardown or exit handler. It does
 not set a late-call refusal state, flush streams early, wait, free live objects
