@@ -471,9 +471,8 @@ int test_blocked() {
 
 // C exit() runs teardown on Apple platforms: it waits for the calls in
 // flight, frees, and blocks the threads that reach libllamadart afterwards.
-// On Linux it ends the process at once when a call is in flight on another
-// thread. Otherwise it frees nothing, blocks no thread and refuses the calls
-// in flight that begin afterwards.
+// Linux retains owned statics and leaves normal libc exit untouched.
+// Hosts stop workers and the managed runtime before C exit.
 #if defined(__APPLE__)
 const bool kExitFreesObjects = true;
 const bool kExitWaitsForCalls = true;
@@ -482,8 +481,8 @@ const bool kExitRefusesLateCalls = false;
 #elif defined(__linux__) && defined(__GLIBC__) && !defined(__ANDROID__)
 const bool kExitFreesObjects = false;
 const bool kExitWaitsForCalls = false;
-const bool kExitEndsProcess = true;
-const bool kExitRefusesLateCalls = true;
+const bool kExitEndsProcess = false;
+const bool kExitRefusesLateCalls = false;
 #else
 const bool kExitFreesObjects = false;
 const bool kExitWaitsForCalls = false;
@@ -578,59 +577,42 @@ int test_exit_in_flight() {
 char kLateObject[] = "late-object";
 llama_dart_ngram *g_created_at_exit = nullptr;
 
-// What a thread other than the exiting one gets from libllamadart once the
-// exit has waited, on Linux: nothing blocks, a free frees nothing, and a call
-// in flight is refused before it starts.
+// An earlier host callback still owns normal wrapper cleanup. No Dart VM
+// is active here, and no wrapper teardown has begun.
 void make_late_calls() {
-  g_exit_expected.store(true);
-  // The exiting thread is exempt: a host's later exit handlers may still use
-  // libllamadart. What it creates is not tracked, and stays allocated.
+  assert(llama_dart_exit_tracked_count() == 1);
   g_created_at_exit = llama_dart_ngram_simple_init(4, 8);
   assert(g_created_at_exit != nullptr);
   assert(llama_dart_last_error() == nullptr);
-  assert(llama_dart_exit_tracked_count() == 1);
-  std::thread([] {
-    llama_dart_exit_free(kLateObject);
-    assert(recorded().empty());
-    assert(!llama_dart_exit_track(name("later"), free_named,
-                                  LLAMA_DART_EXIT_STAGE_MODEL));
-    assert(llama_dart_exit_tracked_count() == 1);
-    assert(llama_dart_decode(nullptr, llama_batch{}) ==
-           std::numeric_limits<int32_t>::min());
-    assert(refused_by_exit());
-    llama_dart_clear_last_error();
-    assert(llama_dart_model_load_from_file(
-               "missing.gguf", llama_model_default_params()) == nullptr);
-    assert(refused_by_exit());
-    llama_dart_exit_call_begin();
-    llama_dart_exit_call_end();
-    assert(!llama_dart_exit_untrack(kLateObject));
-    assert(!llama_dart_exit_untrack(g_created_at_exit));
-    assert(llama_dart_exit_tracked_count() == 1);
-    g_call_ended.store(true);
-  }).detach();
-  const int64_t started = now_ms();
-  while (!g_call_ended.load()) {
-    if (now_ms() - started > 10000) {
-      fprintf(stderr, "a call after the exit began did not return\n");
-      _Exit(EXIT_FAILURE);
-    }
-    sleep_ms(1);
-  }
+  assert(llama_dart_exit_tracked_count() == 2);
+  llama_dart_exit_free(g_created_at_exit);
+  llama_dart_exit_free(kLateObject);
+  assert(llama_dart_exit_tracked_count() == 0);
+  assert(recorded() == std::vector<std::string>{"late-object"});
 }
 
 int test_exit_late_calls() {
-  // Registered first, so it runs after the handler of libllamadart.
   assert(atexit(make_late_calls) == 0);
   assert(llama_dart_exit_track(kLateObject, free_named,
                                LLAMA_DART_EXIT_STAGE_MODEL));
   return 0;
 }
 
-// On Linux an exit with a call in flight on another thread ends the process
-// there: with the status of the exit and the standard streams flushed, and
-// without the exit handlers that would have run next. The exit is that of a
-// child process, whose status and output this one reads.
+#if defined(__linux__) && defined(__GLIBC__) && !defined(__ANDROID__)
+std::atomic<bool> status_worker_stop{false};
+std::thread *status_worker = nullptr;
+FILE *status_locked_stream = nullptr;
+void status_host_callback() {
+  status_worker_stop.store(true);
+  status_worker->join();
+  printf(";host handler ran");
+}
+#endif
+
+// Normal C exit preserves its status, earlier callbacks and buffered output.
+// A host callback releases a FILE lock held by a marked native worker: an
+// unconditional fflush before that callback would hang. This native-only
+// compatibility control does not authorize live-Dart-isolate C exit.
 int test_exit_status() {
 #if defined(__linux__) && defined(__GLIBC__) && !defined(__ANDROID__)
   int output[2];
@@ -640,26 +622,26 @@ int test_exit_status() {
   if (child == 0) {
     close(output[0]);
     assert(dup2(output[1], STDOUT_FILENO) >= 0);
-    // Registered first, so it would run after the handler of libllamadart.
-    assert(atexit([] { _Exit(EXIT_FAILURE); }) == 0);
+    assert(atexit(status_host_callback) == 0);
     static char object[] = "object";
     assert(llama_dart_exit_track(object, free_named,
                                  LLAMA_DART_EXIT_STAGE_MODEL));
+    status_locked_stream = tmpfile();
+    assert(status_locked_stream != nullptr);
     static std::atomic<bool> started{false};
-    std::thread([] {
+    status_worker = new std::thread([] {
       llama_dart_exit_call_begin();
+      flockfile(status_locked_stream);
       started.store(true);
-      sleep_ms(600000);
-    }).detach();
-    while (!started.load()) {
-      sleep_ms(1);
-    }
-    // A pipe is fully buffered, so this is written when the exit flushes.
+      while (!status_worker_stop.load()) sleep_ms(1);
+      funlockfile(status_locked_stream);
+      llama_dart_exit_call_end();
+    });
+    while (!started.load()) sleep_ms(1);
     printf("flushed at exit");
     exit(37);
   }
   close(output[1]);
-  const auto started = std::chrono::steady_clock::now();
   std::string text;
   char buffer[64];
   for (ssize_t count; (count = read(output[0], buffer, sizeof(buffer))) > 0;) {
@@ -668,8 +650,7 @@ int test_exit_status() {
   int status = 0;
   assert(waitpid(child, &status, 0) == child);
   assert(WIFEXITED(status) && WEXITSTATUS(status) == 37);
-  assert(text == "flushed at exit");
-  assert(elapsed_ms(started) < 10000);
+  assert(text == "flushed at exit;host handler ran");
 #endif
   return 0;
 }
@@ -1530,8 +1511,8 @@ int test_model_exit_join_idle(const char *path) {
     }
     llama_dart_exit_free(fixture.context);
     llama_dart_exit_free(fixture.model);
-    if (llama_dart_exit_tracked_count() != 2) {
-      fprintf(stderr, "a free after the exit began freed its object\n");
+    if (llama_dart_exit_tracked_count() != 0) {
+      fprintf(stderr, "host worker cleanup left tracked objects\n");
       _Exit(EXIT_FAILURE);
     }
     g_worker_done.store(true);
@@ -1737,6 +1718,24 @@ void expect_free_finished_at_exit() {
 // Metal aborts in its static destructor when the exit does not wait for the
 // free; without Metal the check at exit shows it.
 int test_model_free_in_flight(const char *path) {
+#if defined(__linux__) && !defined(__ANDROID__)
+  // Linux waits in the host, before libc exit / dependency destructors.
+  assert(atexit([] { assert(g_free_finished.load()); }) == 0);
+  auto fixture = load_model(path);
+  llama_dart_exit_free(fixture.context);
+  assert(llama_dart_exit_track(fixture.model, [](void *object) {
+    g_free_started.store(true);
+    sleep_ms(300);
+    llama_model_free(static_cast<llama_model *>(object));
+    g_free_finished.store(true);
+  }, LLAMA_DART_EXIT_STAGE_MODEL));
+  std::thread worker([fixture] { llama_dart_exit_free(fixture.model); });
+  while (!g_free_started.load()) sleep_ms(1);
+  worker.join();
+  assert(g_free_finished.load());
+  assert(llama_dart_exit_tracked_count() == 0);
+  return 0;
+#else
   // Registered first, so it runs after teardown and after the Metal device,
   // which the load creates, is destroyed.
   assert(atexit(expect_free_finished_at_exit) == 0);
@@ -1757,6 +1756,7 @@ int test_model_free_in_flight(const char *path) {
   }
   assert(llama_dart_exit_tracked_count() == 0);
   return 0;
+#endif
 }
 
 // Evaluates an image prompt chunk by chunk, as the Dart side does.

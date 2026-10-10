@@ -354,36 +354,23 @@ LLAMADART_API int32_t llama_dart_vulkan_get_device_info(
 // destructor. On Apple platforms it runs during exit, before the first static
 // of libllamadart is destroyed.
 //
-// On Linux with glibc, C exit() does not run teardown. llama.cpp is not part
-// of libllamadart there, and no library of the bundle registers static
-// destructors: their statics stay valid until the process is gone. When the
-// exit reaches libllamadart:
+// On Linux, Android excepted, owned bundle statics are retained until the
+// process is gone. C exit() runs no wrapper handler: normal host callbacks,
+// dependency destructors and libc stream flushing proceed without a forced
+// _exit, an automatic free, a wait or late-call refusal.
 //
-// - With a call in flight on another thread, the process ends there, as with
-//   _exit: with the status of the exit and the standard streams flushed, but
-//   without the exit handlers and static destructors that would have run
-//   next, those of the host among them. What would have run next is the exit
-//   handlers of other libraries, a GPU driver or OpenBLAS among them, under
-//   the call, and waiting for the call instead is not harmless either: a
-//   Dart VM aborts when its isolates run while exit() takes its time.
-// - With no call in flight, the exit goes on at once. Nothing is freed:
-//   nothing on Linux needs it, and an exit with a model left loaded is known
-//   to be clean, which a free among the exit handlers of a GPU driver is not.
-//   No thread is blocked. From then on, on a thread other than the exiting
-//   one, a call in flight that begins returns the failure value of its
-//   function, with "the process is exiting" as the last error, and starts
-//   nothing; llama_dart_exit_free frees nothing; llama_dart_exit_track and
-//   llama_dart_exit_untrack return false; llama_dart_exit_call_begin counts
-//   nothing.
+// Before a native host calls C exit(), it must stop and join its workers and
+// shut down its Dart isolates / Flutter engine. Await isolate exit and native
+// finalizer completion, not just a kill request. A direct C exit() with live
+// Dart isolates can abort the VM even without llama.cpp (llamadart#977).
+// Retaining owned statics does not protect a GPU driver's or BLAS library's
+// destructors. Do not call explicit teardown before joining workers: teardown
+// parks later guarded calls and can deadlock a host join.
 //
-// The exit reaches libllamadart at the handler that it registers at the first
-// creating call and again when the first object is tracked, so an exit handler
-// that another library registers later runs before that. libllamadart is
-// linked so that dlclose does not unload it. quick_exit and _exit run
-// nothing.
-//
-// Elsewhere nothing runs at exit. llama_dart_exit_teardown runs teardown, and
-// frees, on every platform.
+// libllamadart remains loaded across dlclose so held native objects and their
+// finalizer callbacks stay valid. quick_exit and _exit run no cleanup.
+// Elsewhere nothing changes. llama_dart_exit_teardown explicitly frees on
+// every platform; automatic Apple exit teardown remains as described above.
 //
 // Objects are tracked, before the creating call returns, by
 // llama_dart_model_load_from_file, llama_dart_init_from_model,

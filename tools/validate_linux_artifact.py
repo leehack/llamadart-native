@@ -276,12 +276,12 @@ def validate_archive(archive_path: Path, tool: str, mode: str) -> list[str]:
             for dependency in dynamic.needed:
                 if dependency.startswith(LOCAL_LIBRARY_PREFIXES) and dependency not in names:
                     errors.append(f"{name}: local DT_NEEDED dependency is absent: {dependency}")
-            # libllamadart registers an exit handler with on_exit, which a
-            # dlclose does not remove: the library must never be unloaded.
+            # Held objects / finalizer callbacks may outlive dlclose.
+            # Keep the wrapper together with its owned statics.
             if name == "libllamadart.so" and not is_nodelete(dynamic.raw):
                 errors.append(
                     f"{name}: is not linked with -z nodelete, so a dlclose "
-                    "leaves its exit handler behind"
+                    "can unload held native objects and finalizer callbacks"
                 )
             if name.startswith(LOCAL_LIBRARY_PREFIXES):
                 try:

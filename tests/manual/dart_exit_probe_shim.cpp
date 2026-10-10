@@ -4,6 +4,7 @@
 #include <dlfcn.h>
 #include <unistd.h>
 #include <chrono>
+#include <atomic>
 #include <cstdio>
 #include <cstdlib>
 #include <string>
@@ -15,8 +16,11 @@ llama_context *llama_dart_init_from_model(llama_model *, llama_context_params);
 int32_t llama_dart_decode(llama_context *, llama_batch);
 llama_token llama_dart_sampler_sample(llama_sampler *, llama_context *, int32_t);
 void llama_dart_set_log_level(int);
+void llama_dart_exit_free(void *);
 }
 static void *g_lib;
+static std::atomic<int> active_calls{0};
+static std::atomic<int> free_count{0};
 template <typename F> static F *sym(const char *n) {
   void *s = dlsym(g_lib, n);
   if (!s) { fprintf(stderr, "missing %s\n", n); _Exit(3); }
@@ -45,7 +49,7 @@ void *shim_open_session(const char *model, int tokens) {
   s->model = llama_dart_model_load_from_file_(model, mp);
   if (!s->model) return nullptr;
   auto cp = llama_context_default_params_();
-  cp.n_ctx = 2048; cp.n_batch = 2048;
+  cp.n_ctx = 2048; cp.n_batch = 2048; cp.n_threads = 3; cp.n_threads_batch = 3;
   s->ctx = llama_dart_init_from_model_(s->model, cp);
   if (!s->ctx) return nullptr;
   s->sampler = llama_sampler_chain_init_(llama_sampler_chain_default_params_());
@@ -55,6 +59,9 @@ void *shim_open_session(const char *model, int tokens) {
 }
 // One generation step: guarded decode, then guarded sample.
 int shim_step(void *session) {
+  struct active_guard { active_guard() { ++active_calls; } ~active_guard() { --active_calls; } } guard;
+  const char *delay = getenv("PROBE_STEP_DELAY_MS");
+  if (delay) { fprintf(stderr, "NATIVE_STEP_STARTED\n"); std::this_thread::sleep_for(std::chrono::milliseconds(atoi(delay))); }
   BIND(llama_get_memory); BIND(llama_memory_clear); BIND(llama_dart_decode);
   BIND(llama_dart_sampler_sample); BIND(llama_batch_get_one);
   auto *s = static_cast<shim_session *>(session);
@@ -67,5 +74,30 @@ int shim_step(void *session) {
 void shim_sleeping_atexit(int ms) {
   static int delay; delay = ms;
   atexit([] { std::this_thread::sleep_for(std::chrono::milliseconds(delay)); });
+}
+
+int shim_free_count() { return free_count.load(); }
+int shim_active_calls() { return active_calls.load(); }
+void shim_register_host() {
+  atexit([] {
+    fprintf(stderr, "HOST_HANDLER_STARTED\n");
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    fprintf(stderr, "HOST_HANDLER_COMPLETED\n");
+  });
+}
+void shim_buffer_output() {
+  static char buffer[4096];
+  setvbuf(stdout, buffer, _IOFBF, sizeof(buffer));
+  fputs("C_BUFFERED_PAYLOAD\n", stdout);
+}
+void shim_close_session(void *session) {
+  BIND(llama_sampler_free); BIND(llama_dart_exit_free);
+  auto *s = static_cast<shim_session *>(session);
+  llama_sampler_free_(s->sampler);
+  llama_dart_exit_free_(s->ctx);
+  llama_dart_exit_free_(s->model);
+  delete s;
+  ++free_count;
+  fprintf(stderr, "NATIVE_SESSION_FREE_COMPLETED\n");
 }
 }

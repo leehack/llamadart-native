@@ -219,8 +219,8 @@ add_library(llamadart_lib SHARED
 if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
     target_sources(llamadart_lib PRIVATE
         $<TARGET_OBJECTS:llamadart_static_destructors>)
-    # libllamadart registers an exit handler with on_exit, which a dlclose
-    # does not remove, so the library must not be unloaded.
+    # Held objects and native finalizer callbacks may outlive a dlclose.
+    # Retain the wrapper together with the owned statics.
     target_link_options(llamadart_lib PRIVATE -Wl,-z,nodelete)
 endif()
 # The Vulkan device facts need only the Vulkan types: the loader is opened at
@@ -357,8 +357,8 @@ if (LLAMADART_BUILD_TESTS)
             "${exit_teardown_vocabulary_model}")
     set_tests_properties(llamadart_exit_teardown_barrier-grammar PROPERTIES
         FIXTURES_REQUIRED llamadart_exit_teardown_vocabulary_model)
-    # Teardown runs at exit on Apple and Linux, so the scenarios that load a
-    # model run there. They use a model the test writes itself unless one is
+    # Apple automatic teardown and Linux retained statics are exercised
+    # with CPU models. They use a model the test writes itself unless one is
     # given. On Linux the backends are modules, of which the test loads the
     # CPU one.
     set(LLAMADART_EXIT_TEARDOWN_TEST_MODEL "" CACHE FILEPATH
@@ -393,14 +393,15 @@ if (LLAMADART_BUILD_TESTS)
             set_tests_properties(llamadart_exit_teardown_${scenario} PROPERTIES
                 FIXTURES_REQUIRED llamadart_exit_teardown_model)
         endforeach()
-        # What only Linux does: the exit ends the process for a call in
-        # flight, the statics of llama.cpp outlive an exit, and an exit with
-        # no call in flight takes no time and blocks no thread.
+        # Linux preserves host callbacks and libc flushing. Live-worker raw
+        # exit cases are diagnostic CPU controls, not the host contract.
         if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
             foreach(scenario exit-late-calls exit-status)
                 add_test(NAME llamadart_exit_teardown_${scenario}
                     COMMAND llamadart_exit_teardown_test ${scenario})
             endforeach()
+            set_tests_properties(llamadart_exit_teardown_exit-status
+                PROPERTIES TIMEOUT 10)
             foreach(scenario model-unguarded-decode model-exit-idle
                     model-exit-join-idle model-exit-join-generating)
                 add_test(NAME llamadart_exit_teardown_${scenario}

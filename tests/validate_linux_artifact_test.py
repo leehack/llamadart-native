@@ -312,7 +312,7 @@ class ValidateLinuxArtifactTest(unittest.TestCase):
             errors,
             [
                 "libllamadart.so: is not linked with -z nodelete, so a dlclose "
-                "leaves its exit handler behind"
+                "can unload held native objects and finalizer callbacks"
             ],
         )
 
