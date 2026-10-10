@@ -198,6 +198,9 @@ owned static destructors; external libraries keep their ordinary exit behavior.
 The wrapper remains linked with `-z nodelete` so held objects and finalizer
 callbacks remain valid across `dlclose`. Artifact validators reject missing
 retention and owned imports of `__cxa_atexit`.
+The shared retention shim compiles without IPO so a GCC C compiler can supply
+a native object to the LLVM linker used by HIP; GCC LTO bytecode is not a
+portable object format across those toolchains.
 
 C exit registers no automatic Linux wrapper teardown or exit handler. It does
 not set a late-call refusal state, flush streams early, wait, free live objects
