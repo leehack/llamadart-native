@@ -2,7 +2,8 @@
 
 Changes on llama.cpp `v0.6.0`
 (`d81235049384534c167caea52b85a694f6103d14`) for the native rebuild tag
-`v0.6.0-2`. The exported header is unchanged from `v0.6.0-1`.
+`v0.6.0-2`. The opt-in image-token capability adds the export documented in
+[`image_token_limit.md`](image_token_limit.md).
 
 ## Carried llama.cpp patches
 

@@ -217,6 +217,7 @@ endif()
 
 add_library(llamadart_lib SHARED
     "src/llama_dart_wrapper.cpp"
+    "src/llama_dart_image_token_limit.cpp"
     "src/llama_dart_vulkan_device_info.cpp")
 if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
     target_sources(llamadart_lib PRIVATE
@@ -300,6 +301,13 @@ if (LLAMADART_BUILD_TESTS)
     set_target_properties(llamadart_tts_eval_test PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
     add_test(NAME llamadart_tts_eval_test COMMAND llamadart_tts_eval_test)
+
+    add_executable(llamadart_image_token_limit_test tests/image_token_limit_test.cpp)
+    target_compile_features(llamadart_image_token_limit_test PRIVATE cxx_std_17)
+    target_include_directories(llamadart_image_token_limit_test PRIVATE
+        src third_party/llama.cpp/include third_party/llama.cpp/tools/mtmd)
+    target_link_libraries(llamadart_image_token_limit_test PRIVATE llamadart_lib ggml-base)
+    add_test(NAME llamadart_image_token_limit_test COMMAND llamadart_image_token_limit_test)
 
     add_executable(llamadart_mtmd_compat_test tests/mtmd_compat_test.cpp)
     target_compile_features(llamadart_mtmd_compat_test PRIVATE cxx_std_17)
@@ -464,7 +472,7 @@ if (LLAMADART_BUILD_TESTS)
     # Contract assertions must execute against optimized Release libraries too.
     foreach(test_target llamadart_speculative_api_test llamadart_tts_api_test
             llamadart_tts_eval_test llamadart_exit_teardown_test llamadart_mtmd_compat_test
-            llamadart_vulkan_device_info_test llamadart_barrier_test)
+            llamadart_vulkan_device_info_test llamadart_barrier_test llamadart_image_token_limit_test)
         if (MSVC)
             target_compile_options(${test_target} PRIVATE /UNDEBUG)
         else()
