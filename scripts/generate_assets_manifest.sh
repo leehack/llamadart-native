@@ -76,6 +76,10 @@ timestamp="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 llama_cpp_tag="${LLAMADART_LLAMA_CPP_TAG:-$tag}"
 llama_cpp_commit="${LLAMADART_LLAMA_CPP_COMMIT:-}"
 native_commit="${LLAMADART_NATIVE_COMMIT:-}"
+# The llama.cpp patches this checkout carries. The Android artifact validation
+# fails a release whose bundle lacks one of them.
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+llama_cpp_patches="$(python3 "$repo_root/tools/llama_cpp_patches.py" manifest)"
 correlation_id="${LLAMADART_CORRELATION_ID:-}"
 smoke_policy="${LLAMADART_SMOKE_POLICY:-}"
 smoke_conclusion="${LLAMADART_SMOKE_CONCLUSION:-}"
@@ -103,6 +107,7 @@ EOF_FILES
   if [ -n "$llama_cpp_commit" ]; then
     printf '  "llama_cpp_commit": %s,\n' "$(json_string "$llama_cpp_commit")"
   fi
+  printf '  "llama_cpp_patches": %s,\n' "$llama_cpp_patches"
   if [ -n "$native_commit" ]; then
     printf '  "native_commit": %s,\n' "$(json_string "$native_commit")"
   fi

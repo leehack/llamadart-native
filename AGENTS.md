@@ -50,6 +50,8 @@ See `docs/v060_qualification.md` for the v0.6.0 wrapper adapters, candidate lane
 and the Android ISA evidence required before publication or downstream adoption.
 See `docs/v060_1_wrapper_rebuild.md` for the `v0.6.0-1` header additions and
 what each export returns after a caught exception.
+See `docs/v060_2_wrapper_rebuild.md` for the carried llama.cpp patches of
+`v0.6.0-2` and the device runs they still need.
 
 - `.github/workflows/native_release.yml`
   - Exact native build + release workflow, used by manual dispatch and the
@@ -62,6 +64,10 @@ what each export returns after a caught exception.
 ## Change Boundaries
 
 - Prefer updating submodule refs over patching vendored upstream code directly.
+  Never edit `third_party/` in place. A fix that no upstream release has and
+  that `src/` or the build configuration cannot provide is carried as a patch
+  under `patches/llama.cpp/`; its `README.md` has the conditions and the
+  procedure.
 - Keep wrapper/runtime integration changes under `src/` and top-level build config.
 - Keep release manifest logic in `scripts/`/`tools/`.
 

@@ -1,0 +1,20 @@
+{
+  "patches": [
+    {
+      "file": "0001-vulkan-adreno-750-matvec-shared-memory-reduction.patch",
+      "tracking": "https://github.com/leehack/llamadart-native/issues/79",
+      "upstream": "https://github.com/ggml-org/llama.cpp/pull/29165",
+      "android_markers": [
+        {"library": "libggml-vulkan.so", "text": "Adreno (TM) 750"}
+      ]
+    },
+    {
+      "file": "0002-vulkan-buffer-device-address-entry-point.patch",
+      "tracking": "https://github.com/leehack/llamadart/issues/782",
+      "upstream": "https://github.com/ggml-org/llama.cpp/blob/d81235049384534c167caea52b85a694f6103d14/ggml/src/ggml-vulkan/ggml-vulkan-buffers.cpp#L175-L177",
+      "android_markers": [
+        {"library": "libggml-vulkan.so", "text": "has no vkGetBufferDeviceAddress"}
+      ]
+    }
+  ]
+}

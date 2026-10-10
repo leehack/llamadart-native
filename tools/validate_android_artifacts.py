@@ -5,6 +5,8 @@ import argparse
 import subprocess
 from pathlib import Path
 
+import llama_cpp_patches
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
@@ -113,6 +115,7 @@ def main() -> None:
     errors: list[str] = []
     symbols = {library.name: read_dynamic_symbols(args.readelf, library) for library in libraries}
     errors.extend(exception_runtime_errors(symbols))
+    errors.extend(llama_cpp_patches.android_marker_errors(args.out_dir))
     for symbol in EXCEPTION_RUNTIME_SYMBOLS:
         for name, (defined, _) in sorted(symbols.items()):
             if symbol in defined:
