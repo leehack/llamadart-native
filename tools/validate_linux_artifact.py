@@ -16,6 +16,12 @@ import tempfile
 
 
 LOCAL_LIBRARY_PREFIXES = ("libllamadart", "libllama", "libggml", "libmtmd")
+# The libraries built here bind __cxa_atexit to a definition of their own:
+# libllamadart to the one that runs exit teardown first, the llama.cpp
+# libraries to the one that registers no static destructor
+# (src/llama_dart_static_destructors.c). One that imports it has its statics
+# destroyed by C exit() under the calls in flight.
+FORBIDDEN_LOCAL_IMPORTS = ("__cxa_atexit",)
 PLACEHOLDER = "SOVERSION"
 MAX_ERROR_DETAIL_LENGTH = 512
 TARFILE_EXTRACT_SUPPORTS_FILTER = (
@@ -92,6 +98,39 @@ def inspect_dynamic(path: Path, tool: str, mode: str) -> DynamicMetadata:
         else:
             needed.append(value)
     return DynamicMetadata(soname=soname, needed=tuple(needed), raw=raw)
+
+
+def is_nodelete(raw: str) -> bool:
+    """Whether readelf -d or objdump -p output has DF_1_NODELETE set."""
+    for line in raw.splitlines():
+        if "FLAGS_1" not in line:
+            continue
+        if "NODELETE" in line:
+            return True
+        match = re.search(r"FLAGS_1\s+(0x[0-9a-fA-F]+)\s*$", line)
+        if match and int(match.group(1), 16) & 0x8:
+            return True
+    return False
+
+
+def parse_imports(raw: str, mode: str) -> set[str]:
+    imports: set[str] = set()
+    for line in raw.splitlines():
+        parts = line.split()
+        if mode == "objdump":
+            if "*UND*" in parts and parts[-1] != "*UND*":
+                imports.add(parts[-1].split("@", 1)[0])
+        elif len(parts) >= 8 and parts[6] == "UND":
+            imports.add(parts[7].split("@", 1)[0])
+    return imports
+
+
+def inspect_imports(path: Path, tool: str, mode: str) -> set[str]:
+    options = ["-T"] if mode == "objdump" else ["--dyn-syms", "-W"]
+    result = subprocess.run(
+        [tool, *options, str(path)], check=True, capture_output=True, text=True
+    )
+    return parse_imports(result.stdout, mode)
 
 
 def safe_member_name(name: str) -> str:
@@ -237,6 +276,29 @@ def validate_archive(archive_path: Path, tool: str, mode: str) -> list[str]:
             for dependency in dynamic.needed:
                 if dependency.startswith(LOCAL_LIBRARY_PREFIXES) and dependency not in names:
                     errors.append(f"{name}: local DT_NEEDED dependency is absent: {dependency}")
+            # Held objects / finalizer callbacks may outlive dlclose.
+            # Keep the wrapper together with its owned statics.
+            if name == "libllamadart.so" and not is_nodelete(dynamic.raw):
+                errors.append(
+                    f"{name}: is not linked with -z nodelete, so a dlclose "
+                    "can unload held native objects and finalizer callbacks"
+                )
+            if name.startswith(LOCAL_LIBRARY_PREFIXES):
+                try:
+                    imports = inspect_imports(root / name, tool, mode)
+                except subprocess.CalledProcessError as error:
+                    errors.append(
+                        f"{name}: symbol inspection failed with exit code {error.returncode}"
+                    )
+                    continue
+                except OSError as error:
+                    errors.append(f"{name}: symbol inspection failed: {error}")
+                    continue
+                for symbol in FORBIDDEN_LOCAL_IMPORTS:
+                    if symbol in imports:
+                        errors.append(
+                            f"{name}: imports {symbol}, so C exit() destroys its statics"
+                        )
 
         mtmd = metadata.get("libmtmd.so")
         if mtmd is None:

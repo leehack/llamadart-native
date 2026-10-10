@@ -126,7 +126,16 @@ def parse_args() -> argparse.Namespace:
         default=[],
         help=(
             "Symbol the library must not import. Supported for --format nm "
-            "and single-architecture files."
+            "on Mach-O and --format readelf on ELF, and for "
+            "single-architecture files."
+        ),
+    )
+    parser.add_argument(
+        "--imports-only",
+        action="store_true",
+        help=(
+            "Check only --forbid-import, for a library that has none of the "
+            "required exports, such as a llama.cpp library next to the wrapper."
         ),
     )
     return parser.parse_args()
@@ -178,6 +187,15 @@ def exported_symbols_from_readelf(output: str) -> set[str]:
     return symbols
 
 
+def imported_symbols_from_readelf(output: str) -> set[str]:
+    symbols: set[str] = set()
+    for line in output.splitlines():
+        parts = line.split()
+        if len(parts) >= 8 and parts[6] == "UND":
+            symbols.add(parts[7].split("@", 1)[0])
+    return symbols
+
+
 def exported_symbols_from_nm(output: str) -> set[str]:
     symbols: set[str] = set()
     for line in output.splitlines():
@@ -216,8 +234,13 @@ def exported_symbols_from_dumpbin(output: str) -> set[str]:
 
 def main() -> int:
     args = parse_args()
-    if args.forbidden_imports and args.format != "nm":
-        print("--forbid-import requires --format nm", file=sys.stderr)
+    # nm names are read as Mach-O ones, without their leading underscore, so
+    # an ELF import such as __cxa_atexit would never match.
+    if args.forbidden_imports and args.format not in ("nm", "readelf"):
+        print("--forbid-import requires --format nm or readelf", file=sys.stderr)
+        return 2
+    if args.imports_only and not args.forbidden_imports:
+        print("--imports-only requires --forbid-import", file=sys.stderr)
         return 2
     # nm lists only the host architecture of a universal file, so the other
     # slices would go unchecked.
@@ -233,7 +256,9 @@ def main() -> int:
         "nm": exported_symbols_from_nm,
         "dumpbin": exported_symbols_from_dumpbin,
     }[args.format](output)
-    required = args.symbols or DEFAULT_REQUIRED_SYMBOLS
+    required = (
+        [] if args.imports_only else args.symbols or DEFAULT_REQUIRED_SYMBOLS
+    )
     missing = [symbol for symbol in required if symbol not in exported]
     if missing:
         print(f"Missing exports in {args.library}:", file=sys.stderr)
@@ -241,7 +266,11 @@ def main() -> int:
             print(f"  - {symbol}", file=sys.stderr)
         return 1
 
-    imported = imported_symbols_from_nm(output)
+    imported = (
+        imported_symbols_from_readelf(output)
+        if args.format == "readelf"
+        else imported_symbols_from_nm(output)
+    )
     forbidden = [s for s in args.forbidden_imports if s in imported]
     if forbidden:
         print(f"Forbidden imports in {args.library}:", file=sys.stderr)

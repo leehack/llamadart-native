@@ -28,6 +28,7 @@
 #include <limits>
 #include <memory>
 #include <mutex>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <type_traits>
@@ -727,6 +728,7 @@ static thread_local bool llama_dart_exit_teardown_thread = false;
 // Calls in flight on this thread. The registry counts the outermost one.
 static thread_local int32_t llama_dart_exit_call_depth = 0;
 
+
 // Called with the registry locked. Returns whether the calling thread may go
 // on to use tracked objects. Once teardown has begun, teardown waits for a
 // thread that is in a call in flight, and the teardown thread gets false. Any
@@ -748,6 +750,7 @@ static bool llama_dart_exit_admit(llama_dart_exit_registry &registry,
     std::this_thread::sleep_for(std::chrono::hours(1));
   }
 }
+
 
 #if defined(__APPLE__)
 struct llama_dart_exit_static_destructor {
@@ -805,6 +808,7 @@ __cxa_atexit(void (*destroy)(void *), void *object, void *dso_handle) {
 }
 #endif
 
+
 // Registers teardown to run at exit once something is tracked, so that it
 // does not wait for the first static of this image to be destroyed. atexit
 // handlers run in reverse order of registration, so this one runs after the
@@ -816,6 +820,8 @@ static void llama_dart_exit_arm() {
   }
 #endif
 }
+
+
 
 static bool llama_dart_exit_insert(void *object, void (*free_fn)(void *),
                                    int32_t stage, void *uses_first = nullptr,
@@ -914,7 +920,9 @@ static void llama_dart_exit_begin_call(bool creating) {
 }
 
 struct llama_dart_exit_call {
-  llama_dart_exit_call() { llama_dart_exit_call_begin(); }
+  llama_dart_exit_call() {
+    llama_dart_exit_call_begin();
+  }
   ~llama_dart_exit_call() { llama_dart_exit_call_end(); }
   llama_dart_exit_call(const llama_dart_exit_call &) = delete;
   llama_dart_exit_call &operator=(const llama_dart_exit_call &) = delete;
@@ -923,7 +931,9 @@ struct llama_dart_exit_call {
 // A call in flight that tracks what it creates. Teardown waits for it even
 // when nothing is tracked yet.
 struct llama_dart_exit_creating_call {
-  llama_dart_exit_creating_call() { llama_dart_exit_begin_call(true); }
+  llama_dart_exit_creating_call() {
+    llama_dart_exit_begin_call(true);
+  }
   ~llama_dart_exit_creating_call() {
     {
       auto &registry = llama_dart_exit_state();

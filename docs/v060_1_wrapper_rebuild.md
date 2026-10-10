@@ -338,6 +338,9 @@ Why the Apple mechanism does not carry over:
   measure either effect, and the Linux lanes here load no backend, so they run
   no model scenario.
 
+`v0.6.0-2` fixes it, with the wait and without the frees as recommended below
+but without the gate: see [`v060_2_wrapper_rebuild.md`](v060_2_wrapper_rebuild.md).
+
 Recommended design, for a later rebuild:
 
 1. Compile a small object into every shared library of the bundle that holds

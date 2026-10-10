@@ -52,6 +52,9 @@ See `docs/v060_1_wrapper_rebuild.md` for the `v0.6.0-1` header additions and
 what each export returns after a caught exception.
 See `docs/v060_2_wrapper_rebuild.md` for the carried llama.cpp patches of
 `v0.6.0-2` and the device runs they still need.
+See its Linux host shutdown section for what C `exit()` does from
+`v0.6.0-2`, and why the llama.cpp libraries register no static destructors
+there.
 
 - `.github/workflows/native_release.yml`
   - Exact native build + release workflow, used by manual dispatch and the

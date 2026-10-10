@@ -175,7 +175,8 @@ Assets are suffixed with platform/arch, for example:
 - `tools/package_linux_artifact.py`: preserves Linux ELF version files and
   SONAME symlinks while transporting split CI artifacts.
 - `tools/validate_linux_artifact.py`: checks Linux archive members, symlinks,
-  SONAMEs, and local `DT_NEEDED` dependencies.
+  SONAMEs, and local `DT_NEEDED` dependencies, that no library built here
+  imports `__cxa_atexit`, and that `libllamadart.so` cannot be unloaded.
 - `tools/package_apple_xcframework.py`: packages Apple `libllamadart` slices as
   an SPM-compatible XCFramework zip.
 - `tools/apple/PrivacyInfo.xcprivacy`: privacy manifest embedded in every
@@ -286,15 +287,30 @@ left of it at exit:
   upstream function is tracked but not freed at exit, so a caller that has not
   switched to the tracked functions keeps its previous exit behavior.
 
-On other platforms nothing runs at exit; `llama_dart_exit_teardown` runs the
-same teardown on request and must be followed directly by `exit`. It is for
-native hosts: like `llama_dart_exit_call_begin` and `llama_dart_exit_call_end`,
-it is not meant to be bound from Dart.
+On Linux, Android excepted, owned bundle statics are retained until the
+process is gone (`src/llama_dart_static_destructors.c`). C `exit` runs no
+wrapper teardown or forced termination: earlier host callbacks, dependency
+destructors and normal libc stream flushing proceed. `-z nodelete` keeps
+held native objects and finalizer callbacks valid across `dlclose`.
+
+Before C exit, the host must stop and join workers and shut down its Dart
+isolates or Flutter engine. Await their exit and native finalizers; a kill
+request alone is insufficient. Direct C exit with live Dart isolates can
+abort the VM even without llama.cpp ([#977](https://github.com/leehack/llamadart/issues/977)).
+Owned static retention does not protect GPU-driver or BLAS destructors.
+
+[`docs/v060_2_wrapper_rebuild.md`](docs/v060_2_wrapper_rebuild.md) describes
+the host protocol, preservation regression tests and remaining qualification.
+
+On other platforms nothing runs at exit. `llama_dart_exit_teardown` runs
+teardown on request on every platform, frees included, and must be followed
+directly by `exit`. It is for native hosts: like `llama_dart_exit_call_begin`
+and `llama_dart_exit_call_end`, it is not meant to be bound from Dart.
 `src/llama_dart_wrapper.h` documents each function.
 
 `llamadart_exit_teardown_test` covers the registry on every platform. On macOS
-it also writes a small decoder and a small encoder model and runs the
-scenarios that load one, so ctest needs no model file:
+and Linux it also writes a small decoder and a small encoder model and runs
+the scenarios that load one, so ctest needs no model file:
 
 ```bash
 cmake -S . -B build/exit-teardown -G Ninja -DLLAMADART_BUILD_TESTS=ON
