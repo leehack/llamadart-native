@@ -190,27 +190,9 @@ endif()
 
 llamadart_attach_android_cpu_backend_score(ggml-cpu)
 
-# Adds src/llama_dart_static_destructors.c to every shared library and backend
-# module that llama.cpp builds, whatever backends are enabled. libllamadart
-# gets it below.
-function(llamadart_drop_static_destructors directory)
-    get_property(target_names DIRECTORY "${directory}" PROPERTY BUILDSYSTEM_TARGETS)
-    foreach(target_name IN LISTS target_names)
-        get_target_property(target_type ${target_name} TYPE)
-        if (target_type STREQUAL "SHARED_LIBRARY" OR target_type STREQUAL "MODULE_LIBRARY")
-            target_sources(${target_name} PRIVATE
-                $<TARGET_OBJECTS:llamadart_static_destructors>)
-        endif()
-    endforeach()
-    get_property(subdirectories DIRECTORY "${directory}" PROPERTY SUBDIRECTORIES)
-    foreach(subdirectory IN LISTS subdirectories)
-        llamadart_drop_static_destructors("${subdirectory}")
-    endforeach()
-endfunction()
-
+# Retain owned statics in every Linux runtime library and backend module.
 if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
-    add_library(llamadart_static_destructors OBJECT
-        "src/llama_dart_static_destructors.c")
+    include(cmake/linux_static_destructors.cmake)
     llamadart_drop_static_destructors(
         "${CMAKE_CURRENT_SOURCE_DIR}/third_party/llama.cpp")
 endif()
