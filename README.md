@@ -179,11 +179,15 @@ Assets are suffixed with platform/arch, for example:
   imports `__cxa_atexit`, and that `libllamadart.so` cannot be unloaded.
 - `tools/package_apple_xcframework.py`: packages Apple `libllamadart` slices as
   an SPM-compatible XCFramework zip.
+- `tools/apple_bundle_metadata.py`: derives each framework Info.plist's
+  `CFBundleSupportedPlatforms` and `MinimumOSVersion` (iOS) or
+  `LSMinimumSystemVersion` (macOS) from the slice binary's `LC_BUILD_VERSION`.
 - `tools/apple/PrivacyInfo.xcprivacy`: privacy manifest embedded in every
   XCFramework slice.
 - `tools/validate_apple_xcframework.py`: checks each XCFramework slice's privacy
   manifest location, contents, and declared required-reason API categories
-  against the slice binary's imports.
+  against the slice binary's imports, and that its framework Info.plist
+  declares the slice binary's platform and deployment minimum.
 - `scripts/generate_assets_manifest.sh`: builds `assets.json` + checksums.
 - `scripts/auto_release_dispatch.py`: decides whether daily discovery authorizes
   one exact native release dispatch and emits its immutable inputs.

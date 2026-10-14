@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate the privacy manifest of every slice in an Apple XCFramework zip."""
+"""Validate the privacy manifest and Info.plist of every slice in an Apple XCFramework zip."""
 
 from __future__ import annotations
 
@@ -13,8 +13,24 @@ import tempfile
 import zipfile
 from pathlib import Path
 
+from apple_bundle_metadata import framework_os_metadata
+
 
 MANIFEST_NAME = "PrivacyInfo.xcprivacy"
+INFO_PLIST_NAME = "Info.plist"
+REQUIRED_INFO_KEYS = (
+    "CFBundleExecutable",
+    "CFBundleIdentifier",
+    "CFBundlePackageType",
+    "CFBundleShortVersionString",
+    "CFBundleVersion",
+)
+# XCFramework (SupportedPlatform, SupportedPlatformVariant) -> CFBundleSupportedPlatforms.
+SLICE_PLATFORMS = {
+    ("ios", None): "iPhoneOS",
+    ("ios", "simulator"): "iPhoneSimulator",
+    ("macos", None): "MacOSX",
+}
 
 FILE_TIMESTAMP = "NSPrivacyAccessedAPICategoryFileTimestamp"
 SYSTEM_BOOT_TIME = "NSPrivacyAccessedAPICategorySystemBootTime"
@@ -118,12 +134,50 @@ def validate_manifest(data: bytes) -> tuple[list[str], set[str]]:
     return errors, declared
 
 
-def manifest_member(framework: str, names: set[str]) -> str:
-    """Return where Apple expects the manifest for this framework's layout."""
+def resource_member(framework: str, names: set[str], resource: str) -> str:
+    """Return where Apple expects a bundle resource for this framework's layout."""
     versioned = any(name.startswith(f"{framework}/Versions/A/") for name in names)
     if versioned:
-        return f"{framework}/Versions/A/Resources/{MANIFEST_NAME}"
-    return f"{framework}/{MANIFEST_NAME}"
+        return f"{framework}/Versions/A/Resources/{resource}"
+    return f"{framework}/{resource}"
+
+
+def info_plist_errors(
+    bundle: zipfile.ZipFile,
+    names: set[str],
+    framework: str,
+    binary_member: str,
+    slice_platform: str | None,
+) -> list[str]:
+    """Require the framework Info.plist to describe the slice binary's platform and minimum OS."""
+    member = resource_member(framework, names, INFO_PLIST_NAME)
+    if member not in names:
+        return [f"missing framework Info.plist at {member}"]
+    try:
+        info = plistlib.loads(bundle.read(member))
+    except Exception as error:  # plistlib raises several unrelated types
+        return [f"{member} is not a valid property list ({type(error).__name__})"]
+    if not isinstance(info, dict):
+        return [f"{member} root object is not a dictionary"]
+
+    errors = [f"{member} lacks {key}" for key in REQUIRED_INFO_KEYS if key not in info]
+    if binary_member not in names:
+        return [*errors, f"missing binary {binary_member}"]
+    try:
+        expected = framework_os_metadata(bundle.read(binary_member))
+    except ValueError as error:
+        return [*errors, f"{binary_member}: {error}"]
+    if expected["CFBundleSupportedPlatforms"] != [slice_platform]:
+        errors.append(
+            f"{binary_member} targets {expected['CFBundleSupportedPlatforms'][0]} "
+            f"but the slice is {slice_platform}"
+        )
+    for key, value in expected.items():
+        if key not in info:
+            errors.append(f"{member} lacks {key} (binary requires {value!r})")
+        elif info[key] != value:
+            errors.append(f"{member} {key} is {info[key]!r} but the binary requires {value!r}")
+    return errors
 
 
 def normalize_symbol(name: str) -> str:
@@ -207,6 +261,12 @@ def validate_archive(archive: Path, *, audit_imports: bool = False) -> list[str]
                     library["LibraryIdentifier"],
                     library["LibraryPath"],
                     library.get("BinaryPath", ""),
+                    SLICE_PLATFORMS.get(
+                        (
+                            library.get("SupportedPlatform"),
+                            library.get("SupportedPlatformVariant"),
+                        )
+                    ),
                 )
                 for library in plistlib.loads(bundle.read(roots[0]))["AvailableLibraries"]
             ]
@@ -215,9 +275,17 @@ def validate_archive(archive: Path, *, audit_imports: bool = False) -> list[str]
         if not slices:
             return [f"{roots[0]} lists no libraries"]
 
-        for identifier, library_path, binary_path in slices:
+        for identifier, library_path, binary_path, slice_platform in slices:
             slice_root = f"{root}/{identifier}"
-            expected = manifest_member(f"{slice_root}/{library_path}", names)
+            framework = f"{slice_root}/{library_path}"
+            binary_member = f"{slice_root}/{binary_path}"
+            errors.extend(
+                f"{identifier}: {error}"
+                for error in info_plist_errors(
+                    bundle, names, framework, binary_member, slice_platform
+                )
+            )
+            expected = resource_member(framework, names, MANIFEST_NAME)
             found = {
                 name
                 for name in names
@@ -234,9 +302,7 @@ def validate_archive(archive: Path, *, audit_imports: bool = False) -> list[str]
             if manifest_errors or not audit_imports:
                 continue
 
-            binary_member = f"{slice_root}/{binary_path}"
             if binary_member not in names:
-                errors.append(f"{identifier}: missing binary {binary_member}")
                 continue
             with tempfile.TemporaryDirectory() as directory:
                 binary = Path(directory) / "binary"
@@ -268,7 +334,7 @@ def main() -> int:
         print(f"error: {error}", file=sys.stderr)
     if errors:
         return 1
-    print(f"Validated Apple privacy manifests in {args.archive}")
+    print(f"Validated Apple privacy manifests and framework Info.plists in {args.archive}")
     return 0
 
 

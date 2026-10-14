@@ -60,6 +60,12 @@ categories differ from the required-reason symbols and Objective-C selectors
 the slice binary references in any architecture (`nm -u -arch all`,
 `otool -arch all`). The audit cannot see calls resolved through `dlsym`.
 
+The same command fails when a slice's framework `Info.plist` lacks a bundle
+key, or when its `CFBundleSupportedPlatforms` and `MinimumOSVersion` (iOS) or
+`LSMinimumSystemVersion` (macOS) differ from the platform and minimum OS of
+every architecture's `LC_BUILD_VERSION`. The packager writes those keys from
+the same load command.
+
 When an upstream bump makes the audit fail, find the new call sites, choose the
 reason that describes them, and update the manifest and this page together.
 Do not add a category only to make the check pass.
