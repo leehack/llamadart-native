@@ -22,6 +22,7 @@ import validate_apple_xcframework as validator  # noqa: E402
 VALIDATOR = ROOT / "tools/validate_apple_xcframework.py"
 SHIPPED_MANIFEST = packager.PRIVACY_MANIFEST.read_bytes()
 IOS = "ios-arm64"
+SIMULATOR = "ios-arm64_x86_64-simulator"
 MACOS = "macos-arm64_x86_64"
 ROOT_PLIST = "llama.xcframework/Info.plist"
 IOS_MANIFEST = f"llama.xcframework/{IOS}/llama.framework/PrivacyInfo.xcprivacy"
@@ -30,8 +31,13 @@ MACOS_MANIFEST = (
     "PrivacyInfo.xcprivacy"
 )
 IOS_INFO = f"llama.xcframework/{IOS}/llama.framework/Info.plist"
+SIMULATOR_MANIFEST = (
+    f"llama.xcframework/{SIMULATOR}/llama.framework/PrivacyInfo.xcprivacy"
+)
+SIMULATOR_INFO = f"llama.xcframework/{SIMULATOR}/llama.framework/Info.plist"
 MACOS_INFO = f"llama.xcframework/{MACOS}/llama.framework/Versions/A/Resources/Info.plist"
 IOS_BINARY_MEMBER = f"llama.xcframework/{IOS}/llama.framework/llama"
+SIMULATOR_BINARY_MEMBER = f"llama.xcframework/{SIMULATOR}/llama.framework/llama"
 MACOS_BINARY_MEMBER = f"llama.xcframework/{MACOS}/llama.framework/Versions/A/llama"
 MACOS_PLATFORM, IOS_PLATFORM, IOS_SIMULATOR_PLATFORM = 1, 2, 7
 
@@ -61,16 +67,27 @@ def thin_macho(platform: int | None, minos: str = "16.4") -> bytes:
     return header + commands
 
 
-def fat_macho(*images: bytes) -> bytes:
-    offset = 8 + 20 * len(images)
+def fat_macho(*images: bytes, wide: bool = False) -> bytes:
+    """Return a FAT container, or FAT_64 (64-bit offsets and sizes) when ``wide``."""
+    magic, layout, stride = (
+        (metadata.FAT_MAGIC_64, ">iiQQII", 32)
+        if wide
+        else (metadata.FAT_MAGIC, ">iiIII", 20)
+    )
+    offset = 8 + stride * len(images)
     entries, bodies = b"", b""
     for image in images:
-        entries += struct.pack(">iiIII", 0x0100000C, 0, offset + len(bodies), len(image), 0)
+        fields = [0x0100000C, 0, offset + len(bodies), len(image), 0]
+        entries += struct.pack(layout, *fields, *([0] if wide else []))
         bodies += image
-    return struct.pack(">II", metadata.FAT_MAGIC, len(images)) + entries + bodies
+    return struct.pack(">II", magic, len(images)) + entries + bodies
 
 
 IOS_BINARY = thin_macho(IOS_PLATFORM, "16.4")
+SIMULATOR_BINARY = fat_macho(
+    thin_macho(IOS_SIMULATOR_PLATFORM, "16.4"),
+    thin_macho(IOS_SIMULATOR_PLATFORM, "16.4"),
+)
 MACOS_BINARY = fat_macho(
     thin_macho(MACOS_PLATFORM, "13.3"), thin_macho(MACOS_PLATFORM, "13.3")
 )
@@ -102,34 +119,45 @@ def accessed(category: object, *reasons: object) -> dict[str, object]:
     }
 
 
-def root_plist(ios_slice_platform: str = "ios") -> bytes:
-    return plistlib.dumps(
+def root_plist(ios_slice_platform: str = "ios", simulator: bool = True) -> bytes:
+    libraries: list[dict[str, str]] = [
         {
-            "AvailableLibraries": [
-                {
-                    "LibraryIdentifier": IOS,
-                    "LibraryPath": "llama.framework",
-                    "BinaryPath": "llama.framework/llama",
-                    "SupportedPlatform": ios_slice_platform,
-                },
-                {
-                    "LibraryIdentifier": MACOS,
-                    "LibraryPath": "llama.framework",
-                    "BinaryPath": "llama.framework/Versions/A/llama",
-                    "SupportedPlatform": "macos",
-                },
-            ]
-        }
-    )
+            "LibraryIdentifier": IOS,
+            "LibraryPath": "llama.framework",
+            "BinaryPath": "llama.framework/llama",
+            "SupportedPlatform": ios_slice_platform,
+        },
+        {
+            "LibraryIdentifier": MACOS,
+            "LibraryPath": "llama.framework",
+            "BinaryPath": "llama.framework/Versions/A/llama",
+            "SupportedPlatform": "macos",
+        },
+    ]
+    if simulator:
+        libraries.insert(
+            1,
+            {
+                "LibraryIdentifier": SIMULATOR,
+                "LibraryPath": "llama.framework",
+                "BinaryPath": "llama.framework/llama",
+                "SupportedPlatform": "ios",
+                "SupportedPlatformVariant": "simulator",
+            },
+        )
+    return plistlib.dumps({"AvailableLibraries": libraries})
 
 
 def write_archive(directory: str, members: dict[str, bytes | None]) -> Path:
-    """Write a two-slice XCFramework zip; a None value drops that member."""
+    """Write a three-slice XCFramework zip; a None value drops that member."""
     content: dict[str, bytes | None] = {
         ROOT_PLIST: root_plist(),
         IOS_BINARY_MEMBER: IOS_BINARY,
         IOS_INFO: info_plist(IOS_BINARY),
         IOS_MANIFEST: SHIPPED_MANIFEST,
+        SIMULATOR_BINARY_MEMBER: SIMULATOR_BINARY,
+        SIMULATOR_INFO: info_plist(SIMULATOR_BINARY),
+        SIMULATOR_MANIFEST: SHIPPED_MANIFEST,
         MACOS_BINARY_MEMBER: MACOS_BINARY,
         MACOS_INFO: info_plist(MACOS_BINARY),
         MACOS_MANIFEST: SHIPPED_MANIFEST,
@@ -163,12 +191,17 @@ class PackagerTests(unittest.TestCase):
             work = Path(directory)
             ios_source = work / "ios.dylib"
             ios_source.write_bytes(IOS_BINARY)
+            simulator_source = work / "simulator.dylib"
+            simulator_source.write_bytes(SIMULATOR_BINARY)
             macos_source = work / "macos.dylib"
             macos_source.write_bytes(MACOS_BINARY)
             xcframework = work / "llama.xcframework"
             with patch.object(packager, "run"):
                 ios = packager.make_ios_framework(
                     ios_source, xcframework / IOS / "llama.framework"
+                )
+                packager.make_ios_framework(
+                    simulator_source, xcframework / SIMULATOR / "llama.framework"
                 )
                 macos = packager.make_macos_framework(
                     macos_source, xcframework / MACOS / "llama.framework"
@@ -190,10 +223,6 @@ class PackagerTests(unittest.TestCase):
     def test_framework_info_plists_declare_the_binary_platform_and_minimum(
         self,
     ) -> None:
-        simulator = fat_macho(
-            thin_macho(IOS_SIMULATOR_PLATFORM, "16.4"),
-            thin_macho(IOS_SIMULATOR_PLATFORM, "16.4"),
-        )
         cases = {
             "device": (
                 IOS_BINARY,
@@ -202,7 +231,7 @@ class PackagerTests(unittest.TestCase):
                 {"CFBundleSupportedPlatforms": ["iPhoneOS"], "MinimumOSVersion": "16.4"},
             ),
             "simulator": (
-                simulator,
+                SIMULATOR_BINARY,
                 packager.make_ios_framework,
                 "Info.plist",
                 {
@@ -312,6 +341,7 @@ class ValidateArchiveTests(unittest.TestCase):
     def test_import_audit_requires_declarations_to_match_each_binary(self) -> None:
         references = {
             IOS_BINARY: ({"_stat", "_fstat", "_mach_absolute_time"}, set()),
+            SIMULATOR_BINARY: ({"_stat"}, set()),
             MACOS_BINARY: ({"_abort"}, set()),
         }
         with tempfile.TemporaryDirectory() as directory, patch.object(
@@ -374,6 +404,29 @@ class ValidateArchiveTests(unittest.TestCase):
                     "slice is iPhoneOS",
                     f"{IOS}: {IOS_INFO} CFBundleSupportedPlatforms is ['iPhoneOS'] "
                     "but the binary requires ['iPhoneSimulator']",
+                ],
+            ),
+            "device platform in the simulator slice Info.plist": (
+                {
+                    SIMULATOR_INFO: info_plist(
+                        SIMULATOR_BINARY, CFBundleSupportedPlatforms=["iPhoneOS"]
+                    )
+                },
+                [
+                    f"{SIMULATOR}: {SIMULATOR_INFO} CFBundleSupportedPlatforms is "
+                    "['iPhoneOS'] but the binary requires ['iPhoneSimulator']"
+                ],
+            ),
+            "device binary in the simulator slice": (
+                {
+                    SIMULATOR_BINARY_MEMBER: IOS_BINARY,
+                    SIMULATOR_INFO: info_plist(SIMULATOR_BINARY),
+                },
+                [
+                    f"{SIMULATOR}: {SIMULATOR_BINARY_MEMBER} targets iPhoneOS but "
+                    "the slice is iPhoneSimulator",
+                    f"{SIMULATOR}: {SIMULATOR_INFO} CFBundleSupportedPlatforms is "
+                    "['iPhoneSimulator'] but the binary requires ['iPhoneOS']",
                 ],
             ),
             "binary without a build version": (
@@ -510,7 +563,9 @@ class MachOImportAuditTests(unittest.TestCase):
                 archive = write_archive(
                     directory,
                     {
-                        ROOT_PLIST: root_plist(ios_slice_platform="macos"),
+                        ROOT_PLIST: root_plist(
+                            ios_slice_platform="macos", simulator=False
+                        ),
                         IOS_BINARY_MEMBER: binary,
                         IOS_INFO: info_plist(binary),
                         MACOS_BINARY_MEMBER: binary,
@@ -540,10 +595,36 @@ class FrameworkOsMetadataTests(unittest.TestCase):
             metadata.framework_os_metadata(MACOS_BINARY),
         )
         self.assertEqual(
+            {
+                "CFBundleSupportedPlatforms": ["iPhoneSimulator"],
+                "MinimumOSVersion": "16.4",
+            },
+            metadata.framework_os_metadata(SIMULATOR_BINARY),
+        )
+        self.assertEqual(
             "16.4.1",
             metadata.framework_os_metadata(thin_macho(IOS_PLATFORM, "16.4.1"))[
                 "MinimumOSVersion"
             ],
+        )
+
+    def test_reads_every_architecture_of_a_fat_64_container(self) -> None:
+        fat_64 = fat_macho(
+            thin_macho(IOS_SIMULATOR_PLATFORM, "17.2"),
+            thin_macho(IOS_SIMULATOR_PLATFORM, "17.2"),
+            wide=True,
+        )
+
+        self.assertEqual(
+            [(IOS_SIMULATOR_PLATFORM, encode_version("17.2"))] * 2,
+            metadata.build_versions(fat_64),
+        )
+        self.assertEqual(
+            {
+                "CFBundleSupportedPlatforms": ["iPhoneSimulator"],
+                "MinimumOSVersion": "17.2",
+            },
+            metadata.framework_os_metadata(fat_64),
         )
 
     def test_rejects_binaries_without_one_supported_build_version(self) -> None:
