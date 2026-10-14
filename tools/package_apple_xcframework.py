@@ -9,6 +9,8 @@ import subprocess
 import zipfile
 from pathlib import Path
 
+from apple_bundle_metadata import framework_os_metadata
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_INPUT_DIR = REPO_ROOT / "bin"
@@ -115,6 +117,7 @@ def write_framework_info_plist(
     *,
     executable: str,
     bundle_identifier: str,
+    binary: Path,
 ) -> None:
     info_plist = {
         "CFBundleDevelopmentRegion": "en",
@@ -125,6 +128,7 @@ def write_framework_info_plist(
         "CFBundlePackageType": "FMWK",
         "CFBundleShortVersionString": "1.0",
         "CFBundleVersion": "1",
+        **framework_os_metadata(binary.read_bytes()),
     }
     with destination.open("wb") as file:
         plistlib.dump(info_plist, file)
@@ -156,6 +160,7 @@ def make_ios_framework(source: Path, destination: Path) -> Path:
         destination / "Info.plist",
         executable=MODULE_NAME,
         bundle_identifier=BUNDLE_IDENTIFIER,
+        binary=binary,
     )
     shutil.copy2(PRIVACY_MANIFEST, destination / PRIVACY_MANIFEST.name)
     return destination
@@ -190,6 +195,7 @@ def make_macos_framework(source: Path, destination: Path) -> Path:
         resources_dir / "Info.plist",
         executable=MODULE_NAME,
         bundle_identifier=BUNDLE_IDENTIFIER,
+        binary=binary,
     )
     # Versioned bundles keep resources out of the framework root; a manifest
     # there is unsealed content that fails code signing.
