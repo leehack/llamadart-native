@@ -1,0 +1,12 @@
+diff --git a/src/llama-context.cpp b/src/llama-context.cpp
+--- a/src/llama-context.cpp
++++ b/src/llama-context.cpp
+@@ -1323,2 +1323,8 @@
+ void llama_context::set_embeddings(bool value) {
++    // Carried by llamadart-native#114: changing extraction mode invalidates
++    // allocator assignments even when pooling is NONE.
++    if (cparams.embeddings != value) {
++        sched_need_reserve = true;
++        LLAMA_LOG_DEBUG("%s: llamadart re-reserves embedding mode\n", __func__);
++    }
+     LLAMA_LOG_DEBUG("%s: value = %d\n", __func__, value);

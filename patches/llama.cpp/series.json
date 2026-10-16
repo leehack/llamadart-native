@@ -15,6 +15,14 @@
       "android_markers": [
         {"library": "libggml-vulkan.so", "text": "has no vkGetBufferDeviceAddress"}
       ]
+    },
+    {
+      "file": "0003-embedding-mode-scheduler-reserve.patch",
+      "tracking": "https://github.com/leehack/llamadart-native/issues/114",
+      "upstream": "https://github.com/ggml-org/llama.cpp/blob/620d2225cc436ab0b001e3200e590e3b286ef9ab/src/llama-context.cpp#L1323-L1332",
+      "android_markers": [
+        {"library": "libllama.so", "text": "llamadart re-reserves embedding mode"}
+      ]
     }
   ]
 }

@@ -48,6 +48,10 @@ See `docs/post_v040_qualification.md` for the exact nonpublishing correctness
 candidate, its separate pinned lanes, and remaining artifact/hardware gates.
 See `docs/v060_qualification.md` for the v0.6.0 wrapper adapters, candidate lanes
 and the Android ISA evidence required before publication or downstream adoption.
+See `docs/v070_android_isa_qualification.md` for the v0.7.0/KleidiAI v1.31.0
+source pair, version-specific function ranges and candidate qualification gates.
+See `docs/v070_native_contracts.md` for draft expert-cache isolation, dynamic
+export validation, ABI handoff and opt-in EmbeddingGemma-2 model qualification.
 See `docs/v060_1_wrapper_rebuild.md` for the `v0.6.0-1` header additions and
 what each export returns after a caught exception.
 See `docs/v060_2_wrapper_rebuild.md` for the carried llama.cpp patches of

@@ -50,6 +50,9 @@ both wrapper and upstream DLL directories and bounds each test to 120 seconds.
 Use `-DLLAMADART_BUILD_KLEIDIAI_TESTS=ON` with standalone-Kleidi upstream to
 build `llamadart_kleidiai_dispatch_test`; it links the actual CPU module.
 The Android artifact check is `tools/validate_android_cpu_isa.py --help`.
+Version-specific source and function-range evidence for v0.7.0 lives in
+`docs/v070_android_isa_qualification.md`; its candidate lanes retain the older
+qualified releases as separate regression inputs.
 
 ## Runtime Packaging Model
 

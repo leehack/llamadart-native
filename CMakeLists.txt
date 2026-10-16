@@ -5,6 +5,7 @@ find_package(Threads REQUIRED)
 
 option(LLAMADART_BUILD_TESTS "Build libllamadart wrapper tests" OFF)
 option(LLAMADART_BUILD_TTS_SMOKE "Build the local Qwen3-TTS smoke tool" OFF)
+option(LLAMADART_BUILD_EMBEDDING_SMOKE "Build the local EmbeddingGemma-2 qualification tool" OFF)
 option(LLAMADART_BUILD_KLEIDIAI_TESTS "Build standalone KleidiAI dispatch and compute qualification" OFF)
 
 # Keep all targets PIC-safe for shared linking.
@@ -170,6 +171,10 @@ unset(LLAMADART_SPECULATIVE_HAS_COMMON_BATCH CACHE)
 check_cxx_source_compiles("#include <common.h>
 int main() { return sizeof(common_batch) == 0; }"
     LLAMADART_SPECULATIVE_HAS_COMMON_BATCH)
+unset(LLAMADART_CONTEXT_HAS_MOE_CACHE CACHE)
+check_cxx_source_compiles("#include <llama.h>
+int main() { return sizeof(decltype(llama_context_params::moe_cache_size)) == 0; }"
+    LLAMADART_CONTEXT_HAS_MOE_CACHE)
 cmake_pop_check_state()
 if (TARGET ggml-vulkan AND LLAMADART_SPIRV_HEADERS_INCLUDE)
     target_include_directories(ggml-vulkan SYSTEM PRIVATE "${LLAMADART_SPIRV_HEADERS_INCLUDE}")
@@ -225,6 +230,7 @@ if (MSVC)
     target_compile_options(llamadart_lib PRIVATE /EHsc-)
 endif()
 target_compile_definitions(llamadart_lib PRIVATE
+    LLAMADART_CONTEXT_HAS_MOE_CACHE=$<BOOL:${LLAMADART_CONTEXT_HAS_MOE_CACHE}>
     LLAMADART_MTMD_HELPER_HAS_EMBD_BATCH=$<BOOL:${LLAMADART_MTMD_HELPER_HAS_EMBD_BATCH}>
     LLAMADART_SPECULATIVE_HAS_COMMON_BATCH=$<BOOL:${LLAMADART_SPECULATIVE_HAS_COMMON_BATCH}>
     LLAMADART_MTMD_HELPER_HAS_OPTIONS=$<BOOL:${LLAMADART_MTMD_HELPER_HAS_OPTIONS}>)
@@ -263,6 +269,7 @@ if (LLAMADART_BUILD_TESTS)
     add_executable(llamadart_speculative_api_test tests/speculative_api_test.cpp)
     target_compile_features(llamadart_speculative_api_test PRIVATE cxx_std_17)
     target_compile_definitions(llamadart_speculative_api_test PRIVATE
+        LLAMADART_CONTEXT_HAS_MOE_CACHE=$<BOOL:${LLAMADART_CONTEXT_HAS_MOE_CACHE}>
         LLAMADART_SPECULATIVE_HAS_COMMON_BATCH=$<BOOL:${LLAMADART_SPECULATIVE_HAS_COMMON_BATCH}>)
     target_link_libraries(llamadart_speculative_api_test PRIVATE llamadart_lib)
     target_include_directories(llamadart_speculative_api_test PRIVATE
@@ -322,6 +329,8 @@ if (LLAMADART_BUILD_TESTS)
 
     add_executable(llamadart_exit_teardown_test tests/exit_teardown_test.cpp)
     target_compile_features(llamadart_exit_teardown_test PRIVATE cxx_std_17)
+    target_compile_definitions(llamadart_exit_teardown_test PRIVATE
+        LLAMADART_CONTEXT_HAS_MOE_CACHE=$<BOOL:${LLAMADART_CONTEXT_HAS_MOE_CACHE}>)
     target_link_libraries(llamadart_exit_teardown_test PRIVATE
         llamadart_lib Threads::Threads)
     target_include_directories(llamadart_exit_teardown_test PRIVATE
@@ -375,7 +384,7 @@ if (LLAMADART_BUILD_TESTS)
                 FIXTURES_SETUP llamadart_exit_teardown_model)
         endif()
         foreach(scenario model-idle model-dispose model-sync model-wrappers
-                model-order model-session model-session-untracked
+                model-order model-session model-session-untracked model-embedding-toggle
                 model-freed model-decode-wait model-mtmd-wait model-decode
                 model-late-load model-load model-load-wait
                 model-free-in-flight)
@@ -417,6 +426,21 @@ if (LLAMADART_BUILD_TESTS)
                 PROPERTIES
                 FIXTURES_REQUIRED llamadart_exit_teardown_vocabulary_model)
         endforeach()
+        if (LLAMADART_CONTEXT_HAS_MOE_CACHE)
+            set(exit_teardown_mtp_model
+                "${CMAKE_CURRENT_BINARY_DIR}/exit_teardown_test_mtp_model.gguf")
+            add_test(NAME llamadart_exit_teardown_make-mtp-model
+                COMMAND llamadart_exit_teardown_test make-mtp-model "${exit_teardown_mtp_model}")
+            set_tests_properties(llamadart_exit_teardown_make-mtp-model PROPERTIES
+                FIXTURES_SETUP llamadart_exit_teardown_mtp_model)
+            foreach(scenario model-speculative-moe-cache model-mtp-moe-cache)
+                add_test(NAME llamadart_exit_teardown_${scenario}
+                    COMMAND llamadart_exit_teardown_test ${scenario}
+                        "${exit_teardown_vocabulary_model}" "${exit_teardown_mtp_model}")
+                set_tests_properties(llamadart_exit_teardown_${scenario} PROPERTIES
+                    FIXTURES_REQUIRED "llamadart_exit_teardown_vocabulary_model;llamadart_exit_teardown_mtp_model")
+            endforeach()
+        endif()
         # llama_encode needs an encoder, which the test also writes.
         set(exit_teardown_encoder
             "${CMAKE_CURRENT_BINARY_DIR}/exit_teardown_test_encoder.gguf")
@@ -470,6 +494,17 @@ if (LLAMADART_BUILD_KLEIDIAI_TESTS)
     enable_testing()
     add_executable(llamadart_kleidiai_dispatch_test tests/kleidiai_dispatch_test.cpp)
     target_compile_features(llamadart_kleidiai_dispatch_test PRIVATE cxx_std_17)
+    cmake_push_check_state(RESET)
+    set(CMAKE_REQUIRED_INCLUDES
+        "${CMAKE_CURRENT_SOURCE_DIR}/third_party/llama.cpp/ggml/include"
+        "${CMAKE_CURRENT_SOURCE_DIR}/third_party/llama.cpp/ggml/src/ggml-cpu/kleidiai")
+    unset(LLAMADART_KLEIDIAI_HAS_KQUANTS CACHE)
+    check_cxx_source_compiles("#include <kernels.h>
+int main() { return sizeof(decltype(ggml_kleidiai_select_kernels_q4_k(CPU_FEATURE_NONE))) == 0; }"
+        LLAMADART_KLEIDIAI_HAS_KQUANTS)
+    cmake_pop_check_state()
+    target_compile_definitions(llamadart_kleidiai_dispatch_test PRIVATE
+        LLAMADART_KLEIDIAI_HAS_KQUANTS=$<BOOL:${LLAMADART_KLEIDIAI_HAS_KQUANTS}>)
     target_include_directories(llamadart_kleidiai_dispatch_test PRIVATE
         third_party/llama.cpp/ggml/include
         third_party/llama.cpp/ggml/src
@@ -493,4 +528,30 @@ if (LLAMADART_BUILD_TTS_SMOKE)
         third_party/llama.cpp/tools/mtmd
         src
     )
+endif()
+
+if (LLAMADART_BUILD_EMBEDDING_SMOKE)
+    add_executable(llamadart_embedding_smoke tools/embedding_smoke.cpp)
+    target_compile_features(llamadart_embedding_smoke PRIVATE cxx_std_17)
+    target_compile_definitions(llamadart_embedding_smoke PRIVATE
+        LLAMADART_CONTEXT_HAS_MOE_CACHE=$<BOOL:${LLAMADART_CONTEXT_HAS_MOE_CACHE}>)
+    target_link_libraries(llamadart_embedding_smoke PRIVATE llamadart_lib)
+    target_include_directories(llamadart_embedding_smoke PRIVATE
+        src third_party/llama.cpp/tools/mtmd)
+    set(LLAMADART_EMBEDDING_TEST_MODEL "" CACHE FILEPATH "EmbeddingGemma-2 model for opt-in CTest")
+    set(LLAMADART_EMBEDDING_TEST_MMPROJ "" CACHE FILEPATH "Matching EmbeddingGemma-2 projector for opt-in CTest")
+    if (LLAMADART_EMBEDDING_TEST_MODEL AND LLAMADART_EMBEDDING_TEST_MMPROJ)
+        enable_testing()
+        add_test(NAME llamadart_embedding_smoke
+            COMMAND llamadart_embedding_smoke "${LLAMADART_EMBEDDING_TEST_MODEL}"
+                "${LLAMADART_EMBEDDING_TEST_MMPROJ}")
+        set_tests_properties(llamadart_embedding_smoke PROPERTIES LABELS "local-only" TIMEOUT 300)
+        if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
+            set_tests_properties(llamadart_embedding_smoke PROPERTIES
+                ENVIRONMENT_MODIFICATION
+                "LD_LIBRARY_PATH=path_list_prepend:$<TARGET_FILE_DIR:llama>;LD_LIBRARY_PATH=path_list_prepend:$<TARGET_FILE_DIR:llamadart_lib>")
+        endif()
+    elseif (LLAMADART_EMBEDDING_TEST_MODEL OR LLAMADART_EMBEDDING_TEST_MMPROJ)
+        message(FATAL_ERROR "EmbeddingGemma-2 CTest requires both model and matching projector")
+    endif()
 endif()

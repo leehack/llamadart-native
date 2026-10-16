@@ -7,7 +7,39 @@
 #include "llama_dart_wrapper.h"
 
 #include <cassert>
+#include <type_traits>
 #include <vector>
+
+template <typename T, typename = void>
+struct has_moe_cache_field : std::false_type {};
+
+template <typename T>
+struct has_moe_cache_field<T, std::void_t<decltype(T::moe_cache_size)>>
+    : std::true_type {};
+
+// A failed/miswired build probe must not silently compile the guard as a no-op
+// when these headers actually contain the cache budget.
+static_assert(bool(LLAMADART_CONTEXT_HAS_MOE_CACHE) ==
+              has_moe_cache_field<llama_context_params>::value);
+
+static void test_draft_moe_cache() {
+  auto target = llama_context_default_params();
+  target.n_batch = 512;
+  target.n_ubatch = 128;
+#if LLAMADART_CONTEXT_HAS_MOE_CACHE
+  target.moe_cache_size = 64 * 1024 * 1024;
+#endif
+  auto draft = target;
+  llama_dart_disable_draft_moe_cache(draft);
+#if LLAMADART_CONTEXT_HAS_MOE_CACHE
+  assert(draft.moe_cache_size == 0);
+  assert(target.moe_cache_size == 64 * 1024 * 1024);
+#endif
+  assert(draft.n_batch == 512 && draft.n_ubatch == 128);
+  // The same operation also accepts the already-disabled/default case.
+  llama_dart_disable_draft_moe_cache(draft);
+  assert(draft.n_batch == 512 && draft.n_ubatch == 128);
+}
 
 static void expect_requirements(common_speculative_type type, bool need_embd,
                                 bool need_embd_nextn) {
@@ -233,6 +265,7 @@ static void test_mtp_repeated_accept_and_sequence_validation() {
 }
 
 int main() {
+  test_draft_moe_cache();
   assert(!llama_dart_speculative_need_embd(nullptr));
   assert(!llama_dart_speculative_need_embd_nextn(nullptr));
 

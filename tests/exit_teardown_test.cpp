@@ -721,13 +721,13 @@ const llama_token kNewlineToken = 6;
 // load, offload and evaluate, and needs no download. It has no tokenizer
 // unless with_vocabulary asks for one, which a grammar sampler needs.
 int make_model(const char *path, bool is_encoder,
-               bool with_vocabulary = false) {
+               bool with_vocabulary = false, bool mtp_head = false) {
   const uint32_t vocab_size = 256;
   const uint32_t context_length = 512;
   const uint32_t embedding_length = 128;
   const uint32_t feed_forward_length = 256;
-  const uint32_t block_count = 2;
-  const std::string arch = is_encoder ? "bert" : "llama";
+  const uint32_t block_count = mtp_head ? 1 : 2;
+  const std::string arch = mtp_head ? "qwen35" : is_encoder ? "bert" : "llama";
 
   gguf_context *gguf = gguf_init_empty();
   const auto set_u32 = [&](const char *key, uint32_t value) {
@@ -741,6 +741,18 @@ int make_model(const char *path, bool is_encoder,
   set_u32("feed_forward_length", feed_forward_length);
   set_u32("attention.head_count", 4);
   set_u32("vocab_size", vocab_size);
+  if (mtp_head) {
+    // A component fixture with one dense MTP block and no recurrent trunk.
+    set_u32("nextn_predict_layers", 1);
+    set_u32("ssm.conv_kernel", 4);
+    set_u32("ssm.inner_size", embedding_length);
+    set_u32("ssm.state_size", 32);
+    set_u32("ssm.time_step_rank", 4);
+    set_u32("ssm.group_count", 4);
+    const int32_t sections[] = {8, 8, 0, 0};
+    gguf_set_arr_data(gguf, "qwen35.rope.dimension_sections", GGUF_TYPE_INT32,
+                      sections, 4);
+  }
   gguf_set_val_f32(gguf,
                    (arch + (is_encoder ? ".attention.layer_norm_epsilon"
                                        : ".attention.layer_norm_rms_epsilon"))
@@ -797,7 +809,8 @@ int make_model(const char *path, bool is_encoder,
   }
   for (uint32_t block = 0; block < block_count; ++block) {
     const std::string prefix = "blk." + std::to_string(block) + ".";
-    add(prefix + "attn_q", embedding_length, embedding_length);
+    add(prefix + "attn_q", embedding_length,
+        embedding_length * (mtp_head ? 2 : 1));
     add(prefix + "attn_k", embedding_length, embedding_length);
     add(prefix + "attn_v", embedding_length, embedding_length);
     add(prefix + "attn_output", embedding_length, embedding_length);
@@ -808,8 +821,16 @@ int make_model(const char *path, bool is_encoder,
       add_norm(prefix + "layer_output_norm");
     } else {
       add(prefix + "attn_norm", embedding_length, 0);
-      add(prefix + "ffn_norm", embedding_length, 0);
+      add(prefix + (mtp_head ? "post_attention_norm" : "ffn_norm"),
+          embedding_length, 0);
       add(prefix + "ffn_gate", embedding_length, feed_forward_length);
+      if (mtp_head) {
+        add(prefix + "attn_q_norm", 32, 0);
+        add(prefix + "attn_k_norm", 32, 0);
+        add(prefix + "nextn.eh_proj", 2 * embedding_length, embedding_length);
+        add(prefix + "nextn.enorm", embedding_length, 0);
+        add(prefix + "nextn.hnorm", embedding_length, 0);
+      }
     }
   }
   if (!is_encoder) {
@@ -1120,6 +1141,121 @@ llama_dart_speculative *init_ngram_speculative(model_fixture &fixture) {
 }
 
 std::atomic<int> g_embeddings_seen{-1};
+
+#if LLAMADART_CONTEXT_HAS_MOE_CACHE
+struct captured_init_log {
+  std::mutex mutex;
+  std::string text;
+
+  static void append(ggml_log_level, const char *message, void *opaque) {
+    auto &log = *static_cast<captured_init_log *>(opaque);
+    std::lock_guard<std::mutex> lock(log.mutex);
+    log.text += message;
+  }
+
+  bool contains(const char *message) {
+    std::lock_guard<std::mutex> lock(mutex);
+    return text.find(message) != std::string::npos;
+  }
+
+  void clear() {
+    std::lock_guard<std::mutex> lock(mutex);
+    text.clear();
+  }
+};
+#endif
+
+// Observe the actual exported creation paths. The CPU-only negative control
+// fails if a nonzero cache budget reaches upstream, without downloading MoE
+// weights or inspecting private upstream context layout.
+int test_model_draft_moe_cache(const char *path, const char *mtp_path) {
+#if LLAMADART_CONTEXT_HAS_MOE_CACHE
+  model_options options;
+  options.cpu_only = true;
+  auto fixture = load_model(path, options);
+  const auto tracked_before = llama_dart_exit_tracked_count();
+  auto params = llama_context_default_params();
+  params.n_ctx = 256;
+  params.n_batch = 64;
+  params.n_ubatch = 32;
+  params.moe_cache_size = 64 * 1024 * 1024;
+  captured_init_log log;
+  llama_log_set(captured_init_log::append, &log);
+
+  auto *invalid_target = llama_dart_init_from_model(fixture.model, params);
+  assert(invalid_target == nullptr);
+  assert(log.contains("MoE cache requires a GPU backend"));
+  assert(llama_dart_exit_tracked_count() == tracked_before);
+  log.clear();
+
+  if (mtp_path != nullptr) {
+    auto model_params = llama_model_default_params();
+    ggml_backend_dev_t devices[] = {nullptr};
+    model_params.devices = devices;
+    model_params.n_gpu_layers = 0;
+    model_params.load_mtp = true;
+    auto *draft_model = llama_dart_model_load_from_file(mtp_path, model_params);
+    assert(draft_model != nullptr);
+    auto *mtp = llama_dart_mtp_init_with_draft_model(
+        draft_model, fixture.context, params, 4, 0, 0.0f, false);
+    assert(mtp != nullptr);
+    auto *draft = llama_dart_mtp_get_draft_context(mtp);
+    assert(draft != nullptr);
+    assert(llama_n_batch(draft) == params.n_batch);
+    assert(llama_n_ubatch(draft) == params.n_ubatch);
+    assert(!log.contains("MoE cache requires a GPU backend"));
+    llama_dart_mtp_free(mtp);
+    llama_dart_exit_free(draft_model);
+  } else {
+    llama_dart_speculative_params spec_params{};
+    spec_params.type_names = "draft-simple";
+    auto *speculative = llama_dart_speculative_init(
+        fixture.model, fixture.model, fixture.context, params, &spec_params);
+    assert(speculative != nullptr);
+    auto *draft = llama_dart_speculative_get_draft_context(speculative);
+    assert(draft != nullptr);
+    assert(llama_n_batch(draft) == params.n_batch);
+    assert(llama_n_ubatch(draft) == params.n_ubatch);
+    assert(!log.contains("MoE cache requires a GPU backend"));
+    llama_dart_speculative_free(speculative);
+  }
+  assert(params.moe_cache_size == 64 * 1024 * 1024);
+  assert(llama_dart_exit_tracked_count() == tracked_before);
+  // The target remains usable after draft creation or rejection.
+  assert(llama_dart_decode(fixture.context, prompt(fixture)) == 0);
+  llama_dart_set_log_level(3);
+  llama_dart_exit_free(fixture.context);
+  llama_dart_exit_free(fixture.model);
+  assert(llama_dart_exit_tracked_count() == 0);
+  return 0;
+#else
+  (void)path;
+  (void)mtp_path;
+  return 77;
+#endif
+}
+
+// Direct upstream calls isolate extraction-mode changes from speculative
+// handles and wrapper teardown. Re-reserving only pooled contexts is unsafe.
+int test_model_embedding_toggle(const char *path) {
+  model_options options;
+  options.tracked = false;
+  options.cpu_only = true;
+  auto fixture = load_model(path, options);
+  for (int pass = 0; pass < 2; ++pass) {
+    llama_set_embeddings(fixture.context, true);
+    assert(llama_decode(fixture.context, prompt(fixture)) == 0);
+    assert(llama_get_embeddings(fixture.context) != nullptr);
+    llama_memory_clear(llama_get_memory(fixture.context), true);
+    llama_set_embeddings(fixture.context, false);
+    assert(llama_decode(fixture.context, prompt(fixture)) == 0);
+    assert(llama_get_embeddings(fixture.context) == nullptr);
+    llama_memory_clear(llama_get_memory(fixture.context), true);
+  }
+  llama_free(fixture.context);
+  llama_model_free(fixture.model);
+  return 0;
+}
 
 // Freeing speculative state turns the embeddings of its context off again,
 // and a decode then leaves no embeddings.
@@ -2689,6 +2825,9 @@ int main(int argc, char **argv) {
     if (scenario == "make-vocabulary-model") {
       return make_model(first, false, true);
     }
+    if (scenario == "make-mtp-model") {
+      return make_model(first, false, true, true);
+    }
     if (scenario == "barrier-grammar") {
       return test_barrier_grammar(first);
     }
@@ -2733,6 +2872,16 @@ int main(int argc, char **argv) {
     }
     if (scenario == "model-session") {
       return test_model_session(first);
+    }
+    if (scenario == "model-embedding-toggle") {
+      return test_model_embedding_toggle(first);
+    }
+    if (scenario == "model-speculative-moe-cache") {
+      return test_model_draft_moe_cache(first, nullptr);
+    }
+    if (scenario == "model-mtp-moe-cache") {
+      assert(second != nullptr);
+      return test_model_draft_moe_cache(first, second);
     }
     if (scenario == "model-freed") {
       return test_model_freed(first, second);

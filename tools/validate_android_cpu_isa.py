@@ -21,7 +21,11 @@ import sys
 # or a different KleidiAI combination invalidates the dispatch audit.
 # Candidate audit evidence: docs/post_v040_qualification.md,
 # docs/v041_android_isa_qualification.md, docs/v050_android_isa_qualification.md
-# and docs/v060_android_isa_qualification.md.
+# docs/v060_android_isa_qualification.md and docs/v070_android_isa_qualification.md.
+V070_SOURCE_PAIR = (
+    "b571df853210d243a83b1ec34a6936f147916f0369d792f8bb0d17f37fc7894b",
+    "deb324dbcf8c952ec149433ab58cbed0b2ab2374a557f0a4eea575b2da761377",
+)
 SOURCE_PAIRS = frozenset({
     (  # llama.cpp v0.4.0 / KleidiAI v1.24.0
         "c4dc92a7d95ebfad7f5f55e75be2ae773b7d95faf72a9581c9479c42bc41bca0",
@@ -43,6 +47,7 @@ SOURCE_PAIRS = frozenset({
         "adc8d989599211a4b789b2c595b2ae52335c5a390e6c4972171c46589aa05e7e",
         "64189fc613c1c4c3aaeeb6bb12b38d85dd6728cafd2261a5a88f1b77b10fe59c",
     ),
+    V070_SOURCE_PAIR,  # llama.cpp v0.7.0 / KleidiAI v1.31.0
 })
 
 # Exact ELF STT_FUNC ranges; never allow by kai_* prefix or disassembly label.
@@ -67,6 +72,17 @@ kai_kernel_rhs_pack_nxk_f32p2vlx1biasf32_f32_f32_sme
 kai_run_lhs_pack_bf16p2vlx2_f32_sme
 kai_run_matmul_clamp_f32_qsi8d32p1x4_qsi4c32p4vlx4_1x4vl_sme2_sdot
 kai_run_rhs_pack_kxn_bf16p2vlx2b_f32_x32_sme
+""".split())
+
+# KleidiAI 1.31 moves BF16 packing into a sized assembly function. The two
+# Q4_K kernels are reachable only through the SME2 + FP16 table. Do not grant
+# these exceptions to legacy source pairs or accept legacy ranges for v0.7.0.
+DISPATCHED_FUNCTIONS_V070 = (DISPATCHED_FUNCTIONS - {
+    "kai_run_lhs_pack_bf16p2vlx2_f32_sme",
+}) | frozenset("""
+kai_kernel_lhs_pack_bf16p2vlx2_f32_sme
+kai_kernel_matmul_clamp_f32_f16p4vsx2_qai4c32p16vsx4s1s0sf16_4vsx16vs_sme2_mopa
+kai_kernel_matmul_clamp_f32_qsi8d32p1x4_qai4c32p16vsx4s1s0sf16_1x16vs_sme2_dot
 """.split())
 
 SCALABLE_REG = re.compile(r"\b(?:z\d+|p\d+|pn\d+|za\d*[hv]?|zt\d+)\b")
@@ -105,6 +121,7 @@ def validate_sources(llama_source, kleidiai_source):
         raise ValueError(
             f"Unaudited ggml/src + kai source fingerprint pair {actual}; "
             "review dispatch before updating policy")
+    return DISPATCHED_FUNCTIONS_V070 if actual == V070_SOURCE_PAIR else DISPATCHED_FUNCTIONS
 
 
 def function_ranges(symbol_text):
@@ -190,11 +207,8 @@ def main():
             for line in disassembly.splitlines()
             if (match := INSTRUCTION.fullmatch(line))
         )
-        if has_scalable:
-            validate_sources(args.llama_source, args.kleidiai_source)
-        total, scalable, functions = validate_disassembly(
-            symbols, disassembly, DISPATCHED_FUNCTIONS if has_scalable else frozenset()
-        )
+        allowed = validate_sources(args.llama_source, args.kleidiai_source) if has_scalable else frozenset()
+        total, scalable, functions = validate_disassembly(symbols, disassembly, allowed)
         print(f"PASS: {total} instructions; {scalable} SVE/SME instructions contained in {functions} exact audited functions")
     except (OSError, ValueError, subprocess.CalledProcessError) as error:
         print(f"Android CPU ISA audit failed: {error}", file=sys.stderr)

@@ -3,6 +3,8 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tools'))
@@ -15,8 +17,7 @@ NM_OUTPUT = """\
 0000000000004b20 T _llama_dart_decode
 """
 
-# readelf -Ws of an ELF library that imports two functions and has a hidden
-# definition of __cxa_atexit in its full symbol table.
+# Dynamic symbols only; static definitions must not satisfy export checks.
 READELF_OUTPUT = """\
 
 Symbol table '.dynsym' contains 3 entries:
@@ -25,9 +26,14 @@ Symbol table '.dynsym' contains 3 entries:
      2: 0000000000000000     0 FUNC    GLOBAL DEFAULT  UND dlsym@GLIBC_2.34 (3)
      3: 0000000000004b20    64 FUNC    GLOBAL DEFAULT   12 llama_dart_decode
 
-Symbol table '.symtab' contains 1 entry:
+"""
+
+READELF_STATIC = """\
+Symbol table '.symtab' contains 3 entries:
    Num:    Value          Size Type    Bind   Vis      Ndx Name
      1: 000000000000f900     8 FUNC    LOCAL  DEFAULT   11 __cxa_atexit
+     2: 000000000000f910     8 FUNC    GLOBAL DEFAULT   11 llama_dart_encode
+     3: 0000000000000000     0 FUNC    GLOBAL DEFAULT  UND static_only_reference
 """
 
 READELF_IMPORT = (
@@ -37,6 +43,44 @@ READELF_IMPORT = (
 
 
 class ValidateExportsTests(unittest.TestCase):
+    def test_readelf_inspects_only_the_dynamic_symbol_table(self):
+        with tempfile.TemporaryDirectory() as temp:
+            library = Path(temp) / 'libllamadart.so'
+            library.touch()
+            args = SimpleNamespace(library=library, format='readelf',
+                                   tool='llvm-readelf')
+            with patch.object(validate_exports.subprocess, 'run') as run:
+                run.return_value.stdout = READELF_OUTPUT
+                self.assertEqual(validate_exports.run_tool(args), READELF_OUTPUT)
+                self.assertEqual(run.call_args.args[0],
+                                 ['llvm-readelf', '--dyn-syms', '--wide', str(library)])
+
+    def test_readelf_requires_visible_dynamic_exports(self):
+        listing = READELF_OUTPUT + (
+            ' 4: 0000000000005000 64 FUNC GLOBAL HIDDEN 12 hidden_api\n'
+            ' 5: 0000000000005100 64 FUNC LOCAL DEFAULT 12 local_api\n'
+            ' 6: 0000000000005200 64 FUNC WEAK DEFAULT 12 weak_api@@V1\n'
+            ' 7: 0000000000005300 64 FUNC GLOBAL PROTECTED 12 protected_api\n'
+            ' 8: 0000000000005400 64 FUNC GLOBAL INTERNAL 12 internal_api\n'
+        ) + READELF_STATIC
+        self.assertEqual(
+            validate_exports.exported_symbols_from_readelf(listing),
+            {'llama_dart_decode', 'weak_api', 'protected_api'})
+
+    @unittest.skipIf(sys.platform == 'win32', 'the stand-in readelf is a shell script')
+    def test_private_or_static_definition_fails_export_gate(self):
+        for listing in (
+                READELF_OUTPUT + READELF_STATIC,
+                READELF_OUTPUT +
+                ' 4: 0000000000005000 64 FUNC GLOBAL HIDDEN 12 llama_dart_encode\n',
+                READELF_OUTPUT +
+                ' 4: 0000000000005000 64 FUNC LOCAL DEFAULT 12 llama_dart_encode\n'):
+            with self.subTest(listing=listing):
+                result = self.run_tool(listing, tool_format='readelf',
+                                       symbol='llama_dart_encode')
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertIn('Missing exports', result.stderr)
+
     def test_nm_exports_and_imports_are_told_apart(self):
         self.assertEqual(
             validate_exports.exported_symbols_from_nm(NM_OUTPUT),
@@ -47,7 +91,7 @@ class ValidateExportsTests(unittest.TestCase):
 
     def test_readelf_imports_are_the_undefined_symbols(self):
         self.assertEqual(
-            validate_exports.imported_symbols_from_readelf(READELF_OUTPUT),
+            validate_exports.imported_symbols_from_readelf(READELF_OUTPUT + READELF_STATIC),
             {'__cxa_finalize', 'dlsym'})
         self.assertEqual(
             validate_exports.imported_symbols_from_readelf(
@@ -74,12 +118,12 @@ class ValidateExportsTests(unittest.TestCase):
     def test_forbidden_import_in_readelf_output(self):
         # The hidden definition in the symbol table is not an import.
         absent = self.run_tool(
-            READELF_OUTPUT, '--forbid-import', '__cxa_atexit',
+            READELF_OUTPUT + READELF_STATIC, '--forbid-import', '__cxa_atexit',
             tool_format='readelf')
         self.assertEqual(absent.returncode, 0, absent.stderr)
 
         imported = self.run_tool(
-            READELF_OUTPUT + READELF_IMPORT, '--forbid-import', '__cxa_atexit',
+            READELF_OUTPUT + READELF_IMPORT + READELF_STATIC, '--forbid-import', '__cxa_atexit',
             tool_format='readelf')
         self.assertEqual(imported.returncode, 1)
         self.assertIn('__cxa_atexit', imported.stderr)
