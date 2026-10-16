@@ -329,6 +329,8 @@ if (LLAMADART_BUILD_TESTS)
 
     add_executable(llamadart_exit_teardown_test tests/exit_teardown_test.cpp)
     target_compile_features(llamadart_exit_teardown_test PRIVATE cxx_std_17)
+    target_compile_definitions(llamadart_exit_teardown_test PRIVATE
+        LLAMADART_CONTEXT_HAS_MOE_CACHE=$<BOOL:${LLAMADART_CONTEXT_HAS_MOE_CACHE}>)
     target_link_libraries(llamadart_exit_teardown_test PRIVATE
         llamadart_lib Threads::Threads)
     target_include_directories(llamadart_exit_teardown_test PRIVATE
@@ -424,6 +426,21 @@ if (LLAMADART_BUILD_TESTS)
                 PROPERTIES
                 FIXTURES_REQUIRED llamadart_exit_teardown_vocabulary_model)
         endforeach()
+        if (LLAMADART_CONTEXT_HAS_MOE_CACHE)
+            set(exit_teardown_mtp_model
+                "${CMAKE_CURRENT_BINARY_DIR}/exit_teardown_test_mtp_model.gguf")
+            add_test(NAME llamadart_exit_teardown_make-mtp-model
+                COMMAND llamadart_exit_teardown_test make-mtp-model "${exit_teardown_mtp_model}")
+            set_tests_properties(llamadart_exit_teardown_make-mtp-model PROPERTIES
+                FIXTURES_SETUP llamadart_exit_teardown_mtp_model)
+            foreach(scenario model-speculative-moe-cache model-mtp-moe-cache)
+                add_test(NAME llamadart_exit_teardown_${scenario}
+                    COMMAND llamadart_exit_teardown_test ${scenario}
+                        "${exit_teardown_vocabulary_model}" "${exit_teardown_mtp_model}")
+                set_tests_properties(llamadart_exit_teardown_${scenario} PROPERTIES
+                    FIXTURES_REQUIRED "llamadart_exit_teardown_vocabulary_model;llamadart_exit_teardown_mtp_model")
+            endforeach()
+        endif()
         # llama_encode needs an encoder, which the test also writes.
         set(exit_teardown_encoder
             "${CMAKE_CURRENT_BINARY_DIR}/exit_teardown_test_encoder.gguf")

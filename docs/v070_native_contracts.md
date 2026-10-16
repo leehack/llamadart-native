@@ -24,7 +24,18 @@ keeps the helper compatible with older headers. The guard changes only the
 draft copy; target parameters and draft `n_batch`/`n_ubatch` remain independent.
 Contract assertions cover a nonzero target budget, zero draft budget,
 idempotence and preserved batch sizes, with the older-header no-op compiled
-in the v0.6.0 lane.
+in the v0.6.0 lane. An independent compile-time field check rejects a missing
+or miswired build probe against headers that contain the budget.
+
+Production-path tests use the generated vocabulary model and CPU-only contexts.
+An ordinary context with a nonzero budget must fail upstream's GPU-cache
+requirement; generic draft creation with the same parameters must succeed and
+preserve batch/microbatch sizes. Legacy MTP creation uses a generated dense
+Qwen3.5 MTP-head-only component fixture and must also return a real draft
+context. The fixture checks creation policy, not trained MTP generation
+quality or GPU cache performance. Both paths preserve caller parameters,
+leave the target usable and clean up tracked resources. Removing each
+production guard separately must make its corresponding test fail.
 
 This does not expose a new public configuration option. The downstream cache
 budget and draft microbatch controls have separate trackers.
@@ -63,7 +74,18 @@ the demonstrated allocator-assignment reuse failure without changing the
 unchanged-mode path. A debug log provides the mandatory Android bundle marker
 in `libllama.so`. It fits both v0.6.0 and v0.7.0; the production submodule stays
 untouched. An upstream-equivalent repair in a qualified release removes this
-patch. The precise upstream introducing commit remains unproven.
+patch.
+
+A subsequent standalone upstream build isolates this reproduction to
+[upstream #30445](https://github.com/ggml-org/llama.cpp/pull/30445),
+`cb55ffe6e2147eb15f4bede1f60d11246715754f`. Its immediate parent
+`a17e94d229fc7fed1567a799baebd11b771fe5af` exits 0; the commit exits 139 with
+the same GGUF and upstream-only C program. Neither build links libllamadart or
+applies its patches. This establishes the introducing commit for the tested
+decoder/extraction transition; it does not establish every model's behavior.
+Current Dart `embed` and `embedBatch` use extraction toggles, so this is a real
+consumer pattern. The repair is separate from the Android ISA failure and is
+not required by the published v0.6.0-3 artifact.
 
 The durable `model-embedding-toggle` test uses direct upstream calls with no
 speculative state, enables and disables extraction twice, checks output
@@ -137,19 +159,40 @@ eight threads, context/batch/microbatch 2048, exact candidate and BF16 assets:
 | --- | --- |
 | Python suite, including patch markers and export negatives | PASS; 213 tests, one platform skip |
 | v0.6.0 native contracts with the carried repair | PASS; 48/48 |
-| v0.7.0 native contracts and opt-in embedding smoke with repair | PASS; 49/49 |
+| v0.7.0 native contracts and opt-in embedding smoke with repair | PASS; 52/52, including generated MTP fixture and both production cache-guard cases |
 | Wrapper vs upstream text, normalized 768-vector | PASS; maximum component difference 0 |
 | Black vs checkerboard image, mixed text/media reference | PASS; maximum component difference 0.074377097 |
 | Silence vs 440 Hz tone, mixed text/media reference | PASS; maximum component difference 0.069904178 |
 | 128/256/512/768 prefixes finite and normalized | PASS |
 | Text reuse after image/audio requests; tracked cleanup | PASS |
 
+The readiness pass additionally removed each production cache guard in
+isolation and rebuilt the wrapper. Generic removal fails the speculative
+handle-success assertion; legacy removal fails the MTP handle-success
+assertion. Both pass after restoration. The source submodule and production
+wrapper calls are restored before committing; mutation logs are qualification
+evidence, not carried runtime changes.
+
 Native arm64 ABI report: `sizeof(llama_context_params)=168`, `type_v` offset
 108, `moe_cache_size` offset 112, `abort_callback` offset 120;
 `sizeof(llama_perf_context_data)=56`. These are measured native values for this
 build, not portable constants to copy into generated bindings.
 
-This does not qualify Metal, Vulkan, CUDA, mobile devices, Web, FP16 or
-quantized variants. Hosted candidate/production lanes, published artifacts,
-retained-patch qualification, refreshed Dart bindings and consumer model-backed
-smokes remain gates before adopting v0.7.0.
+### Hosted evidence
+
+All 50 checks passed on implementation head
+`c1a51fe7f08819e7f37d223f9fac4312d72ed368`:
+
+- [Native validation](https://github.com/leehack/llamadart-native/actions/runs/38894738711)
+  covers candidate and retained-version Android ISA/Vulkan builds, emulated
+  KleidiAI selectors and non-SVE compute, Windows ARM64 CPU/Vulkan, MSVC linkage,
+  Linux artifact contracts, and macOS release/sanitizer teardown.
+- [Release provenance](https://github.com/leehack/llamadart-native/actions/runs/38894738692)
+  covers release contracts, Python 3.10 artifact tooling and Apple packaging.
+
+The local real-weight embedding smoke is separate from these hosted gates.
+It does not qualify physical-device Metal/Vulkan/CUDA embeddings, Web, FP16 or
+quantized variants. Published artifact validation, retained-patch provenance,
+refreshed Dart bindings and consumer model-backed smokes remain gates before
+adopting v0.7.0. Later PR heads must pass their own selected checks; the linked
+runs are evidence for the implementation head above.

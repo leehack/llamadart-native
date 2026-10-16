@@ -7,7 +7,20 @@
 #include "llama_dart_wrapper.h"
 
 #include <cassert>
+#include <type_traits>
 #include <vector>
+
+template <typename T, typename = void>
+struct has_moe_cache_field : std::false_type {};
+
+template <typename T>
+struct has_moe_cache_field<T, std::void_t<decltype(T::moe_cache_size)>>
+    : std::true_type {};
+
+// A failed/miswired build probe must not silently compile the guard as a no-op
+// when these headers actually contain the cache budget.
+static_assert(bool(LLAMADART_CONTEXT_HAS_MOE_CACHE) ==
+              has_moe_cache_field<llama_context_params>::value);
 
 static void test_draft_moe_cache() {
   auto target = llama_context_default_params();

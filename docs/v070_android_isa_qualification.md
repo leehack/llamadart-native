@@ -97,8 +97,13 @@ The Python suite passed 209 tests with one platform-dependent skip. Workflow
 lint passed with only the existing `windows-11-vs2026-arm` runner label omitted
 from this local actionlint version's outdated label validation.
 
-Hosted qualification must still run the candidate Android audit, non-SVE QEMU
-`cortex-a53` and `max,sve=off,sme=off` compute checks (including unsupported
-SME requests), Windows ARM64 builds and the remaining candidate contracts.
+Hosted qualification passed on implementation head
+`c1a51fe7f08819e7f37d223f9fac4312d72ed368` in
+[native validation run 38894738711](https://github.com/leehack/llamadart-native/actions/runs/38894738711):
+the candidate Android audit, non-SVE QEMU `cortex-a53` and
+`max,sve=off,sme=off` compute checks (including unsupported SME requests),
+Windows ARM64 builds and the remaining candidate contracts all passed.
+See [v070_native_contracts.md](v070_native_contracts.md) for the combined
+qualification and consumer handoff. Later PR heads retain their own CI gate.
 Physical Android and SME-enabled Q4_K execution are separate qualification
 layers and are not claimed here.
