@@ -470,6 +470,17 @@ if (LLAMADART_BUILD_KLEIDIAI_TESTS)
     enable_testing()
     add_executable(llamadart_kleidiai_dispatch_test tests/kleidiai_dispatch_test.cpp)
     target_compile_features(llamadart_kleidiai_dispatch_test PRIVATE cxx_std_17)
+    cmake_push_check_state(RESET)
+    set(CMAKE_REQUIRED_INCLUDES
+        "${CMAKE_CURRENT_SOURCE_DIR}/third_party/llama.cpp/ggml/include"
+        "${CMAKE_CURRENT_SOURCE_DIR}/third_party/llama.cpp/ggml/src/ggml-cpu/kleidiai")
+    unset(LLAMADART_KLEIDIAI_HAS_KQUANTS CACHE)
+    check_cxx_source_compiles("#include <kernels.h>
+int main() { return sizeof(decltype(ggml_kleidiai_select_kernels_q4_k(CPU_FEATURE_NONE))) == 0; }"
+        LLAMADART_KLEIDIAI_HAS_KQUANTS)
+    cmake_pop_check_state()
+    target_compile_definitions(llamadart_kleidiai_dispatch_test PRIVATE
+        LLAMADART_KLEIDIAI_HAS_KQUANTS=$<BOOL:${LLAMADART_KLEIDIAI_HAS_KQUANTS}>)
     target_include_directories(llamadart_kleidiai_dispatch_test PRIVATE
         third_party/llama.cpp/ggml/include
         third_party/llama.cpp/ggml/src

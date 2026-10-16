@@ -29,7 +29,15 @@ static int expected_mask(int mask, ggml_type type) {
         if ((mask & 3) == 3) return 3;
 #endif
         if (mask & 1) return 1;
-    } else if (type == GGML_TYPE_Q8_0) {
+    } else if (type == GGML_TYPE_Q4_K) {
+#if LLAMADART_KLEIDIAI_HAS_KQUANTS
+        if ((mask & 48) == 48) return 48; // SME2 + FP16; no non-SME implementation
+#endif
+    } else if (type == GGML_TYPE_Q8_0
+#if LLAMADART_KLEIDIAI_HAS_KQUANTS
+               || type == GGML_TYPE_Q6_K
+#endif
+    ) {
         if (mask & 16) return 16;
         if (mask & 8) return 8;
         if ((mask & 3) == 3) return 3;
@@ -53,10 +61,14 @@ static void check_selection(ggml_kleidiai_kernels * kernel, int expected, int ma
 }
 
 static void selector_tests() {
-    const ggml_type types[] = { GGML_TYPE_Q4_0, GGML_TYPE_Q8_0, GGML_TYPE_F32, GGML_TYPE_F16, GGML_TYPE_Q5_0 };
+    const ggml_type types[] = { GGML_TYPE_Q4_0, GGML_TYPE_Q8_0, GGML_TYPE_Q4_K,
+                               GGML_TYPE_Q6_K, GGML_TYPE_F32, GGML_TYPE_F16, GGML_TYPE_Q5_0 };
     for (int bits = 0; bits < 64; ++bits) {
         auto mask = static_cast<cpu_feature>(bits);
         check_selection(ggml_kleidiai_select_kernels_q4_0(mask), expected_mask(bits, GGML_TYPE_Q4_0), bits);
+#if LLAMADART_KLEIDIAI_HAS_KQUANTS
+        check_selection(ggml_kleidiai_select_kernels_q4_k(mask), expected_mask(bits, GGML_TYPE_Q4_K), bits);
+#endif
         check_selection(ggml_kleidiai_select_kernels_q8_0(mask), expected_mask(bits, GGML_TYPE_Q8_0), bits);
         check_selection(ggml_kleidiai_select_kernels_f32(mask), expected_mask(bits, GGML_TYPE_F32), bits);
         for (auto type : types) {
@@ -66,9 +78,17 @@ static void selector_tests() {
             output.op = GGML_OP_MUL_MAT;
             output.src[0] = &weights;
             output.src[1] = &input;
-            check_selection(ggml_kleidiai_select_kernels(mask, &output), expected_mask(bits, type), bits);
-            output.op = GGML_OP_ADD;
-            require(!ggml_kleidiai_select_kernels(mask, &output), "wrong operation accepted");
+            auto kernel = ggml_kleidiai_select_kernels(mask, &output);
+            check_selection(kernel, expected_mask(bits, type), bits);
+            if (kernel) {
+                const auto rhs_type = type == GGML_TYPE_Q6_K ? GGML_TYPE_Q8_0 : type;
+                require(kernel->rhs_type == rhs_type && kernel->lhs_type == GGML_TYPE_F32 &&
+                        kernel->op_type == GGML_TYPE_F32, "selector chose wrong tensor family");
+            }
+            for (auto op : { GGML_OP_ADD, GGML_OP_GET_ROWS }) {
+                output.op = op;
+                require(!ggml_kleidiai_select_kernels(mask, &output), "wrong operation accepted");
+            }
             output.op = GGML_OP_MUL_MAT;
             output.src[1] = nullptr;
             require(!ggml_kleidiai_select_kernels(mask, &output), "missing source accepted");
@@ -87,7 +107,8 @@ static void selector_tests() {
 }
 
 static void matmul_test(ggml_type type, int columns, bool use_kleidiai) {
-    constexpr int k = 64, rows = 16;
+    const int k = (type == GGML_TYPE_Q4_K || type == GGML_TYPE_Q6_K) ? 256 : 64;
+    constexpr int rows = 16;
     auto backend = ggml_backend_cpu_init();
     require(backend != nullptr, "CPU backend unavailable");
     ggml_backend_cpu_set_n_threads(backend, 2);
@@ -107,6 +128,8 @@ static void matmul_test(ggml_type type, int columns, bool use_kleidiai) {
     auto buffer = ggml_backend_alloc_ctx_tensors(ctx, backend);
     require(weights_buffer && buffer, "CPU buffer unavailable");
     require((weights->extra != nullptr) == use_kleidiai, "wrong optimized/fallback buffer path");
+    require(ggml_backend_dev_supports_op(ggml_backend_get_device(backend), output),
+            "CPU backend declined the selected buffer/operation");
     std::vector<float> raw(k * rows), restored(k * rows), inputs(k * columns);
     for (size_t i = 0; i < raw.size(); ++i) raw[i] = (static_cast<int>(i * 13 % 17) - 8) * 0.125f;
     for (size_t i = 0; i < inputs.size(); ++i) inputs[i] = (i * 7 % 11 < 5) ? -1.0f : 1.0f;
@@ -122,8 +145,17 @@ static void matmul_test(ggml_type type, int columns, bool use_kleidiai) {
     for (int n = 0; n < columns; ++n) {
         for (int m = 0; m < rows; ++m) {
             float expected = 0;
-            for (int i = 0; i < k; ++i) expected += restored[m * k + i] * inputs[n * k + i];
-            if (!std::isfinite(actual[n * rows + m]) || std::fabs(actual[n * rows + m] - expected) > 0.005f) {
+            float max_weight = 0, input_l1 = 0;
+            for (int i = 0; i < k; ++i) {
+                expected += restored[m * k + i] * inputs[n * k + i];
+                max_weight = std::fmax(max_weight, std::fabs(restored[m * k + i]));
+                input_l1 += std::fabs(inputs[n * k + i]);
+            }
+            // Q6_K is dequantized and rounded to signed Q8 with a row scale.
+            // Bound that documented extra rounding by half one Q8 step.
+            const float tolerance = 0.005f +
+                (use_kleidiai && type == GGML_TYPE_Q6_K ? max_weight * input_l1 / 254.0f : 0);
+            if (!std::isfinite(actual[n * rows + m]) || std::fabs(actual[n * rows + m] - expected) > tolerance) {
                 std::fprintf(stderr, "%s columns=%d row=%d col=%d expected=%f actual=%f\n",
                              ggml_type_name(type), columns, m, n, expected, actual[n * rows + m]);
                 require(false, "KleidiAI result differs from scalar dequantized reference");
@@ -152,6 +184,12 @@ int main(int argc, char ** argv) {
     const bool use_kleidiai = runtime.has_dotprod;
     for (auto type : { GGML_TYPE_Q4_0, GGML_TYPE_Q8_0 }) {
         for (int columns : { 1, 4, 9 }) matmul_test(type, columns, use_kleidiai);
+    }
+    // These weights must remain usable on non-SME CPUs. v0.7.0 adds Q6_K
+    // through the Q8 kernels; Q4_K still requires SME2 + FP16 and falls back.
+    for (auto type : { GGML_TYPE_Q4_K, GGML_TYPE_Q6_K }) {
+        const bool optimized = LLAMADART_KLEIDIAI_HAS_KQUANTS && type == GGML_TYPE_Q6_K && use_kleidiai;
+        for (int columns : { 1, 4, 9 }) matmul_test(type, columns, optimized);
     }
     return 0;
 }

@@ -107,7 +107,10 @@ class AndroidCpuIsaTest(unittest.TestCase):
                                  "bf7ae6d2ea861ce6cd4b56afce154a45461df79b46c02e340d1adfe0075467b5",
                                  "68d5bc369749e78545f50dd5107368ec7ee1874619794795cd142b0043c747f6",
                                  "adc8d989599211a4b789b2c595b2ae52335c5a390e6c4972171c46589aa05e7e",
-                             ))
+                             )) | frozenset({(
+                                 "b571df853210d243a83b1ec34a6936f147916f0369d792f8bb0d17f37fc7894b",
+                                 "deb324dbcf8c952ec149433ab58cbed0b2ab2374a557f0a4eea575b2da761377",
+                             )})
         self.assertEqual(audit.SOURCE_PAIRS, expected)
         for ggml, kai in expected:
             with self.subTest(ggml=ggml):
@@ -119,10 +122,29 @@ class AndroidCpuIsaTest(unittest.TestCase):
                             audit.validate_sources(Path("llama"), Path("kleidiai"))
 
     def test_individually_known_but_unreviewed_pair_is_rejected(self):
-        with mock.patch.object(audit, "SOURCE_PAIRS", frozenset({("g1", "k1"), ("g2", "k2")})), \
-                mock.patch.object(audit, "tree_digest", side_effect=["g1", "k2"]):
-            with self.assertRaisesRegex(ValueError, "Unaudited"):
-                audit.validate_sources(Path("llama"), Path("kleidiai"))
+        for ggml, kai in audit.SOURCE_PAIRS:
+            for other_ggml, other_kai in audit.SOURCE_PAIRS:
+                if (ggml, other_kai) in audit.SOURCE_PAIRS:
+                    continue
+                with self.subTest(ggml=ggml, kai=other_kai), \
+                        mock.patch.object(audit, "tree_digest", side_effect=[ggml, other_kai]):
+                    with self.assertRaisesRegex(ValueError, "Unaudited"):
+                        audit.validate_sources(Path("llama"), Path("kleidiai"))
+
+    def test_cli_binds_exact_function_ranges_to_the_reviewed_source_pair(self):
+        args = ["audit", "--objdump", "objdump", "--readelf", "readelf",
+                "--llama-source", "llama", "--kleidiai-source", "kleidiai", "test.so"]
+        for pair in audit.SOURCE_PAIRS:
+            allowed = audit.DISPATCHED_FUNCTIONS_V070 if pair == audit.V070_SOURCE_PAIR else audit.DISPATCHED_FUNCTIONS
+            for artifact_ranges in (audit.DISPATCHED_FUNCTIONS, audit.DISPATCHED_FUNCTIONS_V070):
+                names = sorted(artifact_ranges)
+                symbols = "\n".join(symbol(name, 0x100 + i * 8) for i, name in enumerate(names))
+                body = "\n".join(f"{0x100 + i * 8:x}: 04bf5020 rdvl x0, #1" for i in range(len(names)))
+                with self.subTest(pair=pair, functions=len(names)), mock.patch("sys.argv", args), \
+                        mock.patch.object(audit.subprocess, "check_output", side_effect=[symbols, disassembly(body)]), \
+                        mock.patch.object(audit, "tree_digest", side_effect=pair), \
+                        contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                    self.assertEqual(audit.main(), 0 if artifact_ranges == allowed else 1)
 
     def test_added_caller_or_mutated_kernel_invalidates_approved_pair(self):
         with tempfile.TemporaryDirectory() as directory:

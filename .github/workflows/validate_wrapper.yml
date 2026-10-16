@@ -18,6 +18,7 @@ env:
   LLAMADART_V041_QUALIFICATION_SHA: b29c606e28a01b1bc8c1351026a0fa6e616bf6c4
   LLAMADART_V050_QUALIFICATION_SHA: 7fe450e19305b828c199d602c23a8337aaa1f03b
   LLAMADART_V060_QUALIFICATION_SHA: d81235049384534c167caea52b85a694f6103d14
+  LLAMADART_V070_QUALIFICATION_SHA: 620d2225cc436ab0b001e3200e590e3b286ef9ab
 
 jobs:
   changes:
@@ -44,7 +45,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        upstream: [post-v0.4.0, v0.4.1, v0.5.0, v0.6.0]
+        upstream: [post-v0.4.0, v0.4.1, v0.5.0, v0.6.0, v0.7.0]
     steps:
       - uses: actions/checkout@v7
         with:
@@ -52,7 +53,7 @@ jobs:
           submodules: recursive
       - name: Select candidate upstream
         env:
-          LLAMADART_QUALIFICATION_SHA: ${{ matrix.upstream == 'v0.6.0' && env.LLAMADART_V060_QUALIFICATION_SHA || matrix.upstream == 'v0.5.0' && env.LLAMADART_V050_QUALIFICATION_SHA || matrix.upstream == 'v0.4.1' && env.LLAMADART_V041_QUALIFICATION_SHA || env.LLAMADART_QUALIFICATION_SHA }}
+          LLAMADART_QUALIFICATION_SHA: ${{ matrix.upstream == 'v0.7.0' && env.LLAMADART_V070_QUALIFICATION_SHA || matrix.upstream == 'v0.6.0' && env.LLAMADART_V060_QUALIFICATION_SHA || matrix.upstream == 'v0.5.0' && env.LLAMADART_V050_QUALIFICATION_SHA || matrix.upstream == 'v0.4.1' && env.LLAMADART_V041_QUALIFICATION_SHA || env.LLAMADART_QUALIFICATION_SHA }}
         run: |
           git -C third_party/llama.cpp fetch --depth=1 origin "$LLAMADART_QUALIFICATION_SHA"
           git -C third_party/llama.cpp checkout --detach "$LLAMADART_QUALIFICATION_SHA"
@@ -94,7 +95,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        upstream: [pinned, v0.5.0, v0.6.0]
+        upstream: [pinned, v0.5.0, v0.6.0, v0.7.0]
     steps:
       - uses: actions/checkout@v7
         with:
@@ -103,7 +104,7 @@ jobs:
       - name: Select candidate upstream
         if: matrix.upstream != 'pinned'
         env:
-          LLAMADART_QUALIFICATION_SHA: ${{ matrix.upstream == 'v0.6.0' && env.LLAMADART_V060_QUALIFICATION_SHA || matrix.upstream == 'v0.5.0' && env.LLAMADART_V050_QUALIFICATION_SHA || env.LLAMADART_QUALIFICATION_SHA }}
+          LLAMADART_QUALIFICATION_SHA: ${{ matrix.upstream == 'v0.7.0' && env.LLAMADART_V070_QUALIFICATION_SHA || matrix.upstream == 'v0.6.0' && env.LLAMADART_V060_QUALIFICATION_SHA || matrix.upstream == 'v0.5.0' && env.LLAMADART_V050_QUALIFICATION_SHA || env.LLAMADART_QUALIFICATION_SHA }}
         run: |
           git -C third_party/llama.cpp fetch --depth=1 origin "$LLAMADART_QUALIFICATION_SHA"
           git -C third_party/llama.cpp checkout --detach "$LLAMADART_QUALIFICATION_SHA"
@@ -166,7 +167,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        upstream: [post-v0.4.0, v0.4.1, v0.5.0, v0.6.0]
+        upstream: [post-v0.4.0, v0.4.1, v0.5.0, v0.6.0, v0.7.0]
     steps:
       - uses: actions/checkout@v7
         with:
@@ -174,7 +175,7 @@ jobs:
           submodules: recursive
       - name: Select candidate upstream
         env:
-          LLAMADART_QUALIFICATION_SHA: ${{ matrix.upstream == 'v0.6.0' && env.LLAMADART_V060_QUALIFICATION_SHA || matrix.upstream == 'v0.5.0' && env.LLAMADART_V050_QUALIFICATION_SHA || matrix.upstream == 'v0.4.1' && env.LLAMADART_V041_QUALIFICATION_SHA || env.LLAMADART_QUALIFICATION_SHA }}
+          LLAMADART_QUALIFICATION_SHA: ${{ matrix.upstream == 'v0.7.0' && env.LLAMADART_V070_QUALIFICATION_SHA || matrix.upstream == 'v0.6.0' && env.LLAMADART_V060_QUALIFICATION_SHA || matrix.upstream == 'v0.5.0' && env.LLAMADART_V050_QUALIFICATION_SHA || matrix.upstream == 'v0.4.1' && env.LLAMADART_V041_QUALIFICATION_SHA || env.LLAMADART_QUALIFICATION_SHA }}
         run: |
           git -C third_party/llama.cpp fetch --depth=1 origin "$LLAMADART_QUALIFICATION_SHA"
           git -C third_party/llama.cpp checkout --detach "$LLAMADART_QUALIFICATION_SHA"
@@ -213,7 +214,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        upstream: [pinned, post-v0.4.0, v0.5.0, v0.6.0]
+        upstream: [pinned, post-v0.4.0, v0.5.0, v0.6.0, v0.7.0]
     steps:
       - uses: actions/checkout@v7
         with:
@@ -225,7 +226,7 @@ jobs:
           arch: arm64
       - name: Select candidate upstream
         env:
-          LLAMADART_QUALIFICATION_SHA: ${{ matrix.upstream == 'v0.6.0' && env.LLAMADART_V060_QUALIFICATION_SHA || matrix.upstream == 'v0.5.0' && env.LLAMADART_V050_QUALIFICATION_SHA || env.LLAMADART_QUALIFICATION_SHA }}
+          LLAMADART_QUALIFICATION_SHA: ${{ matrix.upstream == 'v0.7.0' && env.LLAMADART_V070_QUALIFICATION_SHA || matrix.upstream == 'v0.6.0' && env.LLAMADART_V060_QUALIFICATION_SHA || matrix.upstream == 'v0.5.0' && env.LLAMADART_V050_QUALIFICATION_SHA || env.LLAMADART_QUALIFICATION_SHA }}
         if: matrix.upstream != 'pinned'
         shell: bash
         run: |
@@ -257,7 +258,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        upstream: [pinned, v0.5.0, v0.6.0]
+        upstream: [pinned, v0.5.0, v0.6.0, v0.7.0]
     steps:
       - uses: actions/checkout@v7
         with:
@@ -271,7 +272,7 @@ jobs:
         if: matrix.upstream != 'pinned'
         shell: bash
         env:
-          LLAMADART_QUALIFICATION_SHA: ${{ matrix.upstream == 'v0.6.0' && env.LLAMADART_V060_QUALIFICATION_SHA || matrix.upstream == 'v0.5.0' && env.LLAMADART_V050_QUALIFICATION_SHA || env.LLAMADART_QUALIFICATION_SHA }}
+          LLAMADART_QUALIFICATION_SHA: ${{ matrix.upstream == 'v0.7.0' && env.LLAMADART_V070_QUALIFICATION_SHA || matrix.upstream == 'v0.6.0' && env.LLAMADART_V060_QUALIFICATION_SHA || matrix.upstream == 'v0.5.0' && env.LLAMADART_V050_QUALIFICATION_SHA || env.LLAMADART_QUALIFICATION_SHA }}
         run: |
           git -C third_party/llama.cpp fetch --depth=1 origin "$LLAMADART_QUALIFICATION_SHA"
           git -C third_party/llama.cpp checkout --detach "$LLAMADART_QUALIFICATION_SHA"
@@ -301,7 +302,7 @@ jobs:
       fail-fast: false
       matrix:
         arch: [x64, arm64]
-        upstream: [pinned, post-v0.4.0, v0.6.0]
+        upstream: [pinned, post-v0.4.0, v0.6.0, v0.7.0]
     steps:
       - uses: actions/checkout@v7
         with:
@@ -310,7 +311,7 @@ jobs:
       - name: Select candidate upstream
         if: matrix.upstream != 'pinned'
         env:
-          LLAMADART_QUALIFICATION_SHA: ${{ matrix.upstream == 'v0.6.0' && env.LLAMADART_V060_QUALIFICATION_SHA || matrix.upstream == 'v0.5.0' && env.LLAMADART_V050_QUALIFICATION_SHA || env.LLAMADART_QUALIFICATION_SHA }}
+          LLAMADART_QUALIFICATION_SHA: ${{ matrix.upstream == 'v0.7.0' && env.LLAMADART_V070_QUALIFICATION_SHA || matrix.upstream == 'v0.6.0' && env.LLAMADART_V060_QUALIFICATION_SHA || matrix.upstream == 'v0.5.0' && env.LLAMADART_V050_QUALIFICATION_SHA || env.LLAMADART_QUALIFICATION_SHA }}
         run: |
           git -C third_party/llama.cpp fetch --depth=1 origin "$LLAMADART_QUALIFICATION_SHA"
           git -C third_party/llama.cpp checkout --detach "$LLAMADART_QUALIFICATION_SHA"
@@ -362,7 +363,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        upstream: [pinned, post-v0.4.0, v0.6.0]
+        upstream: [pinned, post-v0.4.0, v0.6.0, v0.7.0]
     steps:
       - uses: actions/checkout@v7
         with:
@@ -371,7 +372,7 @@ jobs:
       - name: Select the candidate upstream release
         if: matrix.upstream != 'pinned'
         env:
-          LLAMADART_QUALIFICATION_SHA: ${{ matrix.upstream == 'v0.6.0' && env.LLAMADART_V060_QUALIFICATION_SHA || matrix.upstream == 'v0.5.0' && env.LLAMADART_V050_QUALIFICATION_SHA || env.LLAMADART_QUALIFICATION_SHA }}
+          LLAMADART_QUALIFICATION_SHA: ${{ matrix.upstream == 'v0.7.0' && env.LLAMADART_V070_QUALIFICATION_SHA || matrix.upstream == 'v0.6.0' && env.LLAMADART_V060_QUALIFICATION_SHA || matrix.upstream == 'v0.5.0' && env.LLAMADART_V050_QUALIFICATION_SHA || env.LLAMADART_QUALIFICATION_SHA }}
         run: |
           git -C third_party/llama.cpp fetch --depth=1 origin "$LLAMADART_QUALIFICATION_SHA"
           git -C third_party/llama.cpp checkout --detach "$LLAMADART_QUALIFICATION_SHA"
@@ -433,7 +434,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        upstream: [pinned, post-v0.4.0, v0.6.0]
+        upstream: [pinned, post-v0.4.0, v0.6.0, v0.7.0]
     steps:
       - uses: actions/checkout@v7
         with:
@@ -443,7 +444,7 @@ jobs:
         if: matrix.upstream != 'pinned'
         shell: bash
         env:
-          LLAMADART_QUALIFICATION_SHA: ${{ matrix.upstream == 'v0.6.0' && env.LLAMADART_V060_QUALIFICATION_SHA || matrix.upstream == 'v0.5.0' && env.LLAMADART_V050_QUALIFICATION_SHA || env.LLAMADART_QUALIFICATION_SHA }}
+          LLAMADART_QUALIFICATION_SHA: ${{ matrix.upstream == 'v0.7.0' && env.LLAMADART_V070_QUALIFICATION_SHA || matrix.upstream == 'v0.6.0' && env.LLAMADART_V060_QUALIFICATION_SHA || matrix.upstream == 'v0.5.0' && env.LLAMADART_V050_QUALIFICATION_SHA || env.LLAMADART_QUALIFICATION_SHA }}
         run: |
           git -C third_party/llama.cpp fetch --depth=1 origin "$LLAMADART_QUALIFICATION_SHA"
           git -C third_party/llama.cpp checkout --detach "$LLAMADART_QUALIFICATION_SHA"
@@ -507,7 +508,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        upstream: [pinned, v0.6.0]
+        upstream: [pinned, v0.6.0, v0.7.0]
         build: [release, address-sanitizer]
         include:
           # The shipped configuration: Release with link-time optimization.
@@ -531,12 +532,14 @@ jobs:
         with:
           submodules: recursive
           persist-credentials: false
-      - name: Select v0.6.0 candidate upstream
-        if: matrix.upstream == 'v0.6.0'
+      - name: Select candidate upstream
+        if: matrix.upstream != 'pinned'
+        env:
+          LLAMADART_QUALIFICATION_SHA: ${{ matrix.upstream == 'v0.7.0' && env.LLAMADART_V070_QUALIFICATION_SHA || env.LLAMADART_V060_QUALIFICATION_SHA }}
         run: |
-          git -C third_party/llama.cpp fetch --depth=1 origin "$LLAMADART_V060_QUALIFICATION_SHA"
-          git -C third_party/llama.cpp checkout --detach "$LLAMADART_V060_QUALIFICATION_SHA"
-          test "$(git -C third_party/llama.cpp rev-parse HEAD)" = "$LLAMADART_V060_QUALIFICATION_SHA"
+          git -C third_party/llama.cpp fetch --depth=1 origin "$LLAMADART_QUALIFICATION_SHA"
+          git -C third_party/llama.cpp checkout --detach "$LLAMADART_QUALIFICATION_SHA"
+          test "$(git -C third_party/llama.cpp rev-parse HEAD)" = "$LLAMADART_QUALIFICATION_SHA"
       - name: Configure the Metal wrapper with its tests
         run: >-
           cmake ${{ matrix.configure }}
