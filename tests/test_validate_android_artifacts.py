@@ -7,6 +7,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tools'))
 import validate_android_artifacts as validator
+import llama_cpp_patches as patches
 
 RUNTIME = set(validator.EXCEPTION_RUNTIME_SYMBOLS)
 
@@ -72,14 +73,17 @@ class ExceptionRuntimeTests(unittest.TestCase):
     def test_a_backend_module_alone_is_accepted(self):
         self.assertEqual([], validator.exception_runtime_errors({'libggml-opencl.so': (set(), set())}))
 
-    def run_tool(self, libraries):
+    def run_tool(self, libraries, omitted_marker=None):
         with tempfile.TemporaryDirectory() as temp:
             out_dir = Path(temp) / 'out'
             out_dir.mkdir()
             listings = Path(temp) / 'listings'
             listings.mkdir()
             for name, (defined, imported) in libraries.items():
-                (out_dir / name).write_bytes(b'')
+                markers = [marker['text'] for entry in patches.load_series()
+                           for marker in entry['android_markers']
+                           if marker['library'] == name and marker['text'] != omitted_marker]
+                (out_dir / name).write_bytes('\0'.join(markers).encode())
                 (listings / f'{name}.syms').write_text(dynamic_symbols(defined, imported))
             readelf = Path(temp) / 'llvm-readelf'
             readelf.write_text(
@@ -99,6 +103,13 @@ class ExceptionRuntimeTests(unittest.TestCase):
         result = self.run_tool(shared_runtime())
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertIn('__cxa_throw: defined by libggml-base.so', result.stdout)
+
+    def test_tool_rejects_missing_embedding_reservation_repair(self):
+        result = self.run_tool(shared_runtime(),
+                               omitted_marker='llamadart re-reserves embedding mode')
+        self.assertEqual(1, result.returncode, result.stderr)
+        self.assertIn('libllama.so: built without 0003-embedding-mode-scheduler-reserve.patch',
+                      result.stderr)
 
     def test_tool_rejects_a_second_definition(self):
         libraries = shared_runtime()

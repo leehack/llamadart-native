@@ -1121,6 +1121,28 @@ llama_dart_speculative *init_ngram_speculative(model_fixture &fixture) {
 
 std::atomic<int> g_embeddings_seen{-1};
 
+// Direct upstream calls isolate extraction-mode changes from speculative
+// handles and wrapper teardown. Re-reserving only pooled contexts is unsafe.
+int test_model_embedding_toggle(const char *path) {
+  model_options options;
+  options.tracked = false;
+  options.cpu_only = true;
+  auto fixture = load_model(path, options);
+  for (int pass = 0; pass < 2; ++pass) {
+    llama_set_embeddings(fixture.context, true);
+    assert(llama_decode(fixture.context, prompt(fixture)) == 0);
+    assert(llama_get_embeddings(fixture.context) != nullptr);
+    llama_memory_clear(llama_get_memory(fixture.context), true);
+    llama_set_embeddings(fixture.context, false);
+    assert(llama_decode(fixture.context, prompt(fixture)) == 0);
+    assert(llama_get_embeddings(fixture.context) == nullptr);
+    llama_memory_clear(llama_get_memory(fixture.context), true);
+  }
+  llama_free(fixture.context);
+  llama_model_free(fixture.model);
+  return 0;
+}
+
 // Freeing speculative state turns the embeddings of its context off again,
 // and a decode then leaves no embeddings.
 void free_and_decode_embeddings(void *object) {
@@ -2733,6 +2755,9 @@ int main(int argc, char **argv) {
     }
     if (scenario == "model-session") {
       return test_model_session(first);
+    }
+    if (scenario == "model-embedding-toggle") {
+      return test_model_embedding_toggle(first);
     }
     if (scenario == "model-freed") {
       return test_model_freed(first, second);

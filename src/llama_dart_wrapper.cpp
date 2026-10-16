@@ -2075,6 +2075,7 @@ static struct llama_dart_speculative *llama_dart_speculative_init_impl(
         params.draft.backend_sampling);
     context_params.embeddings = false;
     context_params.ctx_other = target_context;
+    llama_dart_disable_draft_moe_cache(context_params);
 
     speculative->ctx_dft =
         llama_init_from_model(resolved_draft_model, context_params);
@@ -2326,6 +2327,7 @@ static struct llama_dart_mtp *llama_dart_mtp_init_impl(
   ctx_params.n_outputs_max = 1;
   ctx_params.embeddings = false;
   ctx_params.ctx_other = ctx_tgt;
+  llama_dart_disable_draft_moe_cache(ctx_params);
 
   // Owns the draft context until the handle does, so that neither a failure
   // nor an exception leaves it behind.

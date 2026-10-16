@@ -8,6 +8,16 @@
 #include <utility>
 #include <vector>
 
+// Upstream restricts the expert cache to the target context. Keep draft
+// microbatch sizing independent: it also controls DFlash's attention mask.
+inline void llama_dart_disable_draft_moe_cache(llama_context_params &params) {
+#if LLAMADART_CONTEXT_HAS_MOE_CACHE
+  params.moe_cache_size = 0;
+#else
+  (void)params;
+#endif
+}
+
 #if LLAMADART_SPECULATIVE_HAS_COMMON_BATCH
 // Speculative processing consumes the entries, never renders this batch.
 // Preserve llama_batch's implicit sequence/output defaults. A draft context

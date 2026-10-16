@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from collections.abc import Iterator
 import re
 import subprocess
 import sys
@@ -160,7 +161,7 @@ def run_tool(args: argparse.Namespace) -> str:
         raise FileNotFoundError(f"Missing native library: {args.library}")
 
     command = {
-        "readelf": [args.tool, "-Ws", str(args.library)],
+        "readelf": [args.tool, "--dyn-syms", "--wide", str(args.library)],
         "nm": [args.tool, "-g", str(args.library)],
         "dumpbin": [args.tool, "/EXPORTS", str(args.library)],
     }[args.format]
@@ -175,13 +176,24 @@ def run_tool(args: argparse.Namespace) -> str:
     return completed.stdout
 
 
+def readelf_dynamic_symbols(output: str) -> Iterator[list[str]]:
+    dynamic_table = True
+    for line in output.splitlines():
+        if line.startswith("Symbol table "):
+            dynamic_table = "'.dynsym'" in line
+            continue
+        parts = line.split()
+        if (not dynamic_table or len(parts) < 8
+                or not parts[0].removesuffix(":").isdigit()):
+            continue
+        yield parts
+
+
 def exported_symbols_from_readelf(output: str) -> set[str]:
     symbols: set[str] = set()
-    for line in output.splitlines():
-        parts = line.split()
-        if len(parts) < 8 or parts[0].rstrip(":") == "Num":
-            continue
-        if parts[6] == "UND":
+    for parts in readelf_dynamic_symbols(output):
+        if (parts[6] == "UND" or parts[4] not in ("GLOBAL", "WEAK")
+                or parts[5] not in ("DEFAULT", "PROTECTED")):
             continue
         name = parts[7].split("@", 1)[0]
         symbols.add(name)
@@ -190,9 +202,8 @@ def exported_symbols_from_readelf(output: str) -> set[str]:
 
 def imported_symbols_from_readelf(output: str) -> set[str]:
     symbols: set[str] = set()
-    for line in output.splitlines():
-        parts = line.split()
-        if len(parts) >= 8 and parts[6] == "UND":
+    for parts in readelf_dynamic_symbols(output):
+        if parts[6] == "UND":
             symbols.add(parts[7].split("@", 1)[0])
     return symbols
 

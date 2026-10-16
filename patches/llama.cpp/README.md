@@ -14,6 +14,9 @@ these hold:
 - The patch has an issue in `leehack/llamadart-native` or `leehack/llamadart`
   and, where one exists, an upstream pull request or issue.
 
+The v0.7.0 embedding-mode reservation repair and its exact baseline/candidate
+evidence are documented in [v070_native_contracts.md](../../docs/v070_native_contracts.md).
+
 ## Files
 
 - `series.json` lists the patches in the order they apply. Each entry has the
