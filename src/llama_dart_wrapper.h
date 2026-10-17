@@ -19,6 +19,9 @@ extern "C" {
 // Opaque MTP speculative decoding state owned by libllamadart.
 struct llama_dart_mtp;
 
+// Opaque extended batch (also declared by newer upstream headers).
+struct llama_batch_ext;
+
 // Opaque n-gram speculative decoding state owned by libllamadart.
 struct llama_dart_ngram;
 
@@ -259,7 +262,7 @@ LLAMADART_API void llama_dart_set_log_level(int level);
 // - A sampler or sampler chain (llama_dart_sampler_sample, _accept and
 //   _sample_and_accept_n): free it, or call llama_sampler_reset on it and
 //   start the generation over. The context it sampled from is unchanged.
-// - A llama context (llama_dart_decode, llama_dart_encode,
+// - A llama context (llama_dart_decode, llama_dart_encode, llama_dart_process,
 //   llama_dart_synchronize, llama_dart_memory_clear, the state functions and
 //   the mtmd evaluation helpers): free it. Its memory and its outputs are in
 //   no defined state.
@@ -274,7 +277,8 @@ LLAMADART_API void llama_dart_set_log_level(int level);
 // - Nothing changes for the model or vocabulary of llama_dart_tokenize,
 //   llama_dart_token_to_piece and the grammar constructor, for the mtmd
 //   context of the bitmap constructors, or for the device of the two device
-//   queries: these calls only read them, and they stay usable.
+//   queries, or for the context/model of llama_dart_batch_ext_init: these
+//   calls only read them, and they stay usable.
 // A function that creates an object frees what it had created before the
 // exception, so there is nothing to free for a NULL result. A call in flight
 // has ended when the function returns.
@@ -390,9 +394,9 @@ LLAMADART_API int32_t llama_dart_vulkan_get_device_info(
 // A call in flight is the time a thread spends inside one of:
 // - the three llama_dart creating functions named above and
 //   llama_dart_exit_free;
-// - llama_dart_decode, llama_dart_encode and the other llama_dart functions
-//   below that wrap an upstream function of the same name, and the three
-//   llama_dart_mtmd_bitmap_init functions;
+// - llama_dart_decode, llama_dart_encode, llama_dart_process and the other
+//   llama_dart functions below that wrap an upstream function of the same
+//   name, and the three llama_dart_mtmd_bitmap_init functions;
 // - the libllamadart functions that create, free, or run a task, draft or
 //   batch on, TTS, speculative, MTP or n-gram state;
 // - llama_dart_sampler_sample_and_accept_n;
@@ -500,6 +504,45 @@ LLAMADART_API int32_t llama_dart_decode(
 LLAMADART_API int32_t llama_dart_encode(
     struct llama_context * ctx,
     struct llama_batch batch);
+
+// llama_batch_ext_init reads ctx and its model, so it is a call in flight.
+// Returns NULL after a caught exception, or without an error when built against
+// upstream headers without the extended-batch API. The batch is caller-owned;
+// it is untracked. Free it with llama_batch_ext_free, not llama_dart_exit_free.
+// Blocks after teardown. At llama.cpp v0.7.0 upstream batch add/set/clear/free
+// only use batch-owned storage (embedding data is copied); they need no exit
+// guard. Keep the batch exclusive to this thread until process returns, and
+// process it only with the live context it was initialized from.
+LLAMADART_API struct llama_batch_ext * llama_dart_batch_ext_init(
+    struct llama_context * ctx);
+
+// Matches upstream LLAMA_PROCESS_TYPE_DECODE. int32_t in the signature allows
+// the same header and exports with older upstream headers that lack this enum.
+enum llama_dart_process_type {
+    LLAMA_DART_PROCESS_TYPE_DECODE = 1,
+};
+
+enum llama_dart_process_status {
+    // Also an upstream invalid-batch status; inspect the requested type.
+    LLAMA_DART_PROCESS_STATUS_UNSUPPORTED_TYPE = -1,
+    // Built against upstream headers without llama_process / extended batches.
+    LLAMA_DART_PROCESS_STATUS_UNSUPPORTED = -4,
+};
+
+// llama_process as a call in flight, with the same exception barrier and
+// backend wait as llama_dart_decode, including when processing throws.
+// Only LLAMA_DART_PROCESS_TYPE_DECODE (upstream DECODE) is accepted. All other
+// types, including upstream ENCODE, return
+// LLAMA_DART_PROCESS_STATUS_UNSUPPORTED_TYPE without accessing ctx or batch;
+// this is not an exception and clears the last error. Supported calls pass
+// upstream statuses through; exceptions return LLAMA_DART_STATUS_EXCEPTION.
+// When the upstream API is absent, DECODE returns the typed UNSUPPORTED status.
+// ctx and batch must be valid for supported DECODE. The caller owns the
+// batch. Blocks after teardown, including for unsupported types.
+LLAMADART_API int32_t llama_dart_process(
+    struct llama_context * ctx,
+    int32_t type,
+    struct llama_batch_ext * batch);
 
 // The upstream functions of the same name, without the llama_dart_ prefix, as
 // calls in flight. Each takes and returns what the upstream function does and

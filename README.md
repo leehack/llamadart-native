@@ -171,7 +171,8 @@ Assets are suffixed with platform/arch, for example:
 - `third_party/opencl-stubs`: optional local fallback location for OpenCL headers/stubs.
 - `tools/build.py`: cross-platform build entrypoint.
 - `tools/validate_exports.py`: verifies required wrapper C exports, including
-  exit-teardown, speculative-decoding and TTS symbols, in release artifacts.
+  exit-teardown, guarded mixed-batch processing, speculative-decoding and TTS
+  symbols, in release artifacts.
 - `tools/package_linux_artifact.py`: preserves Linux ELF version files and
   SONAME symlinks while transporting split CI artifacts.
 - `tools/validate_linux_artifact.py`: checks Linux archive members, symlinks,
@@ -273,8 +274,9 @@ left of it at exit:
   then models. It first waits up to 2 s (`llama_dart_exit_set_wait_ms`) for the
   calls in flight on other threads, and frees nothing if one is still running.
   A model load in flight is cancelled.
-- `llama_dart_decode`, `llama_dart_encode`, the other `llama_dart_` functions
-  named after an upstream function, and the wrapper's own session functions
+- `llama_dart_decode`, `llama_dart_encode`, `llama_dart_process`, the other
+  `llama_dart_` functions named after an upstream function, and the wrapper's
+  own session functions
   are calls in flight. The decoding ones also wait for the backend, because
   Metal computes after `llama_decode` returns. Make every long native call on
   a tracked object through one of them: a Dart isolate can be killed inside any
@@ -334,6 +336,9 @@ build/exit-teardown/llamadart_exit_teardown_test model-idle-untracked model.gguf
 ```
 
 The last one exits with a model that is not tracked, and aborts on Metal.
+
+Guarded mixed-batch DECODE and caller-owned extended-batch construction are
+documented in [the mixed-batch native contract](docs/v070_native_contracts.md#guarded-mixed-batch-processing).
 
 ## Exception Barrier
 

@@ -6,6 +6,20 @@ Wrapper-only changes on llama.cpp `v0.6.0`
 struct or enumerator is removed or changes its signature. `llamadart` adopts
 the additions after the rebuild is published.
 
+## Later mixed-batch addition
+
+The current header/export contract also adds `llama_dart_process` and
+`llama_dart_batch_ext_init`; these were not part of the historical `v0.6.0-1`
+artifact. See [the guarded mixed-batch contract](v070_native_contracts.md#guarded-mixed-batch-processing)
+for DECODE-only status handling, older-upstream fallback, batch ownership and
+the source audit establishing why init needs an exit guard while add/set/free
+do not. Both exports use the exception barrier and block after teardown.
+
+| Later export | After a caught exception |
+| --- | --- |
+| `llama_dart_process` | `LLAMA_DART_STATUS_EXCEPTION`; failed context must only be freed |
+| `llama_dart_batch_ext_init` | `NULL`; context/model remain usable (only read) |
+
 ## Exception barrier
 
 Issue: [llamadart-native#102](https://github.com/leehack/llamadart-native/issues/102).

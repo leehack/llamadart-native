@@ -3,12 +3,14 @@
 #endif
 
 #include "llama_dart_barrier_internal.h"
+#include "llama_dart_evaluate_internal.h"
 #include "llama_dart_tts_internal.h"
 
 #include <cassert>
 #include <new>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 // The helpers behind the exception barrier, called directly for the cases
 // that no exported function can be made to reach.
@@ -156,11 +158,60 @@ void test_tts_barrier() {
   assert(std::string(llama_dart_error.message) == "no task");
 }
 
+// Observe guard lifetime at both the call and wait, including every throw
+// combination. Real admission/teardown is covered by exit_teardown_test.
+static int evaluation_depth = 0;
+struct evaluation_guard {
+  evaluation_guard() { assert(evaluation_depth++ == 0); }
+  ~evaluation_guard() { assert(--evaluation_depth == 0); }
+};
+
+void test_evaluate() {
+  for (int call_failure : {0, 1, 2}) {
+    for (bool wait_failure : {false, true}) {
+      int context = 7;
+      std::vector<int> events;
+      llama_dart_error_record("stale");
+      const int32_t result = llama_dart_evaluate<evaluation_guard>(
+          &context,
+          [&]() -> int32_t {
+            assert(evaluation_depth == 1);
+            events.push_back(1);
+            if (call_failure == 1)
+              throw std::runtime_error("evaluation failed");
+            if (call_failure == 2)
+              throw 42;
+            return 3; // upstream statuses, including failures, pass through
+          },
+          [&](int *ctx) {
+            assert(ctx == &context && evaluation_depth == 1);
+            events.push_back(2);
+            if (wait_failure)
+              throw std::runtime_error("wait failed");
+          });
+      assert(evaluation_depth == 0);
+      assert(events == std::vector<int>({1, 2}));
+      if (call_failure || wait_failure) {
+        assert(result == LLAMA_DART_STATUS_EXCEPTION);
+        assert(llama_dart_error.set);
+        assert(std::string(llama_dart_error.message) ==
+               (call_failure == 1   ? "evaluation failed"
+                : call_failure == 2 ? "unknown C++ exception"
+                                    : "wait failed"));
+      } else {
+        assert(result == 3);
+        assert(!llama_dart_error.set);
+      }
+    }
+  }
+}
+
 } // namespace
 
 int main() {
   test_message_encoding();
   test_barrier();
+  test_evaluate();
   test_track_or_free();
   test_tts_barrier();
   return 0;

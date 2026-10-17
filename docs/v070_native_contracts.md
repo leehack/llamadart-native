@@ -94,6 +94,70 @@ its independent speculative teardown coverage. Do not skip either test to
 qualify a candidate. This is a candidate regression repair, not evidence that
 the currently published native v0.6.0-3 artifact has this crash.
 
+## Guarded mixed-batch processing
+
+These exports are part of the v0.7.x wrapper contract:
+
+| Export | Contract |
+| --- | --- |
+| `int32_t llama_dart_process(struct llama_context *, int32_t type, struct llama_batch_ext *)` | DECODE only; upstream status unchanged; `LLAMA_DART_STATUS_EXCEPTION` after a caught exception |
+| `struct llama_batch_ext * llama_dart_batch_ext_init(struct llama_context *)` | caller-owned, untracked batch; `NULL` after a caught exception or when upstream lacks extended batches |
+
+`LLAMA_DART_PROCESS_TYPE_DECODE = 1` matches upstream
+`LLAMA_PROCESS_TYPE_DECODE` (checked at compile time). The `int32_t` kind keeps
+the public header usable with older upstream headers that lack the process
+enum. ENCODE (0) and unknown kinds return the typed
+`LLAMA_DART_PROCESS_STATUS_UNSUPPORTED_TYPE = -1`, without touching the context
+or batch. This shares upstream's invalid-batch value, so inspect the requested
+kind to distinguish them. ENCODE is deliberately left to the existing
+`llama_dart_encode`: this addition serves the single mixed DECODE required by
+noncausal multimodal embeddings. Builds whose upstream lacks extended batches
+retain both exports: DECODE returns `LLAMA_DART_PROCESS_STATUS_UNSUPPORTED = -4`
+and batch init returns `NULL`, without a last error. A declaration probe selects
+that fallback; callers must check both capability and symbol availability
+before adopting a new artifact.
+
+Supported processing uses exactly the decode/encode evaluation helper: the
+exception barrier surrounds a call in flight, and `llama_synchronize(ctx)` runs
+before that call ends, on both success and exception. If processing and waiting
+both throw, the processing exception wins. A caught exception returns
+`INT32_MIN` and records the calling thread's error; only free the failed
+context afterward, as required by the header's exception contract. Successful
+calls and ordinary upstream failures clear stale errors. Every new export
+blocks on admission after teardown begins, including unsupported requests.
+This does not add cancellation, concurrent context use, or ownership transfer.
+
+### Batch construction audit at 620d2225
+
+In `third_party/llama.cpp/src/llama-batch.cpp`, the `llama_batch_ext(ctx)`
+constructor reads context parameters, model metadata, batch/sequence limits,
+and the memory pointer. **Init does access tracked state** and must use
+`llama_dart_batch_ext_init` from Dart; a raw upstream init would race teardown.
+The wrapper guards those reads and allocation, but does not register the batch
+for exit cleanup. The caller frees it with `llama_batch_ext_free` (also suitable
+for a batch finalizer), never `llama_dart_exit_free`.
+
+The `add*`, `set*`, `clear` and `free` implementations use the batch's copied
+limits and its own vectors/sets; none dereferences the saved memory pointer or
+context. `set_token_embd` copies the caller's embedding values. These functions
+need no exit-teardown guard at this upstream revision. Like the existing small
+caller-owned allocation APIs, add/set can still throw `std::bad_alloc`; this
+addition does not provide allocation-failure barriers for them. Keep the batch
+exclusive while processing, use it only with its original live context, and
+keep input position/embedding buffers valid until the corresponding add/set
+returns. Processing retains caller ownership of the batch.
+
+The helper contract has six deterministic call/wait exception combinations in
+`barrier_test`, including a wait that throws while handling an evaluation
+exception. Extended-batch exit scenarios mirror decode: output/status forwarding
+and no pending work (`model-process`), waiting inside the tracked call
+(`model-process-wait`), standard/unknown exceptions and released call counts
+(`model-process-barrier`), and blocked late init/DECODE/unsupported calls
+(`blocked`). They use generated model fixtures and require no downloads.
+
+The EmbeddingGemma-2 smoke below requires the guarded mixed path to match the
+upstream-only reference exactly.
+
 ## EmbeddingGemma-2 model smoke
 
 `tools/embedding_smoke.cpp` is an opt-in CPU qualification executable. It:
@@ -101,20 +165,22 @@ the currently published native v0.6.0-3 artifact has this crash.
 - Checks input width 512 and pooled output width 768, finite nonzero values,
   and truncate-then-normalize handling for 128/256/512/768 dimensions.
 - Compares the guarded wrapper's text decode against direct upstream decode.
-- Encodes synthetic images and 16 kHz audio with the guarded mtmd calls, then
-  constructs one complete mixed token/embedding batch through upstream's
-  extended-batch API. All noncausal inputs must fit one microbatch.
+- Encodes synthetic images and 16 kHz audio with guarded mtmd calls, builds
+  one complete mixed token/embedding batch with guarded init and upstream
+  add/set functions, and uses `llama_dart_process` for DECODE. All noncausal
+  inputs must fit one microbatch.
+- Compares all four normalized 768-component mixed vectors against the direct
+  upstream tokenize/encode/init/process reference, requiring exact equality.
+  `--upstream-only` preserves the direct mixed path as a diagnostic mode.
 - Rejects silently discarded media and checks that different image/audio
   content changes the output. A later text request must match the original.
 - Frees tracked models/contexts and checks that the tracking registry is empty.
 
-The mixed processing call is an **upstream reference path**, not a new guarded
-wrapper export or public Dart media-embedding API. Do not reuse chat's
-chunk-by-chunk decode helpers for noncausal mean pooling: separate forwards do
-not preserve full-input attention and pooling. Native guarded mixed processing,
-capability/version-skew handling, request limits and cancellation remain part
-of #112/#1072. Synthetic content sensitivity is a wiring check, not a retrieval
-quality benchmark or image/audio/text semantic alignment evaluation.
+Do not reuse chat's chunk-by-chunk decode helpers for noncausal mean pooling:
+separate forwards do not preserve full-input attention and pooling. Public Dart
+media-embedding APIs, artifact capability/version-skew handling, request limits
+and cancellation remain part of #112/#1072. Synthetic content sensitivity is a
+wiring check, not a retrieval quality or semantic alignment evaluation.
 
 ### Exact assets
 
