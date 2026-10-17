@@ -175,6 +175,10 @@ unset(LLAMADART_CONTEXT_HAS_MOE_CACHE CACHE)
 check_cxx_source_compiles("#include <llama.h>
 int main() { return sizeof(decltype(llama_context_params::moe_cache_size)) == 0; }"
     LLAMADART_CONTEXT_HAS_MOE_CACHE)
+unset(LLAMADART_HAS_BATCH_EXT CACHE)
+check_cxx_source_compiles("#include <llama.h>
+int main() { return sizeof(decltype(&llama_process)) == 0; }"
+    LLAMADART_HAS_BATCH_EXT)
 cmake_pop_check_state()
 if (TARGET ggml-vulkan AND LLAMADART_SPIRV_HEADERS_INCLUDE)
     target_include_directories(ggml-vulkan SYSTEM PRIVATE "${LLAMADART_SPIRV_HEADERS_INCLUDE}")
@@ -230,6 +234,7 @@ if (MSVC)
     target_compile_options(llamadart_lib PRIVATE /EHsc-)
 endif()
 target_compile_definitions(llamadart_lib PRIVATE
+    LLAMADART_HAS_BATCH_EXT=$<BOOL:${LLAMADART_HAS_BATCH_EXT}>
     LLAMADART_CONTEXT_HAS_MOE_CACHE=$<BOOL:${LLAMADART_CONTEXT_HAS_MOE_CACHE}>
     LLAMADART_MTMD_HELPER_HAS_EMBD_BATCH=$<BOOL:${LLAMADART_MTMD_HELPER_HAS_EMBD_BATCH}>
     LLAMADART_SPECULATIVE_HAS_COMMON_BATCH=$<BOOL:${LLAMADART_SPECULATIVE_HAS_COMMON_BATCH}>
@@ -330,6 +335,7 @@ if (LLAMADART_BUILD_TESTS)
     add_executable(llamadart_exit_teardown_test tests/exit_teardown_test.cpp)
     target_compile_features(llamadart_exit_teardown_test PRIVATE cxx_std_17)
     target_compile_definitions(llamadart_exit_teardown_test PRIVATE
+        LLAMADART_HAS_BATCH_EXT=$<BOOL:${LLAMADART_HAS_BATCH_EXT}>
         LLAMADART_CONTEXT_HAS_MOE_CACHE=$<BOOL:${LLAMADART_CONTEXT_HAS_MOE_CACHE}>)
     target_link_libraries(llamadart_exit_teardown_test PRIVATE
         llamadart_lib Threads::Threads)
@@ -338,7 +344,7 @@ if (LLAMADART_BUILD_TESTS)
         third_party/llama.cpp/ggml/src
         src
     )
-    foreach(scenario dispose order repeat in-flight nested settle timeout
+    foreach(scenario process-type dispose order repeat in-flight nested settle timeout
             idle-wait own-call blocked exit exit-in-flight late-static
             free-in-flight free-timeout barrier-free barrier-free-idle)
         add_test(NAME llamadart_exit_teardown_${scenario}
@@ -394,6 +400,14 @@ if (LLAMADART_BUILD_TESTS)
             set_tests_properties(llamadart_exit_teardown_${scenario} PROPERTIES
                 FIXTURES_REQUIRED llamadart_exit_teardown_model)
         endforeach()
+        if (LLAMADART_HAS_BATCH_EXT)
+            foreach(scenario model-process model-process-wait model-process-barrier)
+                add_test(NAME llamadart_exit_teardown_${scenario}
+                    COMMAND llamadart_exit_teardown_test ${scenario} "${exit_teardown_model}")
+                set_tests_properties(llamadart_exit_teardown_${scenario} PROPERTIES
+                    FIXTURES_REQUIRED llamadart_exit_teardown_model TIMEOUT 30)
+            endforeach()
+        endif()
         # Linux preserves host callbacks and libc flushing. Live-worker raw
         # exit cases are diagnostic CPU controls, not the host contract.
         if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
@@ -531,6 +545,9 @@ if (LLAMADART_BUILD_TTS_SMOKE)
 endif()
 
 if (LLAMADART_BUILD_EMBEDDING_SMOKE)
+    if (NOT LLAMADART_HAS_BATCH_EXT)
+        message(FATAL_ERROR "Embedding smoke requires upstream extended-batch API")
+    endif()
     add_executable(llamadart_embedding_smoke tools/embedding_smoke.cpp)
     target_compile_features(llamadart_embedding_smoke PRIVATE cxx_std_17)
     target_compile_definitions(llamadart_embedding_smoke PRIVATE

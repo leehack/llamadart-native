@@ -1,6 +1,5 @@
-// Opt-in real-weight qualification. Mixed batches exercise the upstream C API;
-// they do not claim a guarded native wrapper or public Dart media-embedding
-// API.
+// Opt-in real-weight qualification of guarded mixed processing against the
+// upstream reference. --upstream-only keeps the direct mixed comparison mode.
 #include "llama_dart_wrapper.h"
 #include "mtmd.h"
 
@@ -95,17 +94,22 @@ static std::vector<float> text_embedding(llama_context *context, bool wrapper) {
 
 static std::vector<float> mixed_embedding(llama_context *context,
                                           mtmd_context *projector,
-                                          const mtmd_bitmap *bitmap) {
+                                          const mtmd_bitmap *bitmap,
+                                          bool wrapper) {
   const std::string prompt =
       std::string("task: search result | text: ") + mtmd_default_marker();
   mtmd_input_text text{prompt.data(), prompt.size(), true, true};
   mtmd::input_chunks_ptr chunks(mtmd_input_chunks_init());
-  require(
-      llama_dart_mtmd_tokenize(projector, chunks.get(), &text, &bitmap, 1) == 0,
-      "media tokenization failed");
+  require((wrapper ? llama_dart_mtmd_tokenize(projector, chunks.get(), &text,
+                                              &bitmap, 1)
+                   : mtmd_tokenize(projector, chunks.get(), &text, &bitmap,
+                                   1)) == 0,
+          "media tokenization failed");
   const auto width = llama_model_n_embd_inp(llama_get_model(context));
   std::unique_ptr<llama_batch_ext, decltype(&llama_batch_ext_free)> batch(
-      llama_batch_ext_init(context), llama_batch_ext_free);
+      wrapper ? llama_dart_batch_ext_init(context)
+              : llama_batch_ext_init(context),
+      llama_batch_ext_free);
   require(batch != nullptr, "extended batch allocation failed");
   std::vector<std::vector<float>> media;
   llama_pos position = 0;
@@ -119,7 +123,8 @@ static std::vector<float> mixed_embedding(llama_context *context,
       tokens = mtmd_input_chunk_get_tokens_text(chunk, &count);
     } else {
       saw_media = true;
-      require(llama_dart_mtmd_encode_chunk(projector, chunk) == 0,
+      require((wrapper ? llama_dart_mtmd_encode_chunk(projector, chunk)
+                       : mtmd_encode_chunk(projector, chunk)) == 0,
               "media encode failed");
       const float *encoded = mtmd_get_output_embd(projector);
       require(encoded != nullptr, "missing media embeddings");
@@ -143,14 +148,20 @@ static std::vector<float> mixed_embedding(llama_context *context,
     }
   }
   require(saw_media, "media input was silently discarded");
-  require(llama_process(context, LLAMA_PROCESS_TYPE_DECODE, batch.get()) == 0,
+  require((wrapper ? llama_dart_process(context, LLAMA_PROCESS_TYPE_DECODE,
+                                        batch.get())
+                   : llama_process(context, LLAMA_PROCESS_TYPE_DECODE,
+                                   batch.get())) == 0,
           "mixed decode failed");
   return output(context);
 }
 
 int main(int argc, char **argv) {
-  if (argc != 3) {
-    std::fprintf(stderr, "Usage: %s model.gguf mmproj.gguf\n", argv[0]);
+  const bool upstream_only =
+      argc == 4 && std::string(argv[3]) == "--upstream-only";
+  if (argc != 3 && !upstream_only) {
+    std::fprintf(stderr, "Usage: %s model.gguf mmproj.gguf [--upstream-only]\n",
+                 argv[0]);
     return 2;
   }
   llama_backend_init();
@@ -192,6 +203,19 @@ int main(int argc, char **argv) {
     require(mtmd_support_vision(projector.get()) &&
                 mtmd_support_audio(projector.get()),
             "projector does not expose both image and audio input");
+    const auto mixed = [&](const mtmd_bitmap *bitmap, const char *label) {
+      const auto values = mixed_embedding(context.get(), projector.get(),
+                                          bitmap, !upstream_only);
+      if (!upstream_only) {
+        const auto direct =
+            mixed_embedding(reference.get(), projector.get(), bitmap, false);
+        require(values == direct, "wrapper mixed output differs from upstream");
+        std::printf(
+            "PASS mixed %s: 768 dimensions; wrapper/upstream max delta %.8g\n",
+            label, difference(values, direct));
+      }
+      return values;
+    };
     std::vector<unsigned char> pixels(224 * 224 * 3, 0);
     mtmd::bitmap_ptr dark(mtmd_bitmap_init(224, 224, pixels.data()));
     for (size_t i = 0; i < pixels.size(); ++i) {
@@ -199,10 +223,8 @@ int main(int argc, char **argv) {
     }
     mtmd::bitmap_ptr patterned(mtmd_bitmap_init(224, 224, pixels.data()));
     require(dark && patterned, "image allocation failed");
-    const auto image_a =
-        mixed_embedding(context.get(), projector.get(), dark.get());
-    const auto image_b =
-        mixed_embedding(context.get(), projector.get(), patterned.get());
+    const auto image_a = mixed(dark.get(), "dark image");
+    const auto image_b = mixed(patterned.get(), "patterned image");
     require(difference(image_a, image_b) > 1e-4, "image content had no effect");
     const int rate = mtmd_get_audio_sample_rate(projector.get());
     require(rate == 16000, "expected 16 kHz audio");
@@ -215,15 +237,14 @@ int main(int argc, char **argv) {
     mtmd::bitmap_ptr tone(
         mtmd_bitmap_init_from_audio(samples.size(), samples.data()));
     require(silence && tone, "audio allocation failed");
-    const auto audio_a =
-        mixed_embedding(context.get(), projector.get(), silence.get());
-    const auto audio_b =
-        mixed_embedding(context.get(), projector.get(), tone.get());
+    const auto audio_a = mixed(silence.get(), "silence");
+    const auto audio_b = mixed(tone.get(), "tone");
     require(difference(audio_a, audio_b) > 1e-4, "audio content had no effect");
     require(difference(wrapped, text_embedding(context.get(), true)) < 1e-5,
             "media request contaminated the next text request");
-    std::printf("PASS upstream mixed image/audio: 768 dimensions; image delta "
+    std::printf("PASS %s mixed image/audio: 768 dimensions; image delta "
                 "%.8g; audio delta %.8g; text reuse stable\n",
+                upstream_only ? "upstream-only" : "guarded",
                 difference(image_a, image_b), difference(audio_a, audio_b));
   } catch (const std::exception &error) {
     std::fprintf(stderr, "FAIL: %s\n", error.what());

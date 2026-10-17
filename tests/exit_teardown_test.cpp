@@ -15,6 +15,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <limits>
+#include <memory>
 #include <mutex>
 #include <stdexcept>
 #include <string>
@@ -116,6 +117,25 @@ void track_out_of_stage_order() {
   track("scheduler", LLAMA_DART_EXIT_STAGE_SCHEDULER);
   track("context-late", LLAMA_DART_EXIT_STAGE_CONTEXT);
   track(kSessionLate, LLAMA_DART_EXIT_STAGE_SESSION);
+}
+
+int test_process_type() {
+  for (int32_t type : {0, -1, 99}) {
+    assert(llama_dart_mtmd_supports_image_token_limit(nullptr, 0) == -1);
+    assert(llama_dart_last_error() != nullptr);
+    assert(llama_dart_process(nullptr, type, nullptr) ==
+           LLAMA_DART_PROCESS_STATUS_UNSUPPORTED_TYPE);
+    assert(llama_dart_last_error() == nullptr);
+  }
+#if !LLAMADART_HAS_BATCH_EXT
+  assert(llama_dart_process(nullptr, LLAMA_DART_PROCESS_TYPE_DECODE, nullptr) ==
+         LLAMA_DART_PROCESS_STATUS_UNSUPPORTED);
+  assert(llama_dart_last_error() == nullptr);
+  assert(llama_dart_batch_ext_init(nullptr) == nullptr);
+  assert(llama_dart_last_error() == nullptr);
+#endif
+  assert(llama_dart_exit_tracked_count() == 0);
+  return 0;
 }
 
 int test_dispose() {
@@ -407,6 +427,13 @@ int test_blocked() {
       nullptr);
   late([](void *) { llama_dart_decode(nullptr, llama_batch{}); }, nullptr);
   late([](void *) { llama_dart_encode(nullptr, llama_batch{}); }, nullptr);
+  late([](void *) { llama_dart_batch_ext_init(nullptr); }, nullptr);
+  late(
+      [](void *) {
+        llama_dart_process(nullptr, LLAMA_DART_PROCESS_TYPE_DECODE, nullptr);
+      },
+      nullptr);
+  late([](void *) { llama_dart_process(nullptr, 0, nullptr); }, nullptr);
   late([](void *) { llama_dart_synchronize(nullptr); }, nullptr);
   late([](void *) { llama_dart_sampler_sample(nullptr, nullptr, 0); }, nullptr);
   late([](void *) { llama_dart_state_save_file(nullptr, "", nullptr, 0); },
@@ -1479,6 +1506,67 @@ int test_evaluation_wait(const char *path, void (*evaluate)(model_fixture &),
 void decode_prompt(model_fixture &fixture) {
   assert(llama_dart_decode(fixture.context, prompt(fixture)) == 0);
 }
+
+#if LLAMADART_HAS_BATCH_EXT
+auto extended_prompt(model_fixture &fixture) {
+  std::unique_ptr<llama_batch_ext, decltype(&llama_batch_ext_free)> batch(
+      llama_dart_batch_ext_init(fixture.context), llama_batch_ext_free);
+  assert(batch != nullptr);
+  for (size_t i = 0; i < fixture.tokens.size(); ++i) {
+    const auto index =
+        llama_batch_ext_add_token(batch.get(), 0, fixture.tokens[i]);
+    const llama_pos position = static_cast<llama_pos>(i);
+    assert(index == static_cast<int32_t>(i));
+    assert(llama_batch_ext_set_pos(batch.get(), index, &position));
+    assert(llama_batch_ext_set_output_logits(batch.get(), index, true));
+  }
+  return batch;
+}
+
+void process_prompt(model_fixture &fixture) {
+  auto batch = extended_prompt(fixture);
+  assert(llama_dart_process(fixture.context, LLAMA_PROCESS_TYPE_DECODE,
+                            batch.get()) == 0);
+}
+
+// Independent upstream reference proves result/status forwarding and that
+// the wrapper has drained backend work before the caller reads outputs.
+int test_model_process(const char *path) {
+  auto fixture = load_model(path);
+  auto batch = extended_prompt(fixture);
+  assert(llama_process(fixture.context, LLAMA_PROCESS_TYPE_DECODE,
+                       batch.get()) == 0);
+  llama_synchronize(fixture.context);
+  const auto width = llama_vocab_n_tokens(llama_model_get_vocab(fixture.model));
+  const auto *logits = llama_get_logits_ith(fixture.context, -1);
+  const std::vector<float> expected(logits, logits + width);
+  clear_memory(fixture);
+  assert(llama_dart_process(fixture.context, LLAMA_PROCESS_TYPE_DECODE,
+                            batch.get()) == 0);
+  assert(!has_pending_work(fixture));
+  logits = llama_get_logits_ith(fixture.context, -1);
+  assert(std::vector<float>(logits, logits + width) == expected);
+
+  // Empty batches are rejected by upstream, without a caught exception.
+  llama_batch_ext_clear(batch.get());
+  const auto status =
+      llama_process(fixture.context, LLAMA_PROCESS_TYPE_DECODE, batch.get());
+  assert(status != 0 && status != LLAMA_DART_STATUS_EXCEPTION);
+  assert(llama_dart_process(fixture.context, LLAMA_PROCESS_TYPE_DECODE,
+                            batch.get()) == status);
+  assert(llama_dart_last_error() == nullptr);
+  // Unsupported types never dereference these deliberately null arguments.
+  for (auto type :
+       {LLAMA_PROCESS_TYPE_ENCODE, static_cast<llama_process_type>(99)}) {
+    assert(llama_dart_process(nullptr, type, nullptr) ==
+           LLAMA_DART_PROCESS_STATUS_UNSUPPORTED_TYPE);
+    assert(llama_dart_last_error() == nullptr);
+  }
+  assert(llama_dart_exit_tracked_count() == 2); // batch is caller-owned
+  return 0;
+}
+
+#endif
 
 void encode_prompt(model_fixture &fixture) {
   assert(llama_dart_encode(fixture.context, prompt(fixture)) == 0);
@@ -2594,6 +2682,33 @@ int test_model_barrier(const char *path) {
   return 0;
 }
 
+#if LLAMADART_HAS_BATCH_EXT
+// Each thrown evaluation gets a fresh context: a failed one is only freed.
+int test_model_process_barrier(const char *path) {
+  for (int failure : {1, 2}) {
+    model_options options;
+    options.cpu_only = true;
+    options.eval_callback = throwing_eval_callback;
+    auto fixture = load_model(path, options);
+    auto batch = extended_prompt(fixture);
+    g_eval_failure.store(failure);
+    assert(llama_dart_process(fixture.context, LLAMA_PROCESS_TYPE_DECODE,
+                              batch.get()) == LLAMA_DART_STATUS_EXCEPTION);
+    assert(std::string(llama_dart_last_error()) ==
+           (failure == 1 ? "evaluation failed" : "unknown C++ exception"));
+    // Rejection clears a stale error, and touches no failed context.
+    assert(llama_dart_process(nullptr, LLAMA_PROCESS_TYPE_ENCODE, nullptr) ==
+           LLAMA_DART_PROCESS_STATUS_UNSUPPORTED_TYPE);
+    assert(llama_dart_last_error() == nullptr);
+    llama_dart_exit_free(fixture.context);
+    llama_dart_exit_free(fixture.model);
+  }
+  assert(calls_in_flight_ended());
+  return 0;
+}
+
+#endif
+
 // A sampler that selects the tokens of a script, whatever the logits are, and
 // records what it is made to accept.
 struct scripted_sampler {
@@ -2761,6 +2876,9 @@ int main(int argc, char **argv) {
   }
   // Keeps llama.cpp's device, load and decode logs out of the test output.
   llama_dart_set_log_level(3);
+  if (scenario == "process-type") {
+    return test_process_type();
+  }
   if (scenario == "dispose") {
     return test_dispose();
   }
@@ -2840,6 +2958,17 @@ int main(int argc, char **argv) {
     if (scenario == "make-encoder-model") {
       return make_model(first, true);
     }
+#if LLAMADART_HAS_BATCH_EXT
+    if (scenario == "model-process") {
+      return test_model_process(first);
+    }
+    if (scenario == "model-process-barrier") {
+      return test_model_process_barrier(first);
+    }
+    if (scenario == "model-process-wait") {
+      return test_evaluation_wait(first, process_prompt, false);
+    }
+#endif
     if (scenario == "model-decode-wait") {
       return test_evaluation_wait(first, decode_prompt, false);
     }

@@ -1,8 +1,9 @@
 #include "llama_dart_wrapper.h"
-#include "llama_dart_image_token_limit_internal.h"
 #include "llama_dart_barrier_internal.h"
-#include "llama_dart_mtp_internal.h"
+#include "llama_dart_evaluate_internal.h"
+#include "llama_dart_image_token_limit_internal.h"
 #include "llama_dart_mtmd_compat.h"
+#include "llama_dart_mtp_internal.h"
 #include "llama_dart_speculative_compat.h"
 #include "llama_dart_tts_eval_internal.h"
 #include "llama_dart_tts_internal.h"
@@ -949,30 +950,10 @@ struct llama_dart_exit_creating_call {
   operator=(const llama_dart_exit_creating_call &) = delete;
 };
 
-// Runs call, which decodes or encodes on ctx, as a call in flight behind the
-// barrier. A backend may still be computing when llama_decode or llama_encode
-// returns, and the next read of the context then waits for it. That wait must
-// be part of the call in flight, or teardown frees the context under it, so
-// the call in flight ends only after it, also when call throws.
+// Use the same guard/barrier/wait contract for legacy and extended batches.
 template <typename Call>
 static int32_t llama_dart_exit_evaluate(llama_context *ctx, Call &&call) {
-  return llama_dart_barrier<int32_t>(
-      LLAMA_DART_STATUS_EXCEPTION, [ctx, &call]() -> int32_t {
-        llama_dart_exit_call in_flight;
-        int32_t status;
-        try {
-          status = call();
-        } catch (...) {
-          // The exception of the call is the one to report.
-          try {
-            llama_synchronize(ctx);
-          } catch (...) {
-          }
-          throw;
-        }
-        llama_synchronize(ctx);
-        return status;
-      });
+  return llama_dart_evaluate<llama_dart_exit_call>(ctx, call, llama_synchronize);
 }
 
 // Tracks an object that a creating call just made and returns it. An object
@@ -1204,6 +1185,44 @@ LLAMADART_API int32_t llama_dart_decode(struct llama_context *ctx,
                                         struct llama_batch batch) {
   return llama_dart_exit_evaluate(
       ctx, [ctx, &batch] { return llama_decode(ctx, batch); });
+}
+
+LLAMADART_API struct llama_batch_ext *
+llama_dart_batch_ext_init(struct llama_context *ctx) {
+  return llama_dart_barrier<llama_batch_ext *>(nullptr, [ctx] {
+    llama_dart_exit_call call;
+#if LLAMADART_HAS_BATCH_EXT
+    return llama_batch_ext_init(ctx);
+#else
+    (void)ctx;
+    return static_cast<llama_batch_ext *>(nullptr);
+#endif
+  });
+}
+
+LLAMADART_API int32_t llama_dart_process(struct llama_context *ctx,
+                                         int32_t type,
+                                         struct llama_batch_ext *batch) {
+  if (type != LLAMA_DART_PROCESS_TYPE_DECODE) {
+    return llama_dart_barrier<int32_t>(LLAMA_DART_STATUS_EXCEPTION, [] {
+      llama_dart_exit_call call;
+      return LLAMA_DART_PROCESS_STATUS_UNSUPPORTED_TYPE;
+    });
+  }
+#if LLAMADART_HAS_BATCH_EXT
+  static_assert(static_cast<int>(LLAMA_PROCESS_TYPE_DECODE) ==
+                static_cast<int>(LLAMA_DART_PROCESS_TYPE_DECODE));
+  return llama_dart_exit_evaluate(ctx, [ctx, batch] {
+    return llama_process(ctx, LLAMA_PROCESS_TYPE_DECODE, batch);
+  });
+#else
+  return llama_dart_barrier<int32_t>(LLAMA_DART_STATUS_EXCEPTION, [ctx, batch] {
+    llama_dart_exit_call call;
+    (void)ctx;
+    (void)batch;
+    return LLAMA_DART_PROCESS_STATUS_UNSUPPORTED;
+  });
+#endif
 }
 
 LLAMADART_API int32_t llama_dart_encode(struct llama_context *ctx,
