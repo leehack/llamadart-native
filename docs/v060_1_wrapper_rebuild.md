@@ -6,7 +6,7 @@ Wrapper-only changes on llama.cpp `v0.6.0`
 struct or enumerator is removed or changes its signature. `llamadart` adopts
 the additions after the rebuild is published.
 
-## Later mixed-batch addition (Task 015-B0)
+## Later mixed-batch addition
 
 The current header/export contract also adds `llama_dart_process` and
 `llama_dart_batch_ext_init`; these were not part of the historical `v0.6.0-1`

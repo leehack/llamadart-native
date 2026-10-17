@@ -96,7 +96,7 @@ the currently published native v0.6.0-3 artifact has this crash.
 
 ## Guarded mixed-batch processing
 
-Task 015-B0 adds these exports without a version/tag change or publication:
+These exports are part of the v0.7.x wrapper contract:
 
 | Export | Contract |
 | --- | --- |
@@ -155,11 +155,8 @@ and no pending work (`model-process`), waiting inside the tracked call
 (`model-process-barrier`), and blocked late init/DECODE/unsupported calls
 (`blocked`). They use generated model fixtures and require no downloads.
 
-Local Task 015-B0 qualification on macOS arm64 passed 56/56 CTest cases,
-including the BF16 model smoke. Both image inputs and both audio inputs matched
-the upstream reference exactly (all 768 normalized components, maximum delta 0).
-Image-content delta was 0.074147753 and audio-content delta 0.069716342; text
-reuse was stable. The separate `--upstream-only` mixed mode also passed.
+The EmbeddingGemma-2 smoke below requires the guarded mixed path to match the
+upstream-only reference exactly.
 
 ## EmbeddingGemma-2 model smoke
 

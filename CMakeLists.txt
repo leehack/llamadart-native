@@ -180,6 +180,11 @@ check_cxx_source_compiles("#include <llama.h>
 int main() { return sizeof(decltype(&llama_process)) == 0; }"
     LLAMADART_HAS_BATCH_EXT)
 cmake_pop_check_state()
+# A missed probe would still export llama_dart_process, which would then only
+# return UNSUPPORTED; fail the build instead of shipping that silently.
+if (NOT LLAMADART_HAS_BATCH_EXT)
+    message(FATAL_ERROR "llama.cpp lacks llama_process/llama_batch_ext; llama_dart_process requires them.")
+endif()
 if (TARGET ggml-vulkan AND LLAMADART_SPIRV_HEADERS_INCLUDE)
     target_include_directories(ggml-vulkan SYSTEM PRIVATE "${LLAMADART_SPIRV_HEADERS_INCLUDE}")
 endif()
