@@ -198,6 +198,18 @@ class RedistLookupTests(unittest.TestCase):
             self.assertIsNone(find('vcruntime140.dll', 'x64', redist))
             self.assertIsNone(find('msvcp140.dll', 'arm64', redist))
 
+    def test_llvm_openmp_falls_back_to_debug_nonredist_only(self):
+        with tempfile.TemporaryDirectory() as temp:
+            redist = Path(temp)
+            for relative in ('debug_nonredist/arm64/Microsoft.VC145.OpenMP.LLVM/libomp140.aarch64.dll',
+                             'debug_nonredist/arm64/Microsoft.VC145.DebugCRT/msvcp140.dll'):
+                (redist / relative).parent.mkdir(parents=True, exist_ok=True)
+                (redist / relative).write_bytes(b'')
+            find = windows_runtime.find_vc_redistributable
+            self.assertEqual(find('libomp140.aarch64.dll', 'arm64', redist),
+                             redist / 'debug_nonredist/arm64/Microsoft.VC145.OpenMP.LLVM/libomp140.aarch64.dll')
+            self.assertIsNone(find('msvcp140.dll', 'arm64', redist))
+
     def test_build_resolves_runtime_from_the_toolset_not_from_path(self):
         with tempfile.TemporaryDirectory() as temp:
             redist = Path(temp) / 'redist'

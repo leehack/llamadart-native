@@ -25,12 +25,20 @@ bundled library imports it.
 Runtime and OpenMP DLLs come only from the redistributable folder of the
 toolset that built the lane: `%VCToolsRedistDir%\<arch>\Microsoft.VC*.CRT` and
 `Microsoft.VC*.OpenMP*`. The build fails rather than fall back to `System32`,
-`debug_nonredist`, `onecore` or `PATH`, and it never takes any dependency from
+`onecore` or `PATH`, and it never takes any dependency from
 the Windows directory. Those folders hold the files the Visual Studio licence
 lists as Distributable Code (`redist.txt`), and Microsoft documents copying
 them next to the application as app-local deployment. App-local copies are not
 serviced by Windows Update; each native release refreshes them from its build
 image.
+
+One exception keeps the arm64 OpenMP runtime shipping as before: Visual Studio
+(checked through 14.51) has `libomp140.aarch64.dll`, which ClangCL `/openmp`
+imports, only under
+`debug_nonredist\arm64\Microsoft.VC*.OpenMP.LLVM`. Earlier releases already
+bundled it from there. Whether that copy may be redistributed is unresolved;
+the alternative is building arm64 with `GGML_OPENMP=OFF`, which changes CPU
+threading and needs its own qualification.
 
 ## Why not the static CRT (`/MT`)
 

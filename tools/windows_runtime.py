@@ -88,12 +88,19 @@ def find_vc_redistributable(name: str, arch: str, redist_dir: Path) -> Path | No
     """The desktop redistributable copy of `name` for `arch`, if the toolset has one."""
     folder = VC_RUNTIME_FOLDER if is_vc_runtime(name) else OPENMP_RUNTIME_FOLDER
     lowered = name.lower()
-    matches = sorted(
-        candidate
-        for candidate in (redist_dir / arch).glob(f"{folder}/*.dll")
-        if candidate.name.lower() == lowered
-    )
-    return matches[-1] if matches else None
+    roots = [redist_dir / arch]
+    # Visual Studio (through 14.51) ships the LLVM OpenMP runtime that ClangCL
+    # /openmp imports only under debug_nonredist. Earlier releases bundled it
+    # from there; whether it may be redistributed is open (docs/windows_vc_runtime.md).
+    if fnmatch(lowered, "libomp140.*.dll"):
+        roots.append(redist_dir / "debug_nonredist" / arch)
+    for root in roots:
+        matches = sorted(
+            candidate for candidate in root.glob(f"{folder}/*.dll") if candidate.name.lower() == lowered
+        )
+        if matches:
+            return matches[-1]
+    return None
 
 
 class PeError(ValueError):
