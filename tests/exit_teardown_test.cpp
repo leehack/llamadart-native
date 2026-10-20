@@ -1262,25 +1262,52 @@ int test_model_draft_moe_cache(const char *path, const char *mtp_path) {
 #endif
 }
 
+// The last token's embedding when the context extracts embeddings, else its
+// logits.
+std::vector<float> decode_last_output(model_fixture &fixture, bool embeddings) {
+  llama_memory_clear(llama_get_memory(fixture.context), true);
+  assert(llama_decode(fixture.context, prompt(fixture)) == 0);
+  assert((llama_get_embeddings(fixture.context) != nullptr) == embeddings);
+  const float *values = embeddings
+                            ? llama_get_embeddings_ith(fixture.context, -1)
+                            : llama_get_logits_ith(fixture.context, -1);
+  assert(values != nullptr);
+  const int32_t width =
+      embeddings ? llama_model_n_embd(fixture.model)
+                 : llama_vocab_n_tokens(llama_model_get_vocab(fixture.model));
+  return std::vector<float>(values, values + width);
+}
+
 // Direct upstream calls isolate extraction-mode changes from speculative
-// handles and wrapper teardown. Re-reserving only pooled contexts is unsafe.
+// handles and wrapper teardown. Re-reserving only pooled contexts is unsafe:
+// with pooling NONE the toggle reorders the graph's leafs without changing
+// their count, so ggml-alloc would reuse the other mode's assignments. A
+// context created in either mode must match one created in the mode it is
+// switched to.
 int test_model_embedding_toggle(const char *path) {
   model_options options;
   options.tracked = false;
   options.cpu_only = true;
-  auto fixture = load_model(path, options);
-  for (int pass = 0; pass < 2; ++pass) {
-    llama_set_embeddings(fixture.context, true);
-    assert(llama_decode(fixture.context, prompt(fixture)) == 0);
-    assert(llama_get_embeddings(fixture.context) != nullptr);
-    llama_memory_clear(llama_get_memory(fixture.context), true);
-    llama_set_embeddings(fixture.context, false);
-    assert(llama_decode(fixture.context, prompt(fixture)) == 0);
-    assert(llama_get_embeddings(fixture.context) == nullptr);
-    llama_memory_clear(llama_get_memory(fixture.context), true);
+  std::vector<float> expected[2];
+  for (const bool embeddings : {false, true}) {
+    options.embeddings = embeddings;
+    auto reference = load_model(path, options);
+    expected[embeddings] = decode_last_output(reference, embeddings);
+    llama_free(reference.context);
+    llama_model_free(reference.model);
   }
-  llama_free(fixture.context);
-  llama_model_free(fixture.model);
+  for (const bool created : {false, true}) {
+    options.embeddings = created;
+    auto fixture = load_model(path, options);
+    for (int pass = 0; pass < 2; ++pass) {
+      for (const bool embeddings : {!created, created}) {
+        llama_set_embeddings(fixture.context, embeddings);
+        assert(decode_last_output(fixture, embeddings) == expected[embeddings]);
+      }
+    }
+    llama_free(fixture.context);
+    llama_model_free(fixture.model);
+  }
   return 0;
 }
 
