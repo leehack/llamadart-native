@@ -897,6 +897,13 @@ jobs:
               throw "Kleidi is not enabled in windows arm64 build"
             }
           }
+      # Each lane's output holds the core libraries, its backend and every
+      # import those resolve to, so the whole lane is checked here; the merged
+      # bundle is checked again before packaging.
+      - name: Check Windows import closure and app-local runtime
+        run: |
+          python tools/validate_windows_bundle.py --arch ${{ matrix.arch }} --dumpbin dumpbin "bin/windows/${{ matrix.arch }}"
+          if ($LASTEXITCODE) { throw "Windows ${{ matrix.arch }} import closure failed" }
       - name: Stage upload payload
         run: |
           $out = "bin/windows/${{ matrix.arch }}"
@@ -1080,6 +1087,13 @@ jobs:
                 cp -f "$src" "${out_dir}/$(basename "$src")"
               done < <(find "$dir" -maxdepth 1 -type f \( -name '*.dll' -o -name '*.dylib' -o -name '*.so' \) | sort)
             fi
+          done
+
+          # Lanes build on different runner images; the core lane's Visual C++
+          # runtime must cover every lane's MSVC linker.
+          for bundle_dir in bundles/windows-*; do
+            [ -d "$bundle_dir" ] || continue
+            python3 tools/validate_windows_bundle.py --arch "${bundle_dir##*/windows-}" "$bundle_dir"
           done
 
           for bundle_dir in bundles/*; do

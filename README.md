@@ -142,6 +142,7 @@ Release assets contain:
   - CUDA lanes include CUDA runtime DLLs required by `ggml-cuda` (for example `cudart64_*.dll`, `cublas64_*.dll`).
   - BLAS lanes include `openblas*.dll` required by `ggml-blas`.
   - NVIDIA driver DLLs (for example `nvcuda.dll`) are not bundled and are provided by GPU drivers.
+  - The core lane ships the Visual C++ v14 runtime (`msvcp140.dll`, `vcruntime140.dll`, plus `vcruntime140_1.dll` on x64) and the OpenMP runtime app-locally, so the bundle loads on Windows without the Visual C++ Redistributable. See [`docs/windows_vc_runtime.md`](docs/windows_vc_runtime.md).
 - Headers archive: `llamadart-native-headers-<tag>.tar.gz` with `llama_cpp/...` and `libllamadart/...` roots, including llama.cpp, ggml, mtmd, and `llama_dart_wrapper.h`.
 
 Consumers can choose which backend libs to include in their package and load at runtime.
@@ -173,6 +174,8 @@ Assets are suffixed with platform/arch, for example:
 - `tools/validate_exports.py`: verifies required wrapper C exports, including
   exit-teardown, guarded mixed-batch processing, speculative-decoding and TTS
   symbols, in release artifacts.
+- `tools/validate_windows_bundle.py`: checks a Windows bundle's import closure
+  and its app-local Visual C++ runtime.
 - `tools/package_linux_artifact.py`: preserves Linux ELF version files and
   SONAME symlinks while transporting split CI artifacts.
 - `tools/validate_linux_artifact.py`: checks Linux archive members, symlinks,
