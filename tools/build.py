@@ -11,6 +11,9 @@ from fnmatch import fnmatch
 from functools import lru_cache
 from pathlib import Path
 from typing import NoReturn
+
+import windows_runtime
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 THIRD_PARTY_DIR = REPO_ROOT / "third_party"
 OPENCL_HEADERS_DIR = THIRD_PARTY_DIR / "OpenCL-Headers"
@@ -102,41 +105,6 @@ WINDOWS_VCPKG_TRIPLETS = {"x64": "x64-windows", "arm64": "arm64-windows"}
 ANDROID_BACKENDS = ("full", "vulkan", "opencl")
 LINUX_BACKENDS = ("full", "cpu", "vulkan", "cuda", "hip", "blas")
 WINDOWS_BACKENDS = ("full", "vulkan", "cuda", "blas")
-
-WINDOWS_SYSTEM_DLL_PREFIXES = (
-    "api-ms-win-",
-    "ext-ms-",
-)
-WINDOWS_SYSTEM_DLLS = {
-    "kernel32.dll",
-    "kernelbase.dll",
-    "ntdll.dll",
-    "user32.dll",
-    "advapi32.dll",
-    "bcrypt.dll",
-    "ws2_32.dll",
-    "ole32.dll",
-    "oleaut32.dll",
-    "shell32.dll",
-    "sechost.dll",
-    "rpcrt4.dll",
-    "combase.dll",
-    "comdlg32.dll",
-    "gdi32.dll",
-    "gdi32full.dll",
-    "imm32.dll",
-    "msvcrt.dll",
-    "ucrtbase.dll",
-    "msvcp140.dll",
-    "msvcp140_1.dll",
-    "vcruntime140.dll",
-    "vcruntime140_1.dll",
-    "concrt140.dll",
-    "vulkan-1.dll",
-    "nvcuda.dll",
-    "opencl.dll",
-}
-
 
 def fail(message: str) -> NoReturn:
     raise SystemExit(message)
@@ -754,6 +722,7 @@ def collect_windows_runtime_dependencies(primary_libs: list[Path]) -> list[Path]
     if not primary_libs:
         return []
 
+    arch = windows_runtime.read_pe(primary_libs[0]).machine
     roots = build_windows_dependency_search_roots(primary_libs)
     resolved: dict[str, Path] = {}
     missing: set[str] = set()
@@ -771,7 +740,7 @@ def collect_windows_runtime_dependencies(primary_libs: list[Path]) -> list[Path]
             dep_key = dep.lower()
             if dep_key in resolved:
                 continue
-            candidate = resolve_windows_dependency(dep, roots)
+            candidate = resolve_windows_dependency(dep, roots, arch)
             if candidate is None:
                 missing.add(dep)
                 continue
@@ -782,55 +751,22 @@ def collect_windows_runtime_dependencies(primary_libs: list[Path]) -> list[Path]
         fail(
             "Missing Windows runtime dependencies required by backend modules: "
             + ", ".join(sorted(missing))
+            + ". Visual C++ and OpenMP runtime DLLs come only from "
+            + f"%VCToolsRedistDir%\\{arch}\\Microsoft.VC*.CRT or Microsoft.VC*.OpenMP*; "
+            + "add a library Windows provides to windows_runtime.OS_PROVIDED_DLLS."
         )
 
+    for dep_key in sorted(resolved):
+        print(f"Windows runtime dependency {dep_key}: {resolved[dep_key]}")
     return [resolved[k] for k in sorted(resolved)]
 
 
 def read_windows_dependents(dll_path: Path) -> set[str]:
-    if platform.system().lower() != "windows":
-        return set()
-
-    dumpbin = shutil.which("dumpbin")
-    if not dumpbin:
-        fail("dumpbin is required to inspect Windows DLL dependencies")
-
-    cmd = [dumpbin, "/dependents", str(dll_path)]
-    result = subprocess.run(
-        cmd,
-        cwd=REPO_ROOT,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if result.returncode != 0:
-        fail(
-            f"Failed to inspect DLL dependencies via dumpbin for {dll_path}: "
-            f"{result.stdout}\n{result.stderr}"
-        )
-
-    dependencies: set[str] = set()
-    for raw_line in result.stdout.splitlines():
-        line = raw_line.strip()
-        if not line:
-            continue
-        if ".dll" not in line.lower():
-            continue
-        name = line.split()[0].lower()
-        if not name.endswith(".dll"):
-            continue
-        if is_windows_system_dependency(name):
-            continue
-        dependencies.add(name)
-
-    return dependencies
-
-
-def is_windows_system_dependency(name: str) -> bool:
-    lowered = name.lower()
-    if lowered in WINDOWS_SYSTEM_DLLS:
-        return True
-    return lowered.startswith(WINDOWS_SYSTEM_DLL_PREFIXES)
+    return {
+        name
+        for name in windows_runtime.read_pe(dll_path).all_imports()
+        if not windows_runtime.is_os_provided(name)
+    }
 
 
 def build_windows_dependency_search_roots(primary_libs: list[Path]) -> list[Path]:
@@ -870,21 +806,16 @@ def build_windows_dependency_search_roots(primary_libs: list[Path]) -> list[Path
             for tool_nested_bin in sorted(installed.glob("*/tools/*/*/bin")):
                 roots.append(tool_nested_bin)
 
-    vc_tools_redist = os.environ.get("VCToolsRedistDir")
-    if vc_tools_redist:
-        vc_redist_root = Path(vc_tools_redist)
-        roots.append(vc_redist_root)
-        for arch_dir in ("arm64", "x64", "x86"):
-            arch_root = vc_redist_root / arch_dir
-            roots.append(arch_root)
-            if arch_root.is_dir():
-                for redist_dir in sorted([p for p in arch_root.iterdir() if p.is_dir()]):
-                    roots.append(redist_dir)
-
+    # A copy under the Windows directory is an operating system file or a
+    # machine-wide install, never a redistributable input.
+    windows_dir = Path(os.environ.get("SystemRoot", "C:/Windows")).resolve()
     unique_roots: list[Path] = []
     seen: set[str] = set()
     for root in roots:
         if not root.is_dir():
+            continue
+        resolved_root = root.resolve()
+        if resolved_root == windows_dir or windows_dir in resolved_root.parents:
             continue
         key = str(root).lower()
         if key in seen:
@@ -895,21 +826,22 @@ def build_windows_dependency_search_roots(primary_libs: list[Path]) -> list[Path
     return unique_roots
 
 
-def resolve_windows_dependency(name: str, roots: list[Path]) -> Path | None:
+def resolve_windows_dependency(name: str, roots: list[Path], arch: str) -> Path | None:
+    if windows_runtime.is_vc_redistributable(name):
+        redist_dir = os.environ.get("VCToolsRedistDir")
+        if not redist_dir:
+            fail(f"{name} needs VCToolsRedistDir; run the build from an MSVC developer environment")
+        return windows_runtime.find_vc_redistributable(name, arch, Path(redist_dir))
+
     lowered = name.lower()
-    aliases: list[str] = [name]
-    if lowered == "libomp140.aarch64.dll":
-        aliases.append("libomp140.dll")
-
     for root in roots:
-        for alias in aliases:
-            direct = root / alias
-            if direct.is_file():
-                return direct
+        direct = root / name
+        if direct.is_file():
+            return direct
 
-            direct_lower = root / alias.lower()
-            if direct_lower.is_file():
-                return direct_lower
+        direct_lower = root / lowered
+        if direct_lower.is_file():
+            return direct_lower
 
     # Support versioned name variants if imported name is generic.
     if "*" not in name and name.endswith(".dll"):
@@ -927,27 +859,6 @@ def resolve_windows_dependency(name: str, roots: list[Path]) -> Path | None:
             )
             if matches:
                 return matches[0]
-
-    # MSVC redist DLLs (e.g. libomp140.aarch64.dll) are often nested under
-    # onecore/<arch>/... and may not be in PATH. Probe that tree recursively.
-    vc_tools_redist = os.environ.get("VCToolsRedistDir")
-    if vc_tools_redist:
-        redist_root = Path(vc_tools_redist)
-        if redist_root.is_dir():
-            for alias in aliases:
-                direct_matches = sorted(
-                    [p for p in redist_root.rglob(alias) if p.is_file()],
-                    key=lambda p: str(p).lower(),
-                )
-                if direct_matches:
-                    return direct_matches[0]
-
-                lowered_matches = sorted(
-                    [p for p in redist_root.rglob(alias.lower()) if p.is_file()],
-                    key=lambda p: str(p).lower(),
-                )
-                if lowered_matches:
-                    return lowered_matches[0]
 
     return None
 

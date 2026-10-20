@@ -291,6 +291,69 @@ jobs:
           if ($headers -notmatch "\(ARM64\)") { throw "$dll is not ARM64" }
           $deps = (& dumpbin /dependents $dll) -join "`n"
           if ($deps -notmatch "(?im)^\s*vulkan-1\.dll\s*$") { throw "$dll does not import vulkan-1.dll" }
+      - name: Check the bundle's import closure and app-local runtime
+        run: |
+          python tools/validate_windows_bundle.py --arch arm64 --dumpbin dumpbin bin/windows/arm64
+          if ($LASTEXITCODE) { throw "Windows arm64 import closure failed" }
+      # The runner has the Visual C++ runtime installed machine-wide, so the
+      # smoke fails if any runtime module resolves outside the bundle.
+      - name: Load the bundle without the machine-wide Visual C++ runtime
+        run: |
+          $smoke = Join-Path $env:RUNNER_TEMP "windows_load_smoke.exe"
+          cl /nologo /MT /W4 tools/windows_load_smoke.c /Fe:$smoke
+          if ($LASTEXITCODE) { throw "Failed to build the load smoke" }
+          & $smoke bin/windows/arm64 llamadart.dll ggml-cpu.dll
+          if ($LASTEXITCODE) { throw "Windows arm64 bundle did not load its own runtime" }
+
+  windows-x64-runtime-closure:
+    needs: changes
+    if: needs.changes.outputs.native == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        upstream: [pinned, v0.7.0]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          submodules: recursive
+      - name: Select candidate upstream
+        if: matrix.upstream != 'pinned'
+        shell: bash
+        env:
+          LLAMADART_QUALIFICATION_SHA: ${{ matrix.upstream == 'v0.7.0' && env.LLAMADART_V070_QUALIFICATION_SHA || env.LLAMADART_QUALIFICATION_SHA }}
+        run: |
+          git -C third_party/llama.cpp fetch --depth=1 origin "$LLAMADART_QUALIFICATION_SHA"
+          git -C third_party/llama.cpp checkout --detach "$LLAMADART_QUALIFICATION_SHA"
+          test "$(git -C third_party/llama.cpp rev-parse HEAD)" = "$LLAMADART_QUALIFICATION_SHA"
+      - name: Setup MSVC
+        uses: TheMrMilchmann/setup-msvc-dev@v4.1.0
+        with:
+          arch: x64
+      - name: Install Ninja
+        run: choco install ninja -y
+      - name: Install the release Vulkan SDK
+        uses: ./.github/actions/install-vulkan-sdk-windows
+        with:
+          arch: x64
+      # The release's Windows x64 core lane, which ships the runtime DLLs.
+      - name: Build the release Windows x64 core lane
+        run: python tools/build.py windows --arch x64 --backend vulkan
+      - name: Check the bundle's import closure and app-local runtime
+        run: |
+          python tools/validate_windows_bundle.py --arch x64 --dumpbin dumpbin bin/windows/x64
+          if ($LASTEXITCODE) { throw "Windows x64 import closure failed" }
+      # The runner has the Visual C++ runtime installed machine-wide, so the
+      # smoke fails if any runtime module resolves outside the bundle.
+      - name: Load the bundle without the machine-wide Visual C++ runtime
+        run: |
+          $smoke = Join-Path $env:RUNNER_TEMP "windows_load_smoke.exe"
+          cl /nologo /MT /W4 tools/windows_load_smoke.c /Fe:$smoke
+          if ($LASTEXITCODE) { throw "Failed to build the load smoke" }
+          & $smoke bin/windows/x64 llamadart.dll ggml-cpu.dll
+          if ($LASTEXITCODE) { throw "Windows x64 bundle did not load its own runtime" }
 
   linux-artifact-contract:
     needs: changes
@@ -587,7 +650,7 @@ jobs:
 
   wrapper-validation:
     if: always()
-    needs: [changes, android-arm64-isa, android-vulkan-shaders, kleidiai-dispatch-emulated, windows-arm64-kleidiai, windows-arm64-vulkan, linux-artifact-contract, wrapper-contract, msvc-mtmd-link-contract, macos-exit-teardown]
+    needs: [changes, android-arm64-isa, android-vulkan-shaders, kleidiai-dispatch-emulated, windows-arm64-kleidiai, windows-arm64-vulkan, windows-x64-runtime-closure, linux-artifact-contract, wrapper-contract, msvc-mtmd-link-contract, macos-exit-teardown]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
