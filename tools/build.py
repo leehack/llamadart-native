@@ -754,11 +754,25 @@ def collect_windows_runtime_dependencies(primary_libs: list[Path]) -> list[Path]
             + ". Visual C++ and OpenMP runtime DLLs come only from "
             + f"%VCToolsRedistDir%\\{arch}\\Microsoft.VC*.CRT or Microsoft.VC*.OpenMP*; "
             + "add a library Windows provides to windows_runtime.OS_PROVIDED_DLLS."
+            + unredistributable_copies(missing)
         )
 
     for dep_key in sorted(resolved):
         print(f"Windows runtime dependency {dep_key}: {resolved[dep_key]}")
     return [resolved[k] for k in sorted(resolved)]
+
+
+def unredistributable_copies(names: set[str]) -> str:
+    vs_dir = os.environ.get("VSINSTALLDIR")
+    redist = [name for name in names if windows_runtime.is_vc_redistributable(name)]
+    if not vs_dir or not redist:
+        return ""
+    copies = sorted(
+        str(path)
+        for name in redist
+        for path in (Path(vs_dir) / "VC").rglob(name)
+    )
+    return " Copies outside the redistributable folders: " + (", ".join(copies) or "none") + "."
 
 
 def read_windows_dependents(dll_path: Path) -> set[str]:
