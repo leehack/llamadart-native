@@ -67,32 +67,49 @@ program built with v0.6.0 headers and library exits successfully. LLDB places
 the fault in `ggml_gallocr_alloc_graph`, reached through the scheduler and
 `llama_context::decode`; no wrapper or speculative function is needed.
 
-The carried `0003-embedding-mode-scheduler-reserve.patch` marks the scheduler
-for reservation whenever embedding extraction changes, including pooling
-NONE. The upstream conditional only handles pooled extraction. This repairs
-the demonstrated allocator-assignment reuse failure without changing the
-unchanged-mode path. A debug log provides the mandatory Android bundle marker
-in `libllama.so`. It fits both v0.6.0 and v0.7.0; the production submodule stays
-untouched. An upstream-equivalent repair in a qualified release removes this
-patch.
-
-A subsequent standalone upstream build isolates this reproduction to
+A standalone upstream build isolates this reproduction to
 [upstream #30445](https://github.com/ggml-org/llama.cpp/pull/30445),
 `cb55ffe6e2147eb15f4bede1f60d11246715754f`. Its immediate parent
 `a17e94d229fc7fed1567a799baebd11b771fe5af` exits 0; the commit exits 139 with
 the same GGUF and upstream-only C program. Neither build links libllamadart or
-applies its patches. This establishes the introducing commit for the tested
-decoder/extraction transition; it does not establish every model's behavior.
-Current Dart `embed` and `embedBatch` use extraction toggles, so this is a real
-consumer pattern. The repair is separate from the Android ISA failure and is
-not required by the published v0.6.0-3 artifact.
+applies its patches. Current Dart `embed` and `embedBatch` use extraction
+toggles, so this is a real consumer pattern. The repair is separate from the
+Android ISA failure and is not required by the published v0.6.0-3 artifact.
+
+Root cause: #30445 expands the LM head in `build_logits()`, after
+`build_pooling()`. With pooling NONE and extraction on, `build_pooling()`
+expands `t_embd` first, so the graph visits the same tensors in another order:
+node and leaf counts stay equal, but leafs change position. In a Debug v0.7.0
+build with SmolLM2-135M, enabling extraction moves 8 of 343 leafs, and the
+`out_ids` input lands in the slot reserved for a weight, whose buffer id is
+-1. `ggml_gallocr_needs_realloc` compares only the leaf count, so
+`ggml_gallocr_alloc_graph` reuses the stale slot: `GGML_ASSERT(buft)` in Debug,
+a fault at `0xfffffffffffffff8` (`buffers[-1]`) in Release. A context created
+with extraction on crashes the same way when it is turned off.
+`set_embeddings()` re-reserves only pooled contexts, which is why pooled
+EmbeddingGemma passes.
+
+The carried `0003-embedding-mode-scheduler-reserve.patch` marks the scheduler
+for reservation whenever embedding extraction changes, including pooling
+NONE, so the next decode reserves for the current mode's graph. The
+unchanged-mode path is untouched. A debug log provides the mandatory Android
+bundle marker in `libllama.so`. It fits both v0.6.0 and v0.7.0; the
+production submodule stays untouched.
+
+Upstream master `1242be66f` (`b11763`, 2026-10-20) still has the pooled-only
+condition and crashes the same way (exit 139 with SmolLM2-135M and
+Qwen3.5-0.8B on CPU). Validating leaf assignments in
+`ggml_gallocr_needs_realloc` would also stop the crash. Remove the patch once
+a qualified upstream release has either fix and `model-embedding-toggle`
+passes without it.
 
 The durable `model-embedding-toggle` test uses direct upstream calls with no
-speculative state, enables and disables extraction twice, checks output
-availability and frees the context/model. The existing session test retains
-its independent speculative teardown coverage. Do not skip either test to
-qualify a candidate. This is a candidate regression repair, not evidence that
-the currently published native v0.6.0-3 artifact has this crash.
+speculative state. It starts from contexts created with extraction off and
+on, switches mode twice each way, and requires each output to equal the one
+from a context created in that mode, so a stale assignment that does not
+crash also fails. The existing session test retains its independent
+speculative teardown coverage. Do not skip either test to qualify a
+candidate.
 
 ## Guarded mixed-batch processing
 
