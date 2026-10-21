@@ -56,7 +56,7 @@ OS_PROVIDED_PREFIXES = ("api-ms-win-", "ext-ms-")
 
 # Visual C++ v14 runtime and OpenMP DLLs. Release bundles ship them app-locally
 # from the build toolset's redistributable folder (VCToolsRedistDir), never
-# from System32. libomp140 is the one exception; see find_vc_redistributable.
+# from System32.
 VC_RUNTIME_PATTERNS = (
     "msvcp140.dll",
     "msvcp140_*.dll",
@@ -65,9 +65,21 @@ VC_RUNTIME_PATTERNS = (
     "concrt140.dll",
     "vccorlib140.dll",
 )
-OPENMP_RUNTIME_PATTERNS = ("vcomp140.dll", "libomp140.*.dll")
+OPENMP_RUNTIME_PATTERNS = ("vcomp140.dll",)
 VC_RUNTIME_FOLDER = "Microsoft.VC*.CRT"
-OPENMP_RUNTIME_FOLDER = "Microsoft.VC*.OpenMP*"
+OPENMP_RUNTIME_FOLDER = "Microsoft.VC*.OpenMP"
+
+# Files Visual Studio ships only under VC\Redist\MSVC\<ver>\debug_nonredist,
+# which its licence forbids redistributing: the debug runtimes and the LLVM
+# OpenMP runtime that ClangCL /openmp imports (llamadart-native#120).
+NON_REDISTRIBUTABLE_PATTERNS = (
+    "libomp140*.dll",
+    "ucrtbased.dll",
+    "*140d.dll",
+    "*140ud.dll",
+    "*140d_*.dll",
+    "*140_*d.dll",
+)
 
 
 def is_os_provided(name: str) -> bool:
@@ -84,24 +96,19 @@ def is_vc_redistributable(name: str) -> bool:
     return is_vc_runtime(lowered) or any(fnmatch(lowered, pattern) for pattern in OPENMP_RUNTIME_PATTERNS)
 
 
+def is_non_redistributable(name: str) -> bool:
+    lowered = name.lower()
+    return any(fnmatch(lowered, pattern) for pattern in NON_REDISTRIBUTABLE_PATTERNS)
+
+
 def find_vc_redistributable(name: str, arch: str, redist_dir: Path) -> Path | None:
     """The desktop redistributable copy of `name` for `arch`, if the toolset has one."""
     folder = VC_RUNTIME_FOLDER if is_vc_runtime(name) else OPENMP_RUNTIME_FOLDER
     lowered = name.lower()
-    roots = [redist_dir / arch]
-    # Visual Studio (through 14.51) ships the LLVM OpenMP runtime that ClangCL
-    # /openmp imports only under debug_nonredist. Earlier releases bundled it
-    # from there, although debug_nonredist is not redistributable; replacing it
-    # is tracked in llamadart-native#120 (docs/windows_vc_runtime.md).
-    if fnmatch(lowered, "libomp140.*.dll"):
-        roots.append(redist_dir / "debug_nonredist" / arch)
-    for root in roots:
-        matches = sorted(
-            candidate for candidate in root.glob(f"{folder}/*.dll") if candidate.name.lower() == lowered
-        )
-        if matches:
-            return matches[-1]
-    return None
+    matches = sorted(
+        candidate for candidate in (redist_dir / arch).glob(f"{folder}/*.dll") if candidate.name.lower() == lowered
+    )
+    return matches[-1] if matches else None
 
 
 class PeError(ValueError):
