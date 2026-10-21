@@ -69,9 +69,10 @@ OPENMP_RUNTIME_PATTERNS = ("vcomp140.dll",)
 VC_RUNTIME_FOLDER = "Microsoft.VC*.CRT"
 OPENMP_RUNTIME_FOLDER = "Microsoft.VC*.OpenMP"
 
-# Files Visual Studio ships only under VC\Redist\MSVC\<ver>\debug_nonredist,
-# which its licence forbids redistributing: the debug runtimes and the LLVM
-# OpenMP runtime that ClangCL /openmp imports (llamadart-native#120).
+# Runtimes that may not be redistributed: what Visual Studio ships only under
+# VC\Redist\MSVC\<ver>\debug_nonredist (the debug runtimes and the LLVM OpenMP
+# runtime that ClangCL /openmp imports, llamadart-native#120), and the Windows
+# SDK's debug CRT, ucrtbased.dll.
 NON_REDISTRIBUTABLE_PATTERNS = (
     "libomp140*.dll",
     "ucrtbased.dll",

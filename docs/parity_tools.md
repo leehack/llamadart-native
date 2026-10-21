@@ -136,7 +136,8 @@ wrapper's overrides exist to shape a shipped runtime library, not a tool.
 (`ggml/src/CMakeLists.txt:339-348`), so whether `ggml-base` and the CPU backend
 are compiled with `GGML_USE_OPENMP` depends on the machine. Unlike the two flags
 above, do not simply force it `OFF`: the macOS presets do not pin it either
-(only `linux-base` sets `ON` and `android-base` sets `OFF`), so a macOS release
+(only `linux-base` sets `ON`, and `android-base` and `windows-arm64-full`
+set `OFF`), so a macOS release
 build resolves it the same host-dependent way, and a forced `OFF` would match
 the release only on hosts that also failed to find OpenMP. For Linux and Android
 pass the preset's value; on macOS leave it at the default and record what the
