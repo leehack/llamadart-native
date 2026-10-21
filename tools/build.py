@@ -752,7 +752,8 @@ def collect_windows_runtime_dependencies(primary_libs: list[Path]) -> list[Path]
             "Missing Windows runtime dependencies required by backend modules: "
             + ", ".join(sorted(missing))
             + ". Visual C++ and OpenMP runtime DLLs come only from "
-            + f"%VCToolsRedistDir%\\{arch}\\Microsoft.VC*.CRT or Microsoft.VC*.OpenMP*; "
+            + f"%VCToolsRedistDir%\\{arch}\\Microsoft.VC*.CRT or Microsoft.VC*.OpenMP, and debug runtimes "
+            + "and the LLVM OpenMP runtime (libomp140) are never bundled; "
             + "add a library Windows provides to windows_runtime.OS_PROVIDED_DLLS."
             + unredistributable_copies(missing)
         )
@@ -841,6 +842,8 @@ def build_windows_dependency_search_roots(primary_libs: list[Path]) -> list[Path
 
 
 def resolve_windows_dependency(name: str, roots: list[Path], arch: str) -> Path | None:
+    if windows_runtime.is_non_redistributable(name):
+        return None
     if windows_runtime.is_vc_redistributable(name):
         redist_dir = os.environ.get("VCToolsRedistDir")
         if not redist_dir:

@@ -171,6 +171,26 @@ class BundleClosureTests(unittest.TestCase):
         complete_bundle(self.bundle, arch='arm64', linker=(14, 0))
         self.assertEqual(errors_for(self.bundle, 'arm64'), [])
 
+    def test_debug_nonredist_dlls_fail(self):
+        complete_bundle(self.bundle, arch='arm64')
+        (self.bundle / 'vcomp140.dll').unlink()
+        make_pe(self.bundle / 'libomp140.aarch64.dll', arch='arm64', exports=['__kmpc_fork_call'],
+                imports={'vcruntime140.dll': ['memcpy']})
+        make_pe(self.bundle / 'ggml-base.dll', arch='arm64', exports=['ggml_init'],
+                imports={**CRT, 'libomp140.aarch64.dll': ['__kmpc_fork_call']})
+        for name in ('vcruntime140d.dll', 'msvcp140_1d.dll', 'vcomp140d.dll', 'ucrtbased.dll'):
+            make_pe(self.bundle / name, arch='arm64')
+        errors = [error for error in errors_for(self.bundle, 'arm64') if 'debug_nonredist' in error]
+        self.assertEqual(sorted(error.split(':')[0] for error in errors),
+                         ['libomp140.aarch64.dll', 'msvcp140_1d.dll', 'ucrtbased.dll', 'vcomp140d.dll',
+                          'vcruntime140d.dll'])
+
+    def test_release_runtime_names_are_redistributable(self):
+        for name in ('msvcp140.dll', 'msvcp140_1.dll', 'msvcp140_atomic_wait.dll', 'msvcp140_codecvt_ids.dll',
+                     'vcruntime140.dll', 'vcruntime140_1.dll', 'vcruntime140_threads.dll', 'concrt140.dll',
+                     'vcomp140.dll'):
+            self.assertFalse(windows_runtime.is_non_redistributable(name), name)
+
     def test_runtime_dlls_from_different_redistributables_fail(self):
         complete_bundle(self.bundle)
         make_pe(self.bundle / 'vcruntime140.dll', file_version=(14, 50, 35710, 0), exports=['memcpy'])
@@ -185,29 +205,18 @@ class RedistLookupTests(unittest.TestCase):
             redist = Path(temp)
             for relative in ('x64/Microsoft.VC145.CRT/msvcp140.dll',
                              'x64/Microsoft.VC145.OpenMP/vcomp140.dll',
-                             'arm64/Microsoft.VC145.OpenMP.LLVM/libomp140.aarch64.dll',
+                             'arm64/Microsoft.VC145.OpenMP.LLVM/vcomp140.dll',
                              'debug_nonredist/x64/Microsoft.VC145.DebugCRT/vcruntime140.dll',
+                             'debug_nonredist/arm64/Microsoft.VC145.OpenMP.LLVM/libomp140.aarch64.dll',
                              'onecore/x64/Microsoft.VC145.CRT/vcruntime140.dll'):
                 (redist / relative).parent.mkdir(parents=True, exist_ok=True)
                 (redist / relative).write_bytes(b'')
             find = windows_runtime.find_vc_redistributable
             self.assertEqual(find('MSVCP140.dll', 'x64', redist), redist / 'x64/Microsoft.VC145.CRT/msvcp140.dll')
             self.assertEqual(find('vcomp140.dll', 'x64', redist), redist / 'x64/Microsoft.VC145.OpenMP/vcomp140.dll')
-            self.assertEqual(find('libomp140.aarch64.dll', 'arm64', redist),
-                             redist / 'arm64/Microsoft.VC145.OpenMP.LLVM/libomp140.aarch64.dll')
+            self.assertIsNone(find('vcomp140.dll', 'arm64', redist))
+            self.assertIsNone(find('libomp140.aarch64.dll', 'arm64', redist))
             self.assertIsNone(find('vcruntime140.dll', 'x64', redist))
-            self.assertIsNone(find('msvcp140.dll', 'arm64', redist))
-
-    def test_llvm_openmp_falls_back_to_debug_nonredist_only(self):
-        with tempfile.TemporaryDirectory() as temp:
-            redist = Path(temp)
-            for relative in ('debug_nonredist/arm64/Microsoft.VC145.OpenMP.LLVM/libomp140.aarch64.dll',
-                             'debug_nonredist/arm64/Microsoft.VC145.DebugCRT/msvcp140.dll'):
-                (redist / relative).parent.mkdir(parents=True, exist_ok=True)
-                (redist / relative).write_bytes(b'')
-            find = windows_runtime.find_vc_redistributable
-            self.assertEqual(find('libomp140.aarch64.dll', 'arm64', redist),
-                             redist / 'debug_nonredist/arm64/Microsoft.VC145.OpenMP.LLVM/libomp140.aarch64.dll')
             self.assertIsNone(find('msvcp140.dll', 'arm64', redist))
 
     def test_build_resolves_runtime_from_the_toolset_not_from_path(self):
@@ -223,6 +232,8 @@ class RedistLookupTests(unittest.TestCase):
                 resolved = build.resolve_windows_dependency('VCRUNTIME140.dll', [on_path], 'x64')
                 self.assertEqual(resolved, redist / 'x64/Microsoft.VC145.CRT/vcruntime140.dll')
                 self.assertIsNone(build.resolve_windows_dependency('vcruntime140_1.dll', [on_path], 'x64'))
+            (on_path / 'libomp140.aarch64.dll').write_bytes(b'')
+            self.assertIsNone(build.resolve_windows_dependency('libomp140.aarch64.dll', [on_path], 'arm64'))
             with mock.patch.dict(os.environ, {}, clear=True), self.assertRaises(SystemExit):
                 build.resolve_windows_dependency('msvcp140.dll', [on_path], 'x64')
 
