@@ -296,6 +296,15 @@ if (LLAMADART_BUILD_TESTS)
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
     add_test(NAME llamadart_tts_eval_test COMMAND llamadart_tts_eval_test)
 
+    add_executable(llamadart_tts_seed_test tests/tts_seed_test.cpp)
+    target_compile_features(llamadart_tts_seed_test PRIVATE cxx_std_17)
+    target_include_directories(llamadart_tts_seed_test PRIVATE
+        src
+        third_party/llama.cpp/include
+        third_party/llama.cpp/ggml/include
+    )
+    add_test(NAME llamadart_tts_seed_test COMMAND llamadart_tts_seed_test)
+
     add_executable(llamadart_image_token_limit_test tests/image_token_limit_test.cpp)
     target_compile_features(llamadart_image_token_limit_test PRIVATE cxx_std_17)
     target_include_directories(llamadart_image_token_limit_test PRIVATE
@@ -491,7 +500,8 @@ if (LLAMADART_BUILD_TESTS)
 
     # Contract assertions must execute against optimized Release libraries too.
     foreach(test_target llamadart_speculative_api_test llamadart_tts_api_test
-            llamadart_tts_eval_test llamadart_exit_teardown_test llamadart_mtmd_compat_test
+            llamadart_tts_eval_test llamadart_tts_seed_test llamadart_exit_teardown_test
+            llamadart_mtmd_compat_test
             llamadart_vulkan_device_info_test llamadart_barrier_test llamadart_image_token_limit_test)
         if (MSVC)
             target_compile_options(${test_target} PRIVATE /UNDEBUG)

@@ -7,6 +7,7 @@
 #include "llama_dart_speculative_compat.h"
 #include "llama_dart_tts_eval_internal.h"
 #include "llama_dart_tts_internal.h"
+#include "llama_dart_tts_seed_internal.h"
 
 #include "common.h"
 #include "llama-ext.h"
@@ -30,6 +31,7 @@
 #include <limits>
 #include <memory>
 #include <mutex>
+#include <random>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -145,8 +147,9 @@ static uint32_t llama_dart_tts_capabilities(const mtmd_context *mtmd,
   }
 }
 
-static llama_sampler *llama_dart_tts_sampler_init(
-    const llama_dart_tts_request &request) {
+static llama_sampler *
+llama_dart_tts_sampler_init(const llama_dart_tts_request &request,
+                            uint32_t seed) {
   llama_sampler *sampler =
       llama_sampler_chain_init(llama_sampler_chain_default_params());
   if (sampler == nullptr) {
@@ -159,8 +162,21 @@ static llama_sampler *llama_dart_tts_sampler_init(
                           llama_sampler_init_min_p(request.min_p, 1));
   llama_sampler_chain_add(
       sampler, llama_sampler_init_temp(request.temperature));
-  llama_sampler_chain_add(sampler, llama_sampler_init_dist(request.seed));
+  llama_sampler_chain_add(sampler, llama_sampler_init_dist(seed));
   return sampler;
+}
+
+static bool llama_dart_tts_prime_code_predictor(llama_dart_tts *tts,
+                                                uint32_t seed) {
+  std::vector<float> state(
+      static_cast<size_t>(llama_model_n_embd(llama_get_model(tts->llama))));
+  mtmd_gen_inp input = mtmd_gen_inp_default(tts->mtmd);
+  input.type = MTMD_GEN_PROCESS_TYPE_GEN_CODE;
+  input.code0 = 0;
+  input.embd = state.data();
+  input.seed = llama_dart_tts_priming_seed(seed);
+  mtmd_gen_out output{};
+  return mtmd_gen_audio_process(tts->mtmd, &input, &output) == 0;
 }
 
 static int32_t llama_dart_tts_step_gen(
@@ -1702,7 +1718,10 @@ static enum llama_dart_tts_status llama_dart_tts_start_impl(
     tts->speaker = wrapper.bitmap;
   }
 
-  tts->sampler = llama_dart_tts_sampler_init(*request);
+  std::random_device random_seed;
+  const uint32_t seed =
+      llama_dart_tts_resolve_seed(request->seed, [&] { return random_seed(); });
+  tts->sampler = llama_dart_tts_sampler_init(*request, seed);
   if (tts->sampler == nullptr) {
     return llama_dart_tts_fail(tts, LLAMA_DART_TTS_STATUS_UPSTREAM_ERROR,
                                "sampler initialization failed");
@@ -1716,10 +1735,15 @@ static enum llama_dart_tts_status llama_dart_tts_start_impl(
   input.lang = tts->language.empty() ? nullptr : tts->language.c_str();
   input.top_k = request->top_k;
   input.top_p = request->top_p;
+  input.seed = seed;
   input.out_type = MTMD_HELPER_GEN_AUDIO_OUTTYPE_PCM;
   if (mtmd_helper_gen_audio_set_input(tts->generator, &input) != 0) {
     return llama_dart_tts_fail(tts, LLAMA_DART_TTS_STATUS_UPSTREAM_ERROR,
                                "TTS input setup failed");
+  }
+  if (!llama_dart_tts_prime_code_predictor(tts, seed)) {
+    return llama_dart_tts_fail(tts, LLAMA_DART_TTS_STATUS_UPSTREAM_ERROR,
+                               "TTS seed setup failed");
   }
   tts->state = LLAMA_DART_TTS_STATE_PROCESSING_PROMPT;
   return LLAMA_DART_TTS_STATUS_OK;

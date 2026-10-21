@@ -436,6 +436,13 @@ thread that must not touch the task. Public Dart support should remain
 experimental and capability-gated until artifact and platform validation is
 complete.
 
+`request.seed` seeds all 16 codebooks: the talker sampler and the projector's
+code predictor. The code predictor's RNG belongs to the `mtmd_context` and
+upstream reseeds it only when the seed value changes, so `llama_dart_tts_start`
+runs one code-predictor call under a different seed first. Each task therefore
+starts the RNG from its own seed, and a repeated request and seed repeat the
+PCM. `LLAMA_DEFAULT_SEED` draws one random seed per task for both samplers.
+
 The local smoke target is opt-in because it requires large model artifacts:
 
 ```bash
@@ -458,6 +465,8 @@ build/tts-smoke/llamadart_tts_smoke \
 
 The smoke checks capability metadata, cancellation/reset, two consecutive
 syntheses, 24 kHz mono PCM metadata, finite/non-silent output, and WAV writing.
+The same seed must repeat the first synthesis's PCM after the cancel probes,
+and with a greedy talker, seeds 1 and 2 must give different PCM.
 It also checks the eval callback: uncancelled PCM stays byte-identical, frame
 steps stay whole, no chunk of the final decode exceeds a quarter of it, and a
 cancel issued a quarter of the way into a decode step, through

@@ -777,7 +777,10 @@ LLAMADART_API void llama_dart_tts_free(struct llama_dart_tts * tts);
 
 // Starts one synthesis task. The llama context must have embeddings enabled.
 // Other calls on the llama context must remain idle until the task completes,
-// is cancelled, or is reset.
+// is cancelled, or is reset. request->seed seeds every codebook: the talker
+// sampler and the projector's code predictor. LLAMA_DEFAULT_SEED draws one
+// random seed per task. The same request and seed give the same PCM on every
+// task, including after earlier or cancelled tasks on the same mtmd context.
 LLAMADART_API enum llama_dart_tts_status llama_dart_tts_start(
     struct llama_dart_tts * tts,
     const struct llama_dart_tts_request * request);
