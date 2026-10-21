@@ -205,6 +205,11 @@ static bool synthesize(llama_dart_tts *tts,
     return true;
 }
 
+static bool same_pcm(const std::vector<float> &a, const std::vector<float> &b) {
+    return a.size() == b.size() &&
+           std::memcmp(a.data(), b.data(), a.size() * sizeof(float)) == 0;
+}
+
 static bool cancel_during_long_step(llama_dart_tts *tts,
                                     llama_dart_tts_request *request,
                                     std::atomic<int8_t> *flag,
@@ -446,8 +451,7 @@ int main(int argc, char **argv) {
                     &first_trace)) {
         return 1;
     }
-    if (first_pcm.size() != plain_pcm.size() ||
-        std::memcmp(first_pcm.data(), plain_pcm.data(), first_pcm.size() * sizeof(float)) != 0) {
+    if (!same_pcm(first_pcm, plain_pcm)) {
         std::fprintf(stderr, "the eval callback changed uncancelled PCM\n");
         return 1;
     }
@@ -514,6 +518,28 @@ int main(int argc, char **argv) {
     llama_dart_tts_progress second_progress{};
     double second_rms = 0.0;
     if (!synthesize(tts.get(), &request, info, &second_pcm, &second_progress, &second_rms)) {
+        return 1;
+    }
+    if (!same_pcm(second_pcm, first_pcm)) {
+        std::fprintf(stderr, "a repeated seed did not repeat the first synthesis's PCM\n");
+        return 1;
+    }
+
+    // A greedy talker leaves the seed only to the code predictor.
+    llama_dart_tts_request greedy_request = request;
+    greedy_request.temperature = 0.0f;
+    std::vector<float> greedy_pcm[2];
+    for (uint32_t seed = 1; seed <= 2; ++seed) {
+        llama_dart_tts_progress greedy_progress{};
+        double greedy_rms = 0.0;
+        greedy_request.seed = seed;
+        if (!synthesize(tts.get(), &greedy_request, info, &greedy_pcm[seed - 1],
+                        &greedy_progress, &greedy_rms)) {
+            return 1;
+        }
+    }
+    if (same_pcm(greedy_pcm[0], greedy_pcm[1])) {
+        std::fprintf(stderr, "the seed did not reach the code predictor\n");
         return 1;
     }
     if (llama_dart_tts_reset(tts.get()) != LLAMA_DART_TTS_STATUS_OK) {

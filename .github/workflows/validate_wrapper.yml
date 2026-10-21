@@ -457,6 +457,7 @@ jobs:
           llamadart_speculative_api_test
           llamadart_tts_api_test
           llamadart_tts_eval_test
+          llamadart_tts_seed_test
           llamadart_mtmd_compat_test
           llamadart_image_token_limit_test
           llamadart_barrier_test
