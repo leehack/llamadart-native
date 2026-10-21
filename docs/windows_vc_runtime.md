@@ -36,9 +36,10 @@ One exception keeps the arm64 OpenMP runtime shipping as before: Visual Studio
 (checked through 14.51) has `libomp140.aarch64.dll`, which ClangCL `/openmp`
 imports, only under
 `debug_nonredist\arm64\Microsoft.VC*.OpenMP.LLVM`. Earlier releases already
-bundled it from there. Whether that copy may be redistributed is unresolved;
-the alternative is building arm64 with `GGML_OPENMP=OFF`, which changes CPU
-threading and needs its own qualification.
+bundled it from there, but Microsoft's distributable-code terms do not permit
+redistributing `debug_nonredist` contents. Replacing it, with LLVM's own libomp or
+an arm64 build with `GGML_OPENMP=OFF`, is tracked in
+[#120](https://github.com/leehack/llamadart-native/issues/120).
 
 ## Why not the static CRT (`/MT`)
 
