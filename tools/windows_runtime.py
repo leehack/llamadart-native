@@ -56,7 +56,7 @@ OS_PROVIDED_PREFIXES = ("api-ms-win-", "ext-ms-")
 
 # Visual C++ v14 runtime and OpenMP DLLs. Release bundles ship them app-locally
 # from the build toolset's redistributable folder (VCToolsRedistDir), never
-# from System32 or a debug_nonredist folder.
+# from System32. libomp140 is the one exception; see find_vc_redistributable.
 VC_RUNTIME_PATTERNS = (
     "msvcp140.dll",
     "msvcp140_*.dll",
@@ -91,7 +91,8 @@ def find_vc_redistributable(name: str, arch: str, redist_dir: Path) -> Path | No
     roots = [redist_dir / arch]
     # Visual Studio (through 14.51) ships the LLVM OpenMP runtime that ClangCL
     # /openmp imports only under debug_nonredist. Earlier releases bundled it
-    # from there; whether it may be redistributed is open (docs/windows_vc_runtime.md).
+    # from there, although debug_nonredist is not redistributable; replacing it
+    # is tracked in llamadart-native#120 (docs/windows_vc_runtime.md).
     if fnmatch(lowered, "libomp140.*.dll"):
         roots.append(redist_dir / "debug_nonredist" / arch)
     for root in roots:
