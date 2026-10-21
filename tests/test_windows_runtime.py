@@ -1,3 +1,4 @@
+import json
 import os
 from pathlib import Path
 import struct
@@ -178,12 +179,12 @@ class BundleClosureTests(unittest.TestCase):
                 imports={'vcruntime140.dll': ['memcpy']})
         make_pe(self.bundle / 'ggml-base.dll', arch='arm64', exports=['ggml_init'],
                 imports={**CRT, 'libomp140.aarch64.dll': ['__kmpc_fork_call']})
-        for name in ('vcruntime140d.dll', 'msvcp140_1d.dll', 'vcomp140d.dll', 'ucrtbased.dll'):
+        debug = ['mfc140ud.dll', 'msvcp140_1d.dll', 'msvcp140d_atomic_wait.dll', 'ucrtbased.dll', 'vcomp140d.dll',
+                 'vcruntime140d.dll']
+        for name in debug:
             make_pe(self.bundle / name, arch='arm64')
-        errors = [error for error in errors_for(self.bundle, 'arm64') if 'debug_nonredist' in error]
-        self.assertEqual(sorted(error.split(':')[0] for error in errors),
-                         ['libomp140.aarch64.dll', 'msvcp140_1d.dll', 'ucrtbased.dll', 'vcomp140d.dll',
-                          'vcruntime140d.dll'])
+        errors = [error for error in errors_for(self.bundle, 'arm64') if 'may not be redistributed' in error]
+        self.assertEqual(sorted(error.split(':')[0] for error in errors), sorted(['libomp140.aarch64.dll', *debug]))
 
     def test_release_runtime_names_are_redistributable(self):
         for name in ('msvcp140.dll', 'msvcp140_1.dll', 'msvcp140_atomic_wait.dll', 'msvcp140_codecvt_ids.dll',
@@ -197,6 +198,13 @@ class BundleClosureTests(unittest.TestCase):
         errors = errors_for(self.bundle)
         self.assertEqual(len(errors), 1)
         self.assertIn('come from different redistributables', errors[0])
+
+
+class PresetTests(unittest.TestCase):
+    def test_windows_arm64_builds_without_openmp(self):
+        presets = json.loads((ROOT / 'CMakePresets.json').read_text(encoding='utf-8'))
+        cache_vars = {preset['name']: preset.get('cacheVariables', {}) for preset in presets['configurePresets']}
+        self.assertEqual(cache_vars['windows-arm64-full'].get('GGML_OPENMP'), 'OFF')
 
 
 class RedistLookupTests(unittest.TestCase):

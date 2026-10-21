@@ -4,8 +4,8 @@
 Every import of every DLL must be another DLL of the bundle or a library
 Windows (or a GPU driver) provides, every named import from the bundle must
 be exported there, the bundled Visual C++ runtime must be at least as new
-as the MSVC linker of every DLL that imports it, and no DLL may be one that
-Visual Studio ships only in its non-redistributable debug_nonredist folder.
+as the MSVC linker of every DLL that imports it, and no DLL may be a debug
+runtime or another file that Visual Studio ships only in debug_nonredist.
 """
 
 from __future__ import annotations
@@ -26,7 +26,9 @@ def bundle_errors(images: dict[str, windows_runtime.PeImage], arch: str) -> list
         if windows_runtime.is_os_provided(name):
             errors.append(f"{name}: Windows provides this library; the bundle must not ship it")
         if windows_runtime.is_non_redistributable(name):
-            errors.append(f"{name}: Visual Studio ships this only in debug_nonredist, which may not be redistributed")
+            errors.append(
+                f"{name}: a debug runtime or a Visual Studio debug_nonredist file, which may not be redistributed"
+            )
         for dependency, symbols in sorted(image.all_imports().items()):
             if dependency in images:
                 missing = sorted(s for s in symbols if not s.startswith("#") and s not in images[dependency].exports)

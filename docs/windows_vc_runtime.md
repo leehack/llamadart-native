@@ -41,9 +41,10 @@ it only under `debug_nonredist\arm64\Microsoft.VC*.OpenMP.LLVM`, and its
 forbid distributing that folder. Releases through `v0.7.0-1` bundled it
 anyway ([#120](https://github.com/leehack/llamadart-native/issues/120)).
 
-The `windows-arm64-full` preset therefore sets `GGML_OPENMP=OFF`, as the
-Android and Apple builds already do. ggml's CPU backend then runs graphs on
-its own thread pool instead of OpenMP. x64 keeps OpenMP through
+The `windows-arm64-full` preset therefore sets `GGML_OPENMP=OFF`, as
+`android-base` does; the Apple presets do not set it, and AppleClang usually
+finds no OpenMP. ggml's CPU backend then runs graphs on its own thread pool instead of
+OpenMP. x64 keeps OpenMP through
 `vcomp140.dll`, which is Distributable Code.
 
 The build never resolves `libomp140*`, debug runtimes (`*140d.dll`,
@@ -53,8 +54,8 @@ rejects any of them in a bundle.
 
 ## Why not the static CRT (`/MT`)
 
-- The OpenMP runtimes and the vcpkg `openblas.dll` import `vcruntime140.dll`,
-  so a static CRT in our libraries does not remove the dependency.
+- The vcpkg `openblas.dll` imports `vcruntime140.dll`, so a static CRT in our
+  libraries does not remove the dependency.
 - llama.cpp passes CRT objects between its DLLs: `ggml_fopen` in
   `ggml-base.dll` returns a `FILE *` that `llama.dll` reads and closes. With a
   static CRT each DLL has its own stdio state, and that breaks.
