@@ -9,7 +9,7 @@
 | iOS | Metal + CPU |
 | macOS | Metal + CPU |
 | Linux x64 | Vulkan + CUDA + BLAS + CPU (HIP/ROCm built in a separate release job) |
-| Linux arm64 | Vulkan + BLAS + Kleidi + CPU |
+| Linux arm64 | Vulkan + BLAS + Kleidi + CPU variants |
 | Windows x64 | Vulkan + CUDA + BLAS + CPU |
 | Windows arm64 | Vulkan + BLAS + Kleidi + CPU |
 
@@ -21,6 +21,9 @@
 - Apple (iOS/macOS): consolidate Metal+CPU into a single `libllamadart`.
 - Apple defaults keep BLAS and Kleidi disabled for a simpler compatibility path.
 - Kleidi is enabled on Linux arm64 and Windows arm64 in this pipeline.
+- Linux arm64 adds DOTPROD+FP16 and I8MM CPU variants beside the ARMv8.0
+  `libggml-cpu.so`, each built in its own configuration and selected by
+  `ggml_backend_score`. See `docs/linux_arm64_cpu_variants.md`.
 - Android arm64 keeps Kleidi on by building each CPU variant in its own
   isolated configuration so higher-tier ISA flags do not leak into lower-tier
   ggml code. With llama.cpp v0.4.0, standalone KleidiAI also contains kernels
@@ -50,6 +53,7 @@ both wrapper and upstream DLL directories and bounds each test to 120 seconds.
 Use `-DLLAMADART_BUILD_KLEIDIAI_TESTS=ON` with standalone-Kleidi upstream to
 build `llamadart_kleidiai_dispatch_test`; it links the actual CPU module.
 The Android artifact check is `tools/validate_android_cpu_isa.py --help`.
+The Linux arm64 variant check is `tools/check_linux_arm64_cpu_variants.sh`.
 Version-specific source and function-range evidence for v0.7.0 lives in
 `docs/v070_android_isa_qualification.md`; its candidate lanes retain the older
 qualified releases as separate regression inputs.

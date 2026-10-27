@@ -120,7 +120,7 @@ the following per-target bundles:
 - Android: arm64 = Vulkan + OpenCL + CPU variants (Kleidi-enabled where safe); x86_64 = Vulkan + OpenCL + CPU
 - iOS/macOS: Metal + CPU (consolidated into `libllamadart`, BLAS/Kleidi disabled)
 - Linux x64: Vulkan + CUDA + BLAS + CPU (HIP/ROCm built in a separate release job)
-- Linux arm64: Vulkan + BLAS + Kleidi + CPU
+- Linux arm64: Vulkan + BLAS + Kleidi + CPU variants (ARMv8.0 `libggml-cpu.so` plus runtime-selected DOTPROD+FP16 and I8MM modules, see [`docs/linux_arm64_cpu_variants.md`](docs/linux_arm64_cpu_variants.md))
 - Windows x64: Vulkan + CUDA + BLAS + CPU
 - Windows arm64: Vulkan + BLAS + Kleidi + CPU
 
