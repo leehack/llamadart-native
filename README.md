@@ -144,7 +144,7 @@ Release assets contain:
 - Non-Apple backend libs: `ggml-<backend>` modules (`ggml-vulkan`, `ggml-opencl`, etc.)
 - Windows backend runtime deps:
   - Windows x64 CUDA ships as its own asset, `llamadart-native-windows-x64-cuda12-<tag>.tar.gz`: `ggml-cuda.dll`
-    plus the `cudart64_12.dll`, `cublas64_12.dll` and `cublasLt64_12.dll` only it imports. It is extracted over
+    plus the `cudart64_12.dll`, `cublas64_12.dll` and `cublaslt64_12.dll` only it imports. It is extracted over
     `llamadart-native-windows-x64-<tag>.tar.gz` from the same release, which loads without it. `assets.json` lists it
     with `backend: "cuda"` and `module: "backend-cuda12"`.
   - Linux CUDA lanes include the CUDA runtime libraries required by `ggml-cuda`.

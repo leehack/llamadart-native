@@ -68,6 +68,24 @@ class SplitTests(unittest.TestCase):
         self.assertNotIn("'cudart64_12.dll'", errors[0].split(', expected')[0])
         self.assertEqual(self.listing(self.sidecar), [])
 
+    def test_runtime_a_core_library_delay_imports_stays_out_of_the_sidecar_and_fails(self):
+        add_cuda(self.bundle)
+        make_pe(self.bundle / 'llama.dll', imports={'ggml-base.dll': ['ggml_init'], **CRT},
+                delay_imports={'cudart64_12.dll': ['cudaMalloc']})
+        errors = split_windows_cuda_sidecar.split(self.bundle, self.sidecar)
+        self.assertEqual(len(errors), 1)
+        self.assertNotIn("'cudart64_12.dll'", errors[0].split(', expected')[0])
+        self.assertEqual(self.listing(self.sidecar), [])
+        self.assertIn('cudart64_12.dll', self.listing(self.bundle))
+
+    def test_cuda_backend_delay_imports_move_with_it(self):
+        add_cuda(self.bundle)
+        make_pe(self.bundle / 'ggml-cuda.dll', imports={
+            'ggml-base.dll': ['ggml_init'], 'cudart64_12.dll': ['cudaMalloc'], 'nvcuda.dll': ['cuInit'], **CRT,
+        }, delay_imports={'cublas64_12.dll': ['cublasCreate_v2']})
+        self.assertEqual(split_windows_cuda_sidecar.split(self.bundle, self.sidecar), [])
+        self.assertEqual(self.listing(self.sidecar), SIDECAR)
+
     def test_bundle_without_cuda_fails(self):
         with self.assertRaisesRegex(ValueError, 'ggml-cuda.dll is missing'):
             split_windows_cuda_sidecar.split(self.bundle, self.sidecar)
