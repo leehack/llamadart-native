@@ -164,6 +164,10 @@ unset(LLAMADART_MTMD_HELPER_HAS_EMBD_BATCH CACHE)
 check_cxx_source_compiles("#include <mtmd-helper.h>
 int main() { return sizeof(mtmd_helper_embd_batch) == 0; }"
     LLAMADART_MTMD_HELPER_HAS_EMBD_BATCH)
+unset(LLAMADART_MTMD_HAS_GEN_STATE CACHE)
+check_cxx_source_compiles("#include <mtmd.h>
+int main() { return sizeof(decltype(&mtmd_gen_state_init)) == 0; }"
+    LLAMADART_MTMD_HAS_GEN_STATE)
 list(APPEND CMAKE_REQUIRED_INCLUDES
     "${CMAKE_CURRENT_SOURCE_DIR}/third_party/llama.cpp/common"
     "${CMAKE_CURRENT_SOURCE_DIR}/third_party/llama.cpp/vendor")
@@ -237,6 +241,7 @@ target_compile_definitions(llamadart_lib PRIVATE
     LLAMADART_HAS_BATCH_EXT=$<BOOL:${LLAMADART_HAS_BATCH_EXT}>
     LLAMADART_CONTEXT_HAS_MOE_CACHE=$<BOOL:${LLAMADART_CONTEXT_HAS_MOE_CACHE}>
     LLAMADART_MTMD_HELPER_HAS_EMBD_BATCH=$<BOOL:${LLAMADART_MTMD_HELPER_HAS_EMBD_BATCH}>
+    LLAMADART_MTMD_HAS_GEN_STATE=$<BOOL:${LLAMADART_MTMD_HAS_GEN_STATE}>
     LLAMADART_SPECULATIVE_HAS_COMMON_BATCH=$<BOOL:${LLAMADART_SPECULATIVE_HAS_COMMON_BATCH}>
     LLAMADART_MTMD_HELPER_HAS_OPTIONS=$<BOOL:${LLAMADART_MTMD_HELPER_HAS_OPTIONS}>)
 
