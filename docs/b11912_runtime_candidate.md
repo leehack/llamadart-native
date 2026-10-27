@@ -53,8 +53,9 @@ Regenerated bindings must account for:
 
 ## Remaining gates
 
-- Hosted `b11912` rows of every lane in `validate_wrapper.yml`, then a
-  non-publishing `native_release.yml` preparation run of the full artifact set.
+- Done: the hosted `b11912` rows of every lane in `validate_wrapper.yml` pass,
+  and the non-publishing `native_release.yml` artifact preparation run
+  [succeeded](https://github.com/leehack/llamadart-native/actions/runs/40474126491).
 - Android ISA: [b11912_android_isa_qualification.md](b11912_android_isa_qualification.md).
 - Model, family and device qualification stays under #112 and the consumer
   release; this document claims none of it.

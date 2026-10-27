@@ -63,7 +63,10 @@ static int expected_mask(int mask, ggml_type type) {
     return -1;
 }
 
+static bool g_selected_sve_i8mm = false;
+
 static void check_selection(ggml_kleidiai_kernels * kernel, int expected, int mask) {
+    g_selected_sve_i8mm |= kernel && static_cast<int>(kernel->required_cpu) == kSveI8mmSve;
     require((kernel != nullptr) == (expected >= 0), "selector null/fallback mismatch");
     if (kernel) {
         require(static_cast<int>(kernel->required_cpu) == expected, "selector chose wrong capability family");
@@ -115,6 +118,7 @@ static void selector_tests() {
             require(!ggml_kleidiai_select_kernels(mask, &output), "wrong output type accepted");
         }
     }
+    require(!kHasSveI8mm || g_selected_sve_i8mm, "sweep never selected the SVE I8MM kernel family");
     std::printf("PASS: real selectors, all %d feature masks, positive and negative tensor paths\n", kFeatureMasks);
 }
 
