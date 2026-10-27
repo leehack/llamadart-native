@@ -21,10 +21,15 @@ import sys
 # or a different KleidiAI combination invalidates the dispatch audit.
 # Candidate audit evidence: docs/post_v040_qualification.md,
 # docs/v041_android_isa_qualification.md, docs/v050_android_isa_qualification.md
-# docs/v060_android_isa_qualification.md and docs/v070_android_isa_qualification.md.
+# docs/v060_android_isa_qualification.md, docs/v070_android_isa_qualification.md
+# and docs/b11912_android_isa_qualification.md.
 V070_SOURCE_PAIR = (
     "b571df853210d243a83b1ec34a6936f147916f0369d792f8bb0d17f37fc7894b",
     "deb324dbcf8c952ec149433ab58cbed0b2ab2374a557f0a4eea575b2da761377",
+)
+B11912_SOURCE_PAIR = (
+    "70f69dc5934a43a747c855eb4e50f7f33aa81a3a8c45f9d1ef5b89fa73e429f7",
+    "fd5b9ca98d07b81671eca377c258da74e72173f92f3cab0acdf6c17ab870bd9d",
 )
 SOURCE_PAIRS = frozenset({
     (  # llama.cpp v0.4.0 / KleidiAI v1.24.0
@@ -48,6 +53,7 @@ SOURCE_PAIRS = frozenset({
         "64189fc613c1c4c3aaeeb6bb12b38d85dd6728cafd2261a5a88f1b77b10fe59c",
     ),
     V070_SOURCE_PAIR,  # llama.cpp v0.7.0 / KleidiAI v1.31.0
+    B11912_SOURCE_PAIR,  # llama.cpp b11912 961c376a2daa42220ec09663b9bde32c5fba1f70 / KleidiAI v1.32.0
 })
 
 # Exact ELF STT_FUNC ranges; never allow by kai_* prefix or disassembly label.
@@ -85,6 +91,18 @@ kai_kernel_matmul_clamp_f32_f16p4vsx2_qai4c32p16vsx4s1s0sf16_4vsx16vs_sme2_mopa
 kai_kernel_matmul_clamp_f32_qsi8d32p1x4_qai4c32p16vsx4s1s0sf16_1x16vs_sme2_dot
 """.split())
 
+# b11912 adds a Q8_0 table entry reachable only with runtime SVE256, SVE I8MM
+# and DOTPROD. Its two kernels are exclusive to the b11912 source pair.
+DISPATCHED_FUNCTIONS_B11912 = DISPATCHED_FUNCTIONS_V070 | frozenset("""
+kai_kernel_matmul_clamp_f32_qai8dxp1x8_qsi8cxp8x8_1x8_sve_dot
+kai_kernel_matmul_clamp_f32_qai8dxp4x8sf32_qsi8cxp4vsx8sf32bf32_16x4vs_sve_i8mm
+""".split())
+
+PAIR_FUNCTIONS = {
+    V070_SOURCE_PAIR: DISPATCHED_FUNCTIONS_V070,
+    B11912_SOURCE_PAIR: DISPATCHED_FUNCTIONS_B11912,
+}
+
 SCALABLE_REG = re.compile(r"\b(?:z\d+|p\d+|pn\d+|za\d*[hv]?|zt\d+)\b")
 SCALABLE_SCALAR = re.compile(
     r"^(?:add(?:s?v|s?p)l|rd(?:s?v)l|cnts?[bhwd]|(?:sq|uq)?(?:inc|dec)[bhwd]|"
@@ -121,7 +139,7 @@ def validate_sources(llama_source, kleidiai_source):
         raise ValueError(
             f"Unaudited ggml/src + kai source fingerprint pair {actual}; "
             "review dispatch before updating policy")
-    return DISPATCHED_FUNCTIONS_V070 if actual == V070_SOURCE_PAIR else DISPATCHED_FUNCTIONS
+    return PAIR_FUNCTIONS.get(actual, DISPATCHED_FUNCTIONS)
 
 
 def function_ranges(symbol_text):

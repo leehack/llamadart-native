@@ -12,7 +12,17 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <type_traits>
 #include <vector>
+
+// Older upstream headers lack SVE I8MM; masks beyond their enum range are invalid.
+template <typename Feature, typename = void>
+struct has_sve_i8mm_feature : std::false_type {};
+template <typename Feature>
+struct has_sve_i8mm_feature<Feature, std::void_t<decltype(Feature::CPU_FEATURE_SVEI8MM)>> : std::true_type {};
+constexpr bool kHasSveI8mm = has_sve_i8mm_feature<cpu_feature>::value;
+constexpr int kSveI8mmSve = 69; // SVE + SVE I8MM + DOTPROD
+constexpr int kFeatureMasks = kHasSveI8mm ? 128 : 64;
 
 static void require(bool condition, const char * message) {
     if (!condition) {
@@ -25,7 +35,8 @@ static int expected_mask(int mask, ggml_type type) {
     if (type == GGML_TYPE_Q4_0) {
         if ((mask & 48) == 48) return 48; // SME2 + FP16
 #ifndef __APPLE__
-        if ((mask & 7) == 7) return 7; // SVE + I8MM + DOTPROD
+        if (kHasSveI8mm && (mask & kSveI8mmSve) == kSveI8mmSve) return kSveI8mmSve;
+        if (!kHasSveI8mm && (mask & 7) == 7) return 7; // SVE + I8MM + DOTPROD
         if ((mask & 3) == 3) return 3;
 #endif
         if (mask & 1) return 1;
@@ -40,6 +51,7 @@ static int expected_mask(int mask, ggml_type type) {
     ) {
         if (mask & 16) return 16;
         if (mask & 8) return 8;
+        if (kHasSveI8mm && (mask & kSveI8mmSve) == kSveI8mmSve) return kSveI8mmSve;
         if ((mask & 3) == 3) return 3;
         if (mask & 1) return 1;
     } else if (type == GGML_TYPE_F32) {
@@ -63,7 +75,7 @@ static void check_selection(ggml_kleidiai_kernels * kernel, int expected, int ma
 static void selector_tests() {
     const ggml_type types[] = { GGML_TYPE_Q4_0, GGML_TYPE_Q8_0, GGML_TYPE_Q4_K,
                                GGML_TYPE_Q6_K, GGML_TYPE_F32, GGML_TYPE_F16, GGML_TYPE_Q5_0 };
-    for (int bits = 0; bits < 64; ++bits) {
+    for (int bits = 0; bits < kFeatureMasks; ++bits) {
         auto mask = static_cast<cpu_feature>(bits);
         check_selection(ggml_kleidiai_select_kernels_q4_0(mask), expected_mask(bits, GGML_TYPE_Q4_0), bits);
 #if LLAMADART_KLEIDIAI_HAS_KQUANTS
@@ -103,7 +115,7 @@ static void selector_tests() {
             require(!ggml_kleidiai_select_kernels(mask, &output), "wrong output type accepted");
         }
     }
-    std::puts("PASS: real selectors, all 64 feature masks, positive and negative tensor paths");
+    std::printf("PASS: real selectors, all %d feature masks, positive and negative tensor paths\n", kFeatureMasks);
 }
 
 static void matmul_test(ggml_type type, int columns, bool use_kleidiai) {
