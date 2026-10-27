@@ -229,6 +229,7 @@ jobs:
               --format readelf \
               --tool "$READELF" \
               "$OUT_DIR/libllamadart.so"
+            python3 tools/validate_build_identity.py "$OUT_DIR/libllamadart.so"
           fi
 
           if [ "${{ matrix.android_abi }}" = "arm64-v8a" ]; then
@@ -350,6 +351,7 @@ jobs:
           # that imports the system one would run teardown too late.
           python3 tools/validate_exports.py --format nm --tool nm \
             --forbid-import __cxa_atexit "$OUT_LIB"
+          python3 tools/validate_build_identity.py "$OUT_LIB"
       - name: Report ccache stats
         if: always()
         uses: ./.github/actions/ccache-stats
@@ -431,7 +433,7 @@ jobs:
           apt_get_update
           apt_get_install ccache ninja-build pkg-config make
           if [ "${{ matrix.arch }}" = "arm64" ]; then
-            apt_get_install gcc-aarch64-linux-gnu g++-aarch64-linux-gnu qemu-user
+            apt_get_install gcc-aarch64-linux-gnu g++-aarch64-linux-gnu qemu-user llvm
           fi
           if [ "${{ matrix.needs_vulkan }}" = "true" ]; then
             apt_get_install libvulkan-dev glslc
@@ -494,6 +496,7 @@ jobs:
               --format readelf \
               --tool readelf \
               "$OUT_DIR/libllamadart.so"
+            python3 tools/validate_build_identity.py "$OUT_DIR/libllamadart.so"
           fi
           for lib in "$OUT_DIR"/*.so; do
             readelf -d "$lib" | grep -E 'Library runpath: \[\$ORIGIN(:|\])' >/dev/null || {
@@ -573,6 +576,11 @@ jobs:
             env -u LD_LIBRARY_PATH \
               "${RUNNER_TEMP}/linux-dlopen-smoke-x64" "$EXTRACT_DIR/libllamadart.so"
           fi
+      - name: Audit and select the Linux arm64 CPU variants
+        if: ${{ matrix.arch == 'arm64' && matrix.include_core }}
+        env:
+          QEMU_SYSROOT: /usr/aarch64-linux-gnu
+        run: tools/check_linux_arm64_cpu_variants.sh "${RUNNER_TEMP}/llamadart-clean-arm64"
       - name: Upload
         uses: actions/upload-artifact@v7
         with:
@@ -887,6 +895,8 @@ jobs:
               throw "Missing core wrapper DLL in $out"
             }
             python tools/validate_exports.py --format dumpbin --tool dumpbin $wrapper.FullName
+            python tools/validate_build_identity.py $wrapper.FullName
+            if ($LASTEXITCODE -ne 0) { throw "Missing build identity in $($wrapper.Name)" }
           }
           if ("${{ matrix.arch }}" -eq "arm64") {
             $cache = "build/wa64/CMakeCache.txt"

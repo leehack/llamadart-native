@@ -19,7 +19,7 @@ else()
 endif()
 
 set(LLAMADART_CPU_REQUIRED_FEATURES "" CACHE STRING
-    "Semicolon-separated GGML_USE_* defines for Android arm64 CPU backend scoring")
+    "Semicolon-separated GGML_USE_* defines for Android and Linux arm64 CPU backend scoring")
 set(LLAMADART_MSVC_LLAMA_COMMON_IPO OFF CACHE BOOL
     "Enable MSVC IPO/LTCG for llama-common")
 set(LLAMADART_MSVC_MTMD_IPO OFF CACHE BOOL
@@ -38,8 +38,13 @@ function(llamadart_disable_ipo)
     endforeach()
 endfunction()
 
-function(llamadart_attach_android_cpu_backend_score target_name)
-    if (NOT ANDROID OR NOT TARGET ${target_name} OR NOT GGML_CPU_ARM_ARCH)
+function(llamadart_attach_arm_cpu_backend_score target_name)
+    if (NOT TARGET ${target_name} OR NOT GGML_CPU_ARM_ARCH)
+        return()
+    endif()
+    # Android scores every variant. The Linux baseline stays unscored: it is
+    # the unsuffixed module ggml loads when no variant scores.
+    if (NOT ANDROID AND NOT (CMAKE_SYSTEM_NAME STREQUAL "Linux" AND LLAMADART_CPU_REQUIRED_FEATURES))
         return()
     endif()
 
@@ -197,7 +202,7 @@ if (MSVC AND NOT LLAMADART_MSVC_MTMD_IPO)
     llamadart_disable_ipo(mtmd)
 endif()
 
-llamadart_attach_android_cpu_backend_score(ggml-cpu)
+llamadart_attach_arm_cpu_backend_score(ggml-cpu)
 
 # Retain owned statics in every Linux runtime library and backend module.
 if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
@@ -208,8 +213,11 @@ endif()
 
 add_library(llamadart_lib SHARED
     "src/llama_dart_wrapper.cpp"
+    "src/llama_dart_build_identity.cpp"
     "src/llama_dart_image_token_limit.cpp"
     "src/llama_dart_vulkan_device_info.cpp")
+include(cmake/build_identity.cmake)
+llamadart_add_build_identity(llamadart_lib)
 if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
     target_sources(llamadart_lib PRIVATE
         $<TARGET_OBJECTS:llamadart_static_destructors>)
@@ -287,6 +295,13 @@ if (LLAMADART_BUILD_TESTS)
     target_link_libraries(llamadart_tts_api_test PRIVATE llamadart_lib)
     target_include_directories(llamadart_tts_api_test PRIVATE src)
     add_test(NAME llamadart_tts_api_test COMMAND llamadart_tts_api_test)
+
+    add_executable(llamadart_build_identity_test tests/build_identity_test.c)
+    target_link_libraries(llamadart_build_identity_test PRIVATE llamadart_lib)
+    target_include_directories(llamadart_build_identity_test PRIVATE
+        src "${LLAMADART_BUILD_IDENTITY_INCLUDE}")
+    add_dependencies(llamadart_build_identity_test llamadart_build_identity)
+    add_test(NAME llamadart_build_identity_test COMMAND llamadart_build_identity_test)
 
     add_executable(llamadart_tts_eval_test tests/tts_eval_test.cpp)
     target_compile_features(llamadart_tts_eval_test PRIVATE cxx_std_17)
@@ -500,6 +515,7 @@ if (LLAMADART_BUILD_TESTS)
 
     # Contract assertions must execute against optimized Release libraries too.
     foreach(test_target llamadart_speculative_api_test llamadart_tts_api_test
+            llamadart_build_identity_test
             llamadart_tts_eval_test llamadart_tts_seed_test llamadart_exit_teardown_test
             llamadart_mtmd_compat_test
             llamadart_vulkan_device_info_test llamadart_barrier_test llamadart_image_token_limit_test)
