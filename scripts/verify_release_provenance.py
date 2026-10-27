@@ -41,6 +41,9 @@ RUNTIME_BUNDLES = {
     "windows-arm64": ("windows", "arm64"),
     "windows-x64": ("windows", "x64"),
 }
+BACKEND_SIDECARS = {
+    "windows-x64-cuda12": ("windows", "x64", "cuda", "backend-cuda12"),
+}
 
 
 def release_assets(tag: str) -> dict[str, tuple[str, str, str, str]]:
@@ -48,6 +51,12 @@ def release_assets(tag: str) -> dict[str, tuple[str, str, str, str]]:
         f"llamadart-native-{bundle}-{tag}.tar.gz": (*meta, "core", "core")
         for bundle, meta in RUNTIME_BUNDLES.items()
     }
+    assets.update(
+        {
+            f"llamadart-native-{sidecar}-{tag}.tar.gz": meta
+            for sidecar, meta in BACKEND_SIDECARS.items()
+        }
+    )
     assets.update(
         {
             f"llamadart-native-apple-xcframework-{tag}.zip": (
@@ -187,6 +196,13 @@ def verify_workflow_contract(errors: list[str]) -> None:
     require(
         workflow_bundles == set(RUNTIME_BUNDLES),
         "manifest fixture must cover every runtime bundle emitted by the release workflow",
+        errors,
+    )
+    require(
+        "python3 tools/split_windows_cuda_sidecar.py \\\n"
+        "            bundles/windows-x64 \\\n"
+        "            bundles/windows-x64-cuda12" in workflow,
+        "release packaging must move CUDA out of windows-x64 into the windows-x64-cuda12 sidecar",
         errors,
     )
 

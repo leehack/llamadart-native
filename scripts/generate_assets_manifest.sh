@@ -40,6 +40,8 @@ infer_meta() {
       platform="all"; arch="universal"; backend="core"; module="headers" ;;
     "llamadart-native-windows-x64-$tag.tar.gz")
       platform="windows"; arch="x64"; backend="core" ;;
+    "llamadart-native-windows-x64-cuda12-$tag.tar.gz")
+      platform="windows"; arch="x64"; backend="cuda"; module="backend-cuda12" ;;
     "llamadart-native-windows-arm64-$tag.tar.gz")
       platform="windows"; arch="arm64"; backend="core" ;;
     "llamadart-native-linux-x64-$tag.tar.gz")

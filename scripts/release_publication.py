@@ -41,6 +41,9 @@ RUNTIME_BUNDLES = (
     "windows-arm64",
     "windows-x64",
 )
+# Backend archives published beside a runtime bundle and fetched only when an
+# app selects that backend.
+BACKEND_SIDECARS = ("windows-x64-cuda12",)
 
 
 @dataclass(frozen=True)
@@ -100,7 +103,10 @@ def _expected_release_assets(tag: str) -> set[str]:
         "SHA256SUMS",
         f"llamadart-native-apple-xcframework-{tag}.zip",
         f"llamadart-native-headers-{tag}.tar.gz",
-        *(f"llamadart-native-{bundle}-{tag}.tar.gz" for bundle in RUNTIME_BUNDLES),
+        *(
+            f"llamadart-native-{bundle}-{tag}.tar.gz"
+            for bundle in (*RUNTIME_BUNDLES, *BACKEND_SIDECARS)
+        ),
     }
 
 

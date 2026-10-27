@@ -19,6 +19,7 @@ from release_publication import (  # noqa: E402
     Asset,
     ExistingRelease,
     ExistingTag,
+    BACKEND_SIDECARS,
     PublicationError,
     RUNTIME_BUNDLES,
     _ensure_tag,
@@ -79,7 +80,7 @@ class ReleasePublicationTest(unittest.TestCase):
         (assets / "assets.json").write_text("{}\n")
         (assets / "SHA256SUMS").write_text("fixture\n")
         tag = "v0.2.0-1"
-        for bundle in RUNTIME_BUNDLES:
+        for bundle in (*RUNTIME_BUNDLES, *BACKEND_SIDECARS):
             (assets / f"llamadart-native-{bundle}-{tag}.tar.gz").write_bytes(
                 f"native bundle:{bundle}".encode()
             )

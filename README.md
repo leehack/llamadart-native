@@ -139,7 +139,11 @@ Release assets contain:
 - Non-Apple core libs: `llamadart`, `llama`, `llama-common`, `ggml`, `ggml-base` (and `mtmd` where produced)
 - Non-Apple backend libs: `ggml-<backend>` modules (`ggml-vulkan`, `ggml-opencl`, etc.)
 - Windows backend runtime deps:
-  - CUDA lanes include CUDA runtime DLLs required by `ggml-cuda` (for example `cudart64_*.dll`, `cublas64_*.dll`).
+  - Windows x64 CUDA ships as its own asset, `llamadart-native-windows-x64-cuda12-<tag>.tar.gz`: `ggml-cuda.dll`
+    plus the `cudart64_12.dll`, `cublas64_12.dll` and `cublasLt64_12.dll` only it imports. It is extracted over
+    `llamadart-native-windows-x64-<tag>.tar.gz` from the same release, which loads without it. `assets.json` lists it
+    with `backend: "cuda"` and `module: "backend-cuda12"`.
+  - Linux CUDA lanes include the CUDA runtime libraries required by `ggml-cuda`.
   - BLAS lanes include `openblas*.dll` required by `ggml-blas`.
   - NVIDIA driver DLLs (for example `nvcuda.dll`) are not bundled and are provided by GPU drivers.
   - The core lane ships the Visual C++ v14 runtime (`msvcp140.dll`, `vcruntime140.dll`, plus `vcruntime140_1.dll` on x64) and, on x64, the OpenMP runtime (`vcomp140.dll`) app-locally, so the bundle loads on Windows without the Visual C++ Redistributable. arm64 builds without OpenMP. See [`docs/windows_vc_runtime.md`](docs/windows_vc_runtime.md).
