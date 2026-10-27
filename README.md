@@ -171,6 +171,8 @@ Assets are suffixed with platform/arch, for example:
 - `third_party/OpenCL-ICD-Loader`: OpenCL loader submodule used to produce Android `libOpenCL.so` when NDK does not provide one.
 - `third_party/opencl-stubs`: optional local fallback location for OpenCL headers/stubs.
 - `tools/build.py`: cross-platform build entrypoint.
+- `tools/build_identity.py`: stamps the string `llama_dart_build_identity()`
+  returns on every build ([`docs/build_identity.md`](docs/build_identity.md)).
 - `tools/validate_exports.py`: verifies required wrapper C exports, including
   exit-teardown, guarded mixed-batch processing, speculative-decoding and TTS
   symbols, in release artifacts.
