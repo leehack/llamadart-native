@@ -40,6 +40,8 @@ infer_meta() {
       platform="all"; arch="universal"; backend="core"; module="headers" ;;
     "llamadart-native-windows-x64-$tag.tar.gz")
       platform="windows"; arch="x64"; backend="core" ;;
+    "llamadart-native-windows-x64-cuda12-$tag.tar.gz")
+      platform="windows"; arch="x64"; backend="cuda"; module="backend-cuda12" ;;
     "llamadart-native-windows-arm64-$tag.tar.gz")
       platform="windows"; arch="arm64"; backend="core" ;;
     "llamadart-native-linux-x64-$tag.tar.gz")
@@ -130,7 +132,7 @@ EOF_FILES
     printf '  "workflow_head_sha": %s,\n' "$(json_string "$workflow_head_sha")"
   fi
   printf '  "generated_at": %s,\n' "$(json_string "$timestamp")"
-  echo "  \"hook_contract_version\": 1,"
+  echo "  \"hook_contract_version\": 2,"
   echo "  \"artifacts\": ["
 
   i=0

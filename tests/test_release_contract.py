@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from release_contract import (  # noqa: E402
+    BACKEND_SIDECARS,
     ContractError,
     RUNTIME_BUNDLES,
     _expected_assets,
@@ -22,6 +23,7 @@ from release_contract import (  # noqa: E402
     validate_dispatch,
 )
 from release_publication import (  # noqa: E402
+    BACKEND_SIDECARS as PUBLICATION_BACKEND_SIDECARS,
     RUNTIME_BUNDLES as PUBLICATION_RUNTIME_BUNDLES,
     _expected_release_assets,
     build_desired_release,
@@ -101,6 +103,7 @@ class DiscoveryContractTests(unittest.TestCase):
 class ReleaseResultTests(unittest.TestCase):
     def test_publication_and_result_inventory_contracts_match(self) -> None:
         self.assertEqual(RUNTIME_BUNDLES, PUBLICATION_RUNTIME_BUNDLES)
+        self.assertEqual(BACKEND_SIDECARS, PUBLICATION_BACKEND_SIDECARS)
         self.assertEqual(
             _expected_assets("v0.2.0-1") | {"assets.json", "SHA256SUMS"},
             _expected_release_assets("v0.2.0-1"),
@@ -156,7 +159,8 @@ class ReleaseResultTests(unittest.TestCase):
         assets.mkdir()
         tag = "v0.2.0"
         names = {
-            f"llamadart-native-{bundle}-{tag}.tar.gz" for bundle in RUNTIME_BUNDLES
+            f"llamadart-native-{bundle}-{tag}.tar.gz"
+            for bundle in (*RUNTIME_BUNDLES, *BACKEND_SIDECARS)
         }
         names.update(
             {

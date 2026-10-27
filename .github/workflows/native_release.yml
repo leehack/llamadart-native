@@ -1106,6 +1106,12 @@ jobs:
             python3 tools/validate_windows_bundle.py --arch "${bundle_dir##*/windows-}" "$bundle_dir"
           done
 
+          # CUDA ships as its own asset so windows-x64 builds that never
+          # select it do not download its ~700 MiB.
+          python3 tools/split_windows_cuda_sidecar.py \
+            bundles/windows-x64 \
+            bundles/windows-x64-cuda12
+
           for bundle_dir in bundles/*; do
             [ -d "$bundle_dir" ] || continue
             if ! find "$bundle_dir" -maxdepth 1 -type f -print -quit | grep -q .; then
