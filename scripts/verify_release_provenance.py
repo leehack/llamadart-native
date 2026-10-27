@@ -715,7 +715,7 @@ def verify_manifest_contract(errors: list[str]) -> None:
                     "hook_contract_version",
                     "artifacts",
                 }
-                and manifest.get("hook_contract_version") == 1
+                and manifest.get("hook_contract_version") == 2
                 and manifest.get("llama_cpp_patches") == carried_patches
                 and re.fullmatch(
                     r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z",

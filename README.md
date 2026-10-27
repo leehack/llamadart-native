@@ -92,6 +92,10 @@ and exact workflow run/head. The historical `tag` field remains as a
 compatibility alias for the native tag. Consumers can therefore verify the
 built source independently of a moving ref or release label.
 
+`hook_contract_version` is 2 from the release that split Windows x64 CUDA into
+its own asset. A consumer hook that supports only version 1 expects CUDA inside
+`windows-x64` and must refuse the release.
+
 Candidate builds and packaging are read-only. The final publication job alone
 can create the transaction-marked annotated tag and draft-first release; its
 assets are published only after exact digest and provenance checks. Retry a

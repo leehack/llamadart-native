@@ -132,7 +132,7 @@ EOF_FILES
     printf '  "workflow_head_sha": %s,\n' "$(json_string "$workflow_head_sha")"
   fi
   printf '  "generated_at": %s,\n' "$(json_string "$timestamp")"
-  echo "  \"hook_contract_version\": 1,"
+  echo "  \"hook_contract_version\": 2,"
   echo "  \"artifacts\": ["
 
   i=0
