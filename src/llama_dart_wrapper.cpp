@@ -169,6 +169,10 @@ llama_dart_tts_sampler_init(const llama_dart_tts_request &request,
 static bool llama_dart_tts_prime_code_predictor(llama_dart_tts *tts,
                                                 uint32_t seed) {
 #if LLAMADART_MTMD_HAS_GEN_STATE
+  // A forced flag on headers without mtmd_gen_state_init must fail to compile
+  // instead of silently dropping the code-predictor priming below.
+  static_assert(sizeof(decltype(&mtmd_gen_state_init)) != 0,
+                "LLAMADART_MTMD_HAS_GEN_STATE requires mtmd_gen_state_init");
   // mtmd_helper_gen_audio_set_input seeds a fresh generation state from
   // input.seed, so no projector RNG survives between syntheses.
   (void)tts;
