@@ -247,8 +247,9 @@ LLAMADART_API void llama_dart_set_log_level(int level);
 // between a call that failed there and the read of its error. Call
 // llama_dart_clear_last_error first to learn whether a free threw.
 //
-// The functions without a barrier are llama_dart_last_error,
-// llama_dart_clear_last_error, llama_dart_set_log_level, the
+// The functions without a barrier are llama_dart_build_identity,
+// llama_dart_last_error, llama_dart_clear_last_error,
+// llama_dart_set_log_level, the
 // llama_dart_exit_ functions other than llama_dart_exit_track and
 // llama_dart_exit_free, the draft context and need_embd getters,
 // llama_dart_tts_eval_callback, the llama_dart_vulkan_ functions, which
@@ -310,6 +311,21 @@ LLAMADART_API const char * llama_dart_last_error(void);
 
 // Clears the calling thread's last error.
 LLAMADART_API void llama_dart_clear_last_error(void);
+
+// Build identity
+//
+// Names the inputs this library was built from: the llamadart-native and
+// llama.cpp commits with a digest of any uncommitted change, the ggml tree,
+// the carried patches that applied, the build configuration, compiler,
+// target, ggml backends and ggml build switches. Two libraries that return
+// the same non-empty string were built from the same inputs; a different
+// string means a state file that one saved may not load correctly in the
+// other. The string holds no path, host name or time. It is empty when the
+// build could not name its inputs (no git checkout), and an empty identity
+// matches nothing, itself included. The string is a constant in the library,
+// valid while the library is loaded; the call touches no llama.cpp object or
+// state, so it needs no exit teardown guard. See docs/build_identity.md.
+LLAMADART_API const char * llama_dart_build_identity(void);
 
 // Vulkan device facts
 //

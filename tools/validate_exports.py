@@ -12,6 +12,7 @@ from pathlib import Path
 
 
 DEFAULT_REQUIRED_SYMBOLS = [
+    "llama_dart_build_identity",
     "llama_dart_last_error",
     "llama_dart_clear_last_error",
     "llama_dart_vulkan_get_device_count",
