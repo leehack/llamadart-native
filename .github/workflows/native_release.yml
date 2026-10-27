@@ -431,7 +431,7 @@ jobs:
           apt_get_update
           apt_get_install ccache ninja-build pkg-config make
           if [ "${{ matrix.arch }}" = "arm64" ]; then
-            apt_get_install gcc-aarch64-linux-gnu g++-aarch64-linux-gnu qemu-user
+            apt_get_install gcc-aarch64-linux-gnu g++-aarch64-linux-gnu qemu-user llvm
           fi
           if [ "${{ matrix.needs_vulkan }}" = "true" ]; then
             apt_get_install libvulkan-dev glslc
@@ -573,6 +573,11 @@ jobs:
             env -u LD_LIBRARY_PATH \
               "${RUNNER_TEMP}/linux-dlopen-smoke-x64" "$EXTRACT_DIR/libllamadart.so"
           fi
+      - name: Audit and select the Linux arm64 CPU variants
+        if: ${{ matrix.arch == 'arm64' && matrix.include_core }}
+        env:
+          QEMU_SYSROOT: /usr/aarch64-linux-gnu
+        run: tools/check_linux_arm64_cpu_variants.sh "${RUNNER_TEMP}/llamadart-clean-arm64"
       - name: Upload
         uses: actions/upload-artifact@v7
         with:

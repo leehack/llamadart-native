@@ -44,6 +44,8 @@ For ARM64 upstream upgrades, run the candidate Windows/Android and compiled
 dispatch gates in `validate_wrapper.yml` before merging. See
 `docs/platform_backend_strategy.md` for the ISA audit contract. Never refresh
 audited source fingerprints merely to silence a failed check.
+See `docs/linux_arm64_cpu_variants.md` for the Linux arm64 CPU variants, how
+ggml and llamadart select them, and their ISA and QEMU checks.
 See `docs/post_v040_qualification.md` for the exact nonpublishing correctness
 candidate, its separate pinned lanes, and remaining artifact/hardware gates.
 See `docs/v060_qualification.md` for the v0.6.0 wrapper adapters, candidate lanes

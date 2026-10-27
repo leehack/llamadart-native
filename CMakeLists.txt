@@ -19,7 +19,7 @@ else()
 endif()
 
 set(LLAMADART_CPU_REQUIRED_FEATURES "" CACHE STRING
-    "Semicolon-separated GGML_USE_* defines for Android arm64 CPU backend scoring")
+    "Semicolon-separated GGML_USE_* defines for Android and Linux arm64 CPU backend scoring")
 set(LLAMADART_MSVC_LLAMA_COMMON_IPO OFF CACHE BOOL
     "Enable MSVC IPO/LTCG for llama-common")
 set(LLAMADART_MSVC_MTMD_IPO OFF CACHE BOOL
@@ -38,8 +38,13 @@ function(llamadart_disable_ipo)
     endforeach()
 endfunction()
 
-function(llamadart_attach_android_cpu_backend_score target_name)
-    if (NOT ANDROID OR NOT TARGET ${target_name} OR NOT GGML_CPU_ARM_ARCH)
+function(llamadart_attach_arm_cpu_backend_score target_name)
+    if (NOT TARGET ${target_name} OR NOT GGML_CPU_ARM_ARCH)
+        return()
+    endif()
+    # Android scores every variant. The Linux baseline stays unscored: it is
+    # the unsuffixed module ggml loads when no variant scores.
+    if (NOT ANDROID AND NOT (CMAKE_SYSTEM_NAME STREQUAL "Linux" AND LLAMADART_CPU_REQUIRED_FEATURES))
         return()
     endif()
 
@@ -197,7 +202,7 @@ if (MSVC AND NOT LLAMADART_MSVC_MTMD_IPO)
     llamadart_disable_ipo(mtmd)
 endif()
 
-llamadart_attach_android_cpu_backend_score(ggml-cpu)
+llamadart_attach_arm_cpu_backend_score(ggml-cpu)
 
 # Retain owned statics in every Linux runtime library and backend module.
 if (CMAKE_SYSTEM_NAME STREQUAL "Linux")

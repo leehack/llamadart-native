@@ -101,6 +101,31 @@ def android_arm64_cpu_variant_libs() -> tuple[str, ...]:
     return tuple(f"libggml-cpu-{variant_name}.so" for variant_name, _arch, _features in ANDROID_ARM64_CPU_VARIANTS)
 
 
+# The armv8.0 baseline keeps the unsuffixed libggml-cpu.so name, which every
+# llamadart loader path already opens. ggml_backend_load_all_from_path() picks
+# the highest-scoring libggml-cpu-*.so the CPU supports and falls back to that
+# baseline when none scores. SVE variants are left out until their ggml SVE
+# paths and KleidiAI dispatch have their own audit.
+LINUX_ARM64_CPU_VARIANTS = (
+    (
+        "linux_armv8.2_2",
+        "armv8.2-a+dotprod+fp16",
+        ("GGML_USE_DOTPROD", "GGML_USE_FP16_VECTOR_ARITHMETIC"),
+    ),
+    (
+        "linux_armv8.6_1",
+        "armv8.6-a+dotprod+fp16+i8mm",
+        ("GGML_USE_DOTPROD", "GGML_USE_FP16_VECTOR_ARITHMETIC", "GGML_USE_MATMUL_INT8"),
+    ),
+)
+# Lanes whose payload ships libggml-cpu.so; the others package one backend module.
+LINUX_ARM64_CPU_VARIANT_BACKENDS = ("full", "cpu", "vulkan")
+
+
+def linux_arm64_cpu_variant_libs() -> tuple[str, ...]:
+    return tuple(f"libggml-cpu-{variant_name}.so" for variant_name, _arch, _features in LINUX_ARM64_CPU_VARIANTS)
+
+
 WINDOWS_VCPKG_TRIPLETS = {"x64": "x64-windows", "arm64": "arm64-windows"}
 ANDROID_BACKENDS = ("full", "vulkan", "opencl")
 LINUX_BACKENDS = ("full", "cpu", "vulkan", "cuda", "hip", "blas")
@@ -912,21 +937,20 @@ def build_linux(args: argparse.Namespace) -> None:
     if cache_vars["GGML_VULKAN"] == "ON":
         ensure_vulkan_header_submodules()
 
-    extra_args = cmake_cache_args(cache_vars)
+    toolchain_args: list[str] = []
     host_arch = detect_linux_arch()
     if arch == "arm64" and host_arch != "arm64":
         cc = shutil.which("aarch64-linux-gnu-gcc")
         cxx = shutil.which("aarch64-linux-gnu-g++")
         if not cc or not cxx:
             fail("Cross compiler not found. Install aarch64-linux-gnu-gcc and aarch64-linux-gnu-g++")
-        extra_args.extend(
-            [
-                f"-DCMAKE_C_COMPILER={cc}",
-                f"-DCMAKE_CXX_COMPILER={cxx}",
-                "-DCMAKE_SYSTEM_NAME=Linux",
-                "-DCMAKE_SYSTEM_PROCESSOR=aarch64",
-            ]
-        )
+        toolchain_args = [
+            f"-DCMAKE_C_COMPILER={cc}",
+            f"-DCMAKE_CXX_COMPILER={cxx}",
+            "-DCMAKE_SYSTEM_NAME=Linux",
+            "-DCMAKE_SYSTEM_PROCESSOR=aarch64",
+        ]
+    extra_args = cmake_cache_args(cache_vars) + toolchain_args
 
     if cache_vars["GGML_CUDA"] == "ON" and not (shutil.which("nvcc") or shutil.which("nvcc.exe")):
         fail("Linux CUDA backend build requires CUDA (nvcc not found in PATH)")
@@ -934,7 +958,51 @@ def build_linux(args: argparse.Namespace) -> None:
         fail("Linux HIP backend build requires HIP (hipcc not found in PATH)")
 
     build_dir = configure_and_build(preset, jobs=args.jobs, extra_cmake_args=extra_args)
-    copy_runtime_libraries(build_dir, BIN_DIR / f"linux/{arch}")
+    out_dir = BIN_DIR / f"linux/{arch}"
+    copy_runtime_libraries(build_dir, out_dir)
+
+    if arch != "arm64" or backend not in LINUX_ARM64_CPU_VARIANT_BACKENDS:
+        return
+    for (variant_name, arm_arch, required_features), variant_lib in zip(
+        LINUX_ARM64_CPU_VARIANTS, linux_arm64_cpu_variant_libs()
+    ):
+        variant_build_dir = BUILD_ROOT / f"linux-arm64-cpu-{variant_name}"
+        if args.clean and variant_build_dir.exists():
+            shutil.rmtree(variant_build_dir)
+        cpu_lib = build_linux_arm64_cpu_variant(
+            variant_name,
+            arm_arch,
+            required_features,
+            build_dir=variant_build_dir,
+            toolchain_args=toolchain_args,
+            jobs=args.jobs,
+        )
+        copy_output(cpu_lib, out_dir / variant_lib)
+
+
+def build_linux_arm64_cpu_variant(
+    variant_name: str,
+    arm_arch: str,
+    required_features: tuple[str, ...],
+    *,
+    build_dir: Path,
+    toolchain_args: list[str],
+    jobs: int | None,
+) -> Path:
+    # One configure per variant, as on Android, so the shared KleidiAI target
+    # is never compiled with another variant's -march.
+    cache_vars = linux_backend_cache_vars("arm64", "cpu")
+    cache_vars["GGML_CPU_ARM_ARCH"] = arm_arch
+    cache_vars["LLAMADART_CPU_REQUIRED_FEATURES"] = ";".join(required_features)
+    run(["cmake", "--preset", "linux-arm64-full", "-B", str(build_dir), *cmake_cache_args(cache_vars), *toolchain_args])
+    build_cmd = ["cmake", "--build", str(build_dir), "--target", "ggml-cpu"]
+    if jobs and jobs > 0:
+        build_cmd.extend(["--parallel", str(jobs)])
+    run(build_cmd)
+    cpu_lib = build_dir / "bin/libggml-cpu.so"
+    if not cpu_lib.is_file():
+        fail(f"Missing rebuilt Linux arm64 CPU variant for {variant_name}: {cpu_lib}")
+    return cpu_lib
 
 
 def write_android_host_toolchain(path: Path) -> None:
@@ -1054,7 +1122,7 @@ def build_windows(args: argparse.Namespace) -> None:
 def print_presets() -> None:
     presets = [
         "apple: target=macos-arm64|macos-x86_64|ios-device-arm64|ios-sim-arm64|ios-sim-x86_64 (consolidated: metal+cpu in one dylib)",
-        "linux: arch=x64|arm64 backend=full|cpu|vulkan|cuda|hip|blas (x64 full=vulkan+cuda+blas+cpu, arm64 full=vulkan+blas+kleidi+cpu, hip=x64 only)",
+        "linux: arch=x64|arm64 backend=full|cpu|vulkan|cuda|hip|blas (x64 full=vulkan+cuda+blas+cpu, arm64 full=vulkan+blas+kleidi+cpu, arm64 full|cpu|vulkan add runtime-selected CPU variants, hip=x64 only)",
         "android: abi=arm64-v8a|x86_64|all backend=full|vulkan|opencl (arm64 builds isolated CPU variants so Kleidi stays enabled where safe; x86_64 full=vulkan+opencl+cpu)",
         "windows: arch=x64|arm64 backend=full|vulkan|cuda|blas (x64 full=vulkan+cuda+blas+cpu, arm64 full=vulkan+blas+kleidi+cpu)",
     ]
@@ -1065,6 +1133,10 @@ def print_presets() -> None:
 def run_list(args: argparse.Namespace) -> None:
     if args.android_arm64_cpu_variant_libs:
         for lib in android_arm64_cpu_variant_libs():
+            print(lib)
+        return
+    if args.linux_arm64_cpu_variant_libs:
+        for lib in linux_arm64_cpu_variant_libs():
             print(lib)
         return
     print_presets()
@@ -1084,6 +1156,11 @@ def parse_args() -> argparse.Namespace:
         "--android-arm64-cpu-variant-libs",
         action="store_true",
         help="Print the libggml-cpu-<variant>.so filenames produced by an Android arm64-v8a build, one per line",
+    )
+    list_parser.add_argument(
+        "--linux-arm64-cpu-variant-libs",
+        action="store_true",
+        help="Print the libggml-cpu-<variant>.so filenames a Linux arm64 core build adds beside libggml-cpu.so, one per line",
     )
     list_parser.set_defaults(func=run_list)
 
