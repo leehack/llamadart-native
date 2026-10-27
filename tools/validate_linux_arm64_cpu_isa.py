@@ -5,8 +5,10 @@ Bounded containment check for the feature families ggml variants are scored
 on, not a general ISA verifier:
 
 - Outside sized ``kai_*`` functions, FP16 arithmetic, FP16FML, DOTPROD, I8MM,
-  BF16, RDM and LRCPC2 instructions may only appear when the variant's
-  ``-march`` enables them. The armv8.0 baseline allows none of them. KleidiAI
+  BF16, RDM, LSE, CRC, LRCPC and LRCPC2 instructions may only appear when the
+  variant's ``-march`` enables them. The armv8.0 baseline allows none of them,
+  except LSE atomics inside libgcc's outline-atomic helpers, which branch to
+  them only after testing ``__aarch64_have_lse_atomics`` at run time. KleidiAI
   kernels keep them because KleidiAI selects kernels from the runtime HWCAP
   probe (``ggml_feats_get_arch64_runtime``), never from the compile flags.
 - SVE and SME stay inside the exact audited KleidiAI functions of
@@ -14,13 +16,13 @@ on, not a general ISA verifier:
 - A variant must contain each family it declares outside KleidiAI, so its
   ``-march`` took effect, and must export ``ggml_backend_score``.
 
-LSE atomics are not audited: GCC's outline-atomic helpers select them at run
-time. Loading every variant on lower CPUs is checked by execution under QEMU.
+Loading every variant on lower CPUs is checked by execution under QEMU.
 """
 
 from __future__ import annotations
 
 import argparse
+from collections import deque
 from pathlib import Path
 import re
 import subprocess
@@ -41,7 +43,8 @@ FEATURE_FAMILIES = {
 }
 # Families GCC enables from the -march base version alone.
 MARCH_IMPLIED_FAMILIES = (
-    ((8, 1), {"rdm"}),
+    ((8, 1), {"rdm", "lse"}),
+    ((8, 3), {"rcpc"}),
     ((8, 4), {"dotprod", "rcpc2"}),
     ((8, 6), {"bf16", "i8mm"}),
 )
@@ -54,8 +57,21 @@ MNEMONIC_FAMILIES = {
     **{name: "bf16" for name in ("bfdot", "bfmmla", "bfmlalb", "bfmlalt", "bfcvt", "bfcvtn", "bfcvtn2")},
     **{name: "fhm" for name in ("fmlal", "fmlal2", "fmlsl", "fmlsl2")},
     **{name: "rdm" for name in ("sqrdmlah", "sqrdmlsh")},
+    **{name: "rcpc" for name in ("ldapr", "ldaprb", "ldaprh")},
 }
-FAMILIES = ("fp16", "fhm", "dotprod", "i8mm", "bf16", "rdm", "rcpc2")
+LSE_MNEMONIC = re.compile(
+    r"(?:casp?|swp|ld(?:add|clr|eor|set|smax|smin|umax|umin)|st(?:add|clr|eor|set|smax|smin|umax|umin))"
+    r"(?:a|l|al)?[bh]?"
+)
+CRC_MNEMONIC = re.compile(r"crc32c?[bhwx]")
+# libgcc's outline-atomic helpers open with these three instructions before
+# the single LSE instruction, then fall back to an exclusive-access loop.
+OUTLINE_ATOMIC_GUARD = (
+    re.compile(r"adrp\s+x16,"),
+    re.compile(r"ldrb\s+w16,\s*\[x16"),
+    re.compile(r"cbz\s+w16,"),
+)
+FAMILIES = ("fp16", "fhm", "dotprod", "i8mm", "bf16", "rdm", "lse", "rcpc", "rcpc2", "crc")
 MARCH = re.compile(r"armv(\d+)(?:\.(\d+))?-a((?:\+[a-z0-9]+)*)")
 
 
@@ -93,12 +109,22 @@ def instruction_family(instruction: str) -> str | None:
         return family
     if mnemonic.startswith(("stlur", "ldapur")):
         return "rcpc2"
+    if LSE_MNEMONIC.fullmatch(mnemonic):
+        return "lse"
+    if CRC_MNEMONIC.fullmatch(mnemonic):
+        return "crc"
     if HALF_OPERAND.search(operands) and (
         (mnemonic.startswith("f") and mnemonic not in BASE_HALF_CONVERSIONS)
         or mnemonic in ("scvtf", "ucvtf")
     ):
         return "fp16"
     return None
+
+
+def is_outline_atomic(preceding: list[str]) -> bool:
+    return len(preceding) == len(OUTLINE_ATOMIC_GUARD) and all(
+        guard.match(instruction) for guard, instruction in zip(OUTLINE_ATOMIC_GUARD, preceding)
+    )
 
 
 def audit(symbol_text: str, disassembly: str, allowed: set[str]) -> tuple[dict, dict, list[str]]:
@@ -108,11 +134,14 @@ def audit(symbol_text: str, disassembly: str, allowed: set[str]) -> tuple[dict, 
     inside: dict[str, int] = {}
     outside: dict[str, int] = {}
     failures: list[str] = []
+    preceding: deque[str] = deque(maxlen=len(OUTLINE_ATOMIC_GUARD))
     for line in disassembly.splitlines():
         match = android_isa.INSTRUCTION.fullmatch(line)
         if not match:
             continue
         instruction = match[3].strip()
+        previous = list(preceding)
+        preceding.append(instruction)
         if android_isa.is_scalable(int(match[2], 16), instruction):
             continue
         family = instruction_family(instruction)
@@ -123,7 +152,7 @@ def audit(symbol_text: str, disassembly: str, allowed: set[str]) -> tuple[dict, 
             inside[family] = inside.get(family, 0) + 1
             continue
         outside[family] = outside.get(family, 0) + 1
-        if family not in allowed:
+        if family not in allowed and not (family == "lse" and is_outline_atomic(previous)):
             failures.append(f"0x{address:x}: {instruction} ({family})")
     return inside, outside, failures
 
@@ -180,7 +209,7 @@ def main() -> int:
             [
                 args.objdump,
                 "-d",
-                "--mattr=+v9.4a,+sve,+sve2,+sme,+sme2,+fullfp16,+fp16fml,+dotprod,+i8mm,+bf16,+rdm,+rcpc-immo",
+                "--mattr=+v9.4a,+sve,+sve2,+sme,+sme2,+fullfp16,+fp16fml,+dotprod,+i8mm,+bf16,+rdm,+rcpc-immo,+rcpc,+lse,+crc",
                 str(args.library),
             ],
             text=True,
