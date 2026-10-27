@@ -50,6 +50,8 @@ See `docs/v060_qualification.md` for the v0.6.0 wrapper adapters, candidate lane
 and the Android ISA evidence required before publication or downstream adoption.
 See `docs/v070_android_isa_qualification.md` for the v0.7.0/KleidiAI v1.31.0
 source pair, version-specific function ranges and candidate qualification gates.
+See `docs/b11912_android_isa_qualification.md` for the b11912/KleidiAI v1.32.0
+source pair, its SVE I8MM-gated Q8 kernels and remaining gates.
 See `docs/v070_native_contracts.md` for draft expert-cache isolation, dynamic
 export validation, ABI handoff and opt-in EmbeddingGemma-2 model qualification.
 See `docs/v060_1_wrapper_rebuild.md` for the `v0.6.0-1` header additions and
