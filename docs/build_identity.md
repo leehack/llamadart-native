@@ -38,8 +38,15 @@ commit or an edit after configuring still changes it.
 ## What equality means
 
 Two libraries with the same non-empty identity were built from the same
-sources, patches, compiler, target, backends and ggml switches. A state file
-that one saves uses the byte layout the other reads.
+tracked sources, patches, compiler, target, backends and boolean ggml switches
+(the inputs named under "Format"). Nothing outside those inputs is compared, so
+equality is evidence that their state files are compatible, not proof; see the
+list below.
+
+Release builds are checked to carry a complete identity
+(`tools/validate_build_identity.py`). A `+dirty` marker is allowed there: a
+release whose llama.cpp tag differs from the pinned gitlink changes the owner's
+tracked tree.
 
 An empty string means the build could not name its inputs: it was not built
 from git checkouts of llamadart-native and llama.cpp, or git did not run. An

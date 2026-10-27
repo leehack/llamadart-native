@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import argparse
+import atexit
 import hashlib
 import os
 import re
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import llama_cpp_patches
@@ -17,12 +19,27 @@ FORMAT = "llamadart-native-build/1"
 VALUE = re.compile(r"[A-Za-z0-9._+,-]+")
 DIGEST_LENGTH = 16
 # Pinned so that the digest of a dirty tree does not follow diff settings in
-# the user's git config.
+# the user's git config. Options that have no command-line form are pinned as
+# config in _git.
 DIFF_OPTIONS = (
     "--binary", "--full-index", "--no-color", "--no-ext-diff", "--no-textconv",
     "--no-renames", "--no-relative", "--submodule=short", "--diff-algorithm=myers",
     "--no-indent-heuristic", "--unified=3", "--src-prefix=a/", "--dst-prefix=b/",
+    "--inter-hunk-context=0",
 )
+DIFF_CONFIG = ("diff.suppressBlankEmpty=false",)
+
+
+def _empty_order_file() -> str:
+    # An empty diff.orderFile value is an error, so the setting is pinned to a
+    # file that orders nothing.
+    handle, name = tempfile.mkstemp(prefix="llamadart-empty-order-")
+    os.close(handle)
+    atexit.register(os.unlink, name)
+    return name
+
+
+_EMPTY_ORDER_FILE: str | None = None
 
 
 class Unidentified(Exception):
@@ -35,8 +52,13 @@ def _digest(data: bytes) -> str:
 
 def _git(repo: Path, *args: str) -> bytes:
     # A container build may run as another user than the checkout's owner.
-    command = ["git", "-c", "safe.directory=*", "-c", "core.quotePath=true",
-               "-C", str(repo), *args]
+    command = ["git", "-c", "safe.directory=*", "-c", "core.quotePath=true"]
+    global _EMPTY_ORDER_FILE
+    if _EMPTY_ORDER_FILE is None:
+        _EMPTY_ORDER_FILE = _empty_order_file()
+    for setting in (f"diff.orderFile={_EMPTY_ORDER_FILE}", *DIFF_CONFIG):
+        command += ["-c", setting]
+    command += ["-C", str(repo), *args]
     try:
         completed = subprocess.run(
             command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
@@ -51,7 +73,11 @@ def revision(repo: Path, ignore_submodules: str | None = None) -> str:
     """The commit checked out in repo, with a digest of any tracked change."""
     top = _git(repo, "rev-parse", "--show-toplevel").decode().strip()
     # A source tree copied into another checkout would report that one.
-    if not os.path.samefile(top, repo):
+    try:
+        same = os.path.samefile(top, repo)
+    except OSError as error:
+        raise Unidentified(f"cannot compare {repo.name} with git's top level") from error
+    if not same:
         raise Unidentified(f"{repo.name} is not the top of a git checkout")
     commit = _git(repo, "rev-parse", "--verify", "HEAD^{commit}").decode().strip()
     options = list(DIFF_OPTIONS)

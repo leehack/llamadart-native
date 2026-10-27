@@ -22,9 +22,9 @@ int main(void) {
     assert(strcmp(identity, LLAMA_DART_BUILD_IDENTITY) == 0);
     assert(llama_dart_build_identity() == identity);
     printf("build identity: %s\n", identity[0] ? identity : "(unidentified)");
-    if (identity[0] == '\0') {
-        return 0;
-    }
+    // Every lane that runs this test builds from git checkouts; an empty
+    // identity there means the stamp silently stopped naming its inputs.
+    assert(identity[0] != '\0');
 
     const char * prefix = "llamadart-native-build/1;";
     assert(strncmp(identity, prefix, strlen(prefix)) == 0);

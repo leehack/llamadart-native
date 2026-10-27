@@ -229,6 +229,7 @@ jobs:
               --format readelf \
               --tool "$READELF" \
               "$OUT_DIR/libllamadart.so"
+            python3 tools/validate_build_identity.py "$OUT_DIR/libllamadart.so"
           fi
 
           if [ "${{ matrix.android_abi }}" = "arm64-v8a" ]; then
@@ -350,6 +351,7 @@ jobs:
           # that imports the system one would run teardown too late.
           python3 tools/validate_exports.py --format nm --tool nm \
             --forbid-import __cxa_atexit "$OUT_LIB"
+          python3 tools/validate_build_identity.py "$OUT_LIB"
       - name: Report ccache stats
         if: always()
         uses: ./.github/actions/ccache-stats
@@ -494,6 +496,7 @@ jobs:
               --format readelf \
               --tool readelf \
               "$OUT_DIR/libllamadart.so"
+            python3 tools/validate_build_identity.py "$OUT_DIR/libllamadart.so"
           fi
           for lib in "$OUT_DIR"/*.so; do
             readelf -d "$lib" | grep -E 'Library runpath: \[\$ORIGIN(:|\])' >/dev/null || {
@@ -887,6 +890,8 @@ jobs:
               throw "Missing core wrapper DLL in $out"
             }
             python tools/validate_exports.py --format dumpbin --tool dumpbin $wrapper.FullName
+            python tools/validate_build_identity.py $wrapper.FullName
+            if ($LASTEXITCODE -ne 0) { throw "Missing build identity in $($wrapper.Name)" }
           }
           if ("${{ matrix.arch }}" -eq "arm64") {
             $cache = "build/wa64/CMakeCache.txt"

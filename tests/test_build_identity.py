@@ -227,6 +227,49 @@ class BuildIdentityTests(unittest.TestCase):
         with self.assertRaises(build_identity.Unidentified):
             build_identity.revision(self.source / "src")
 
+    def test_git_config_does_not_change_the_dirty_digest(self):
+        lines = [f"line {i}" if i % 3 else "" for i in range(40)]
+        (self.source / "src" / "a.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
+        (self.source / "src" / "b.txt").write_text("x\n", encoding="utf-8")
+        commit_all(self.source, "files")
+        lines[4], lines[16] = "edited 4", "edited 16"
+        (self.source / "src" / "a.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
+        (self.source / "src" / "b.txt").write_text("y\n", encoding="utf-8")
+        order = self.temp / "order"
+        order.write_text("src/b.txt\nsrc/a.txt\n", encoding="utf-8")
+        baseline = self.identity()
+        for setting in (
+            ("diff.orderFile", str(order)), ("diff.suppressBlankEmpty", "true"),
+            ("diff.interHunkContext", "20"), ("diff.context", "9"),
+            ("diff.algorithm", "patience"), ("diff.indentHeuristic", "true"),
+            ("diff.noprefix", "true"), ("diff.mnemonicPrefix", "true"),
+            ("diff.renames", "copies"),
+        ):
+            with self.subTest(setting=setting):
+                git(self.source, "config", "--global", *setting)
+                try:
+                    self.assertEqual(self.identity(), baseline)
+                finally:
+                    git(self.source, "config", "--global", "--unset", setting[0])
+
+    def test_a_checkout_owned_by_another_user_is_still_identified(self):
+        probe = subprocess.run(
+            ["git", "-C", str(self.source), "rev-parse", "HEAD"],
+            env={**os.environ, "GIT_TEST_ASSUME_DIFFERENT_OWNER": "1"},
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        if probe.returncode == 0:
+            self.skipTest("this git does not check the checkout's owner")
+        with mock.patch.dict(os.environ, {"GIT_TEST_ASSUME_DIFFERENT_OWNER": "1"}):
+            self.assertNotEqual(self.identity(), "")
+
+    def test_a_toplevel_that_cannot_be_compared_is_unidentified(self):
+        with mock.patch("os.path.samefile", side_effect=FileNotFoundError("/c/x")):
+            with self.assertRaises(build_identity.Unidentified):
+                build_identity.revision(self.source)
+        with mock.patch("os.path.samefile", side_effect=OSError("bad")), \
+                mock.patch("sys.stderr"):
+            self.assertEqual(self.identity(), "")
+
     def test_rejects_values_that_could_hold_a_path(self):
         for key, value in (
             ("target", "/Applications/Xcode.app/MacOSX.sdk"),
