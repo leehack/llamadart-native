@@ -464,7 +464,7 @@ cmake -S . -B build/tts-smoke -G Ninja \
 cmake --build build/tts-smoke --target \
   llamadart_speculative_api_test llamadart_tts_api_test \
   llamadart_tts_types_test llamadart_tts_eval_test llamadart_mtmd_compat_test \
-  llamadart_tts_smoke llamadart_tts_lfm3_smoke
+  llamadart_tts_smoke llamadart_tts_lfm3_smoke llamadart_soprano_tts_smoke
 ctest --test-dir build/tts-smoke --output-on-failure
 build/tts-smoke/llamadart_tts_smoke \
   /path/to/Qwen3-TTS-model.gguf \
@@ -514,6 +514,33 @@ metadata, speaker-reference and voice rejection, cancel before and during
 generation, reuse after cancel, seed, voice and language effects, `max_frames`
 truncation, and that ASR through the generic mtmd input exports transcribes the
 speech back to its text.
+
+### Soprano
+
+Builds whose llama.cpp has the Soprano generator (v0.8.0 and later) also drive
+Soprano, a Qwen3 backbone with a Vocos decoder projector, for callers whose
+`_ext` mask names `LLAMA_DART_TTS_MODEL_TYPE_SOPRANO`; the Qwen3-only exports
+and other masks report it as `UNKNOWN`. It has no capability bits:
+`llama_dart_tts_start` returns `UNSUPPORTED` for a speaker reference, a
+language or a voice. Frame steps decode backbone tokens only; the step that
+ends generation decodes the whole utterance at 32 kHz, and the eval callback
+can cancel that decode. An utterance needs at least two frames.
+
+No llama.cpp-format Soprano GGUF is published. Convert
+[ekwek/Soprano-1.1-80M](https://huggingface.co/ekwek/Soprano-1.1-80M) with
+upstream `convert_hf_to_gguf.py`, once for the model and once with `--mmproj`:
+
+```bash
+build/tts-smoke/llamadart_soprano_tts_smoke \
+  /path/to/Soprano-1.1-80M.gguf \
+  /path/to/mmproj-Soprano-1.1-80M.gguf \
+  /tmp/soprano-smoke.wav "Hello from Llama Dart."
+```
+
+It checks that callers without the Soprano bit see `UNKNOWN`, the capability
+metadata, the speaker, language and voice rejections, cancel/reset, the
+one-frame failure, finite non-silent PCM, seeded repeats, a cancel during the
+audio decode and `max_frames` truncation.
 
 ## Windows Build Notes
 

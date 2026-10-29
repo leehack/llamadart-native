@@ -462,6 +462,13 @@ jobs:
           -DGGML_OPENMP=OFF
           -DLLAMADART_BUILD_TESTS=ON
           -DLLAMADART_BUILD_TTS_SMOKE=ON
+      # The Soprano tests take their expectation from this probe.
+      - name: Check that the Soprano probe follows the upstream release
+        env:
+          UPSTREAM: ${{ matrix.upstream }}
+        run: |
+          probe="$(sed -n 's/^LLAMADART_MTMD_HAS_SOPRANO:INTERNAL=//p' build/wrapper-contract/CMakeCache.txt)"
+          if [ "$UPSTREAM" = v0.8.0 ]; then test "$probe" = 1; else test -z "$probe"; fi
       - name: Build wrapper contract tests and smoke tool
         run: >-
           cmake --build build/wrapper-contract --target
@@ -478,6 +485,7 @@ jobs:
           llamadart_exit_teardown_test
           llamadart_tts_smoke
           llamadart_tts_lfm3_smoke
+          llamadart_soprano_tts_smoke
       - name: Run wrapper contract tests
         run: ctest --test-dir build/wrapper-contract --output-on-failure
       - name: Check that the build identity is reproducible and follows its inputs

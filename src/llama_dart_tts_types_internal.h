@@ -12,6 +12,9 @@
 #ifndef LLAMADART_MTMD_HAS_LFM3A_GEN
 #define LLAMADART_MTMD_HAS_LFM3A_GEN 0
 #endif
+#ifndef LLAMADART_MTMD_HAS_SOPRANO
+#define LLAMADART_MTMD_HAS_SOPRANO 0
+#endif
 
 static constexpr uint32_t
 llama_dart_tts_model_type_bit(llama_dart_tts_model_type type) {
@@ -22,6 +25,9 @@ static constexpr uint32_t llama_dart_tts_build_model_types =
     llama_dart_tts_model_type_bit(LLAMA_DART_TTS_MODEL_TYPE_QWEN3) |
     (LLAMADART_MTMD_HAS_LFM3A_GEN
          ? llama_dart_tts_model_type_bit(LLAMA_DART_TTS_MODEL_TYPE_LFM3_AUDIO)
+         : 0u) |
+    (LLAMADART_MTMD_HAS_SOPRANO
+         ? llama_dart_tts_model_type_bit(LLAMA_DART_TTS_MODEL_TYPE_SOPRANO)
          : 0u);
 
 // What llama_dart_tts_get_info and llama_dart_tts_init accepted before the
@@ -39,6 +45,10 @@ llama_dart_tts_model_type_from_upstream(mtmd_gen_audio_type type) {
 #if LLAMADART_MTMD_HAS_LFM3A_GEN
   case MTMD_GEN_AUDIO_TYPE_LFM3A:
     return LLAMA_DART_TTS_MODEL_TYPE_LFM3_AUDIO;
+#endif
+#if LLAMADART_MTMD_HAS_SOPRANO
+  case MTMD_GEN_AUDIO_TYPE_SOPRANO:
+    return LLAMA_DART_TTS_MODEL_TYPE_SOPRANO;
 #endif
   default:
     return LLAMA_DART_TTS_MODEL_TYPE_UNKNOWN;
@@ -85,4 +95,26 @@ static inline bool llama_dart_tts_voice_supported(
     }
   }
   return false;
+}
+
+// Only Qwen3-TTS has a code predictor. Soprano's projector accepts GEN_WAV
+// alone and fails a GEN_CODE call.
+static inline bool
+llama_dart_tts_primes_code_predictor(llama_dart_tts_model_type model_type) {
+  return model_type == LLAMA_DART_TTS_MODEL_TYPE_QWEN3;
+}
+
+// Qwen3-TTS and Soprano generate each frame from a sampled backbone token;
+// LFM3-Audio frames come from the hidden state alone.
+static inline bool
+llama_dart_tts_samples_backbone_token(llama_dart_tts_model_type model_type) {
+  return model_type == LLAMA_DART_TTS_MODEL_TYPE_QWEN3 ||
+         model_type == LLAMA_DART_TTS_MODEL_TYPE_SOPRANO;
+}
+
+// Upstream Soprano fails a speaker reference; LFM3-Audio ignores one.
+static inline bool
+llama_dart_tts_rejects_speaker_reference(llama_dart_tts_model_type model_type) {
+  return model_type == LLAMA_DART_TTS_MODEL_TYPE_LFM3_AUDIO ||
+         model_type == LLAMA_DART_TTS_MODEL_TYPE_SOPRANO;
 }

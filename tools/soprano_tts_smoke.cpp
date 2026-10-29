@@ -1,15 +1,17 @@
 #include "llama_dart_wrapper.h"
-#include "tts_smoke_wav.h"
 
 #include "llama.h"
 #include "mtmd.h"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <fstream>
+#include <limits>
 #include <memory>
 #include <string>
 #include <thread>
@@ -18,6 +20,54 @@
 using steady_clock = std::chrono::steady_clock;
 
 using tts_ptr = std::unique_ptr<llama_dart_tts, decltype(&llama_dart_tts_free)>;
+
+static constexpr uint32_t qwen3_bit = 1u << LLAMA_DART_TTS_MODEL_TYPE_QWEN3;
+static constexpr uint32_t lfm3_bit = 1u << LLAMA_DART_TTS_MODEL_TYPE_LFM3_AUDIO;
+static constexpr uint32_t soprano_bit = 1u << LLAMA_DART_TTS_MODEL_TYPE_SOPRANO;
+
+static void write_u16(std::ofstream &out, uint16_t value) {
+    const char bytes[] = {static_cast<char>(value), static_cast<char>(value >> 8)};
+    out.write(bytes, sizeof(bytes));
+}
+
+static void write_u32(std::ofstream &out, uint32_t value) {
+    const char bytes[] = {
+        static_cast<char>(value),
+        static_cast<char>(value >> 8),
+        static_cast<char>(value >> 16),
+        static_cast<char>(value >> 24),
+    };
+    out.write(bytes, sizeof(bytes));
+}
+
+static bool write_wav(const std::string &path, const std::vector<float> &pcm, int32_t sample_rate) {
+    if (pcm.size() > (std::numeric_limits<uint32_t>::max() - 44) / 2) {
+        return false;
+    }
+    std::ofstream out(path, std::ios::binary);
+    if (!out) {
+        return false;
+    }
+    const uint32_t data_size = static_cast<uint32_t>(pcm.size() * 2);
+    out.write("RIFF", 4);
+    write_u32(out, 36 + data_size);
+    out.write("WAVEfmt ", 8);
+    write_u32(out, 16);
+    write_u16(out, 1);
+    write_u16(out, 1);
+    write_u32(out, static_cast<uint32_t>(sample_rate));
+    write_u32(out, static_cast<uint32_t>(sample_rate * 2));
+    write_u16(out, 2);
+    write_u16(out, 16);
+    out.write("data", 4);
+    write_u32(out, data_size);
+    for (float sample : pcm) {
+        const float clipped = std::max(-1.0f, std::min(1.0f, sample));
+        const int16_t value = static_cast<int16_t>(std::lrintf(clipped * 32767.0f));
+        write_u16(out, static_cast<uint16_t>(value));
+    }
+    return static_cast<bool>(out);
+}
 
 struct llama_backend_guard {
     llama_backend_guard() { llama_backend_init(); }
@@ -155,18 +205,27 @@ static bool cancel_during_decode(llama_dart_tts *tts, const llama_dart_tts_reque
     return true;
 }
 
-static bool check_qwen3_only_api(mtmd_context *mtmd, llama_context *context) {
-    llama_dart_tts_info info{};
-    info.struct_size = sizeof(info);
-    if (llama_dart_tts_get_info(mtmd, &info) != LLAMA_DART_TTS_STATUS_UNSUPPORTED ||
-        info.model_type != LLAMA_DART_TTS_MODEL_TYPE_UNKNOWN || info.sample_rate != 0 ||
-        info.channels != 0 || info.capabilities != 0) {
-        return fail("llama_dart_tts_get_info no longer reports Soprano as UNKNOWN");
-    }
-    llama_dart_tts_status status = LLAMA_DART_TTS_STATUS_OK;
-    tts_ptr tts(llama_dart_tts_init(context, mtmd, &status), llama_dart_tts_free);
-    if (tts != nullptr || status != LLAMA_DART_TTS_STATUS_UNSUPPORTED) {
-        return fail("llama_dart_tts_init accepted a Soprano projector");
+// Callers that did not opt into SOPRANO, including every
+// llama_dart_tts_get_info and llama_dart_tts_init caller, see UNKNOWN.
+static bool check_soprano_needs_opt_in(mtmd_context *mtmd, llama_context *context) {
+    for (int ext = 0; ext < 2; ++ext) {
+        llama_dart_tts_info info{};
+        info.struct_size = sizeof(info);
+        llama_dart_tts_status status =
+            ext ? llama_dart_tts_get_info_ext(mtmd, qwen3_bit | lfm3_bit, &info)
+                : llama_dart_tts_get_info(mtmd, &info);
+        if (status != LLAMA_DART_TTS_STATUS_UNSUPPORTED ||
+            info.model_type != LLAMA_DART_TTS_MODEL_TYPE_UNKNOWN || info.sample_rate != 0 ||
+            info.channels != 0 || info.capabilities != 0) {
+            return fail("a caller without the Soprano bit saw a Soprano projector");
+        }
+        status = LLAMA_DART_TTS_STATUS_OK;
+        tts_ptr tts(ext ? llama_dart_tts_init_ext(context, mtmd, qwen3_bit | lfm3_bit, &status)
+                        : llama_dart_tts_init(context, mtmd, &status),
+                    llama_dart_tts_free);
+        if (tts != nullptr || status != LLAMA_DART_TTS_STATUS_UNSUPPORTED) {
+            return fail("a caller without the Soprano bit created a Soprano task");
+        }
     }
     return true;
 }
@@ -194,7 +253,7 @@ int main(int argc, char **argv) {
         return 2;
     }
     const char *text = value_argc >= 5 ? argv[4] : "Hello from Llama Dart.";
-    if (!llama_dart_tts_model_type_supported(LLAMA_DART_TTS_MODEL_TYPE_SOPRANO)) {
+    if ((llama_dart_tts_supported_model_types() & soprano_bit) == 0) {
         std::fprintf(stderr, "this libllamadart was built without Soprano\n");
         return 1;
     }
@@ -228,13 +287,14 @@ int main(int argc, char **argv) {
         std::fprintf(stderr, "failed to load mmproj\n");
         return 1;
     }
-    if (!check_qwen3_only_api(mtmd.get(), context.get())) {
+    if (!check_soprano_needs_opt_in(mtmd.get(), context.get())) {
         return 1;
     }
 
     llama_dart_tts_info info{};
     info.struct_size = sizeof(info);
-    if (llama_dart_tts_get_info_v2(mtmd.get(), &info) != LLAMA_DART_TTS_STATUS_OK ||
+    if (llama_dart_tts_get_info_ext(mtmd.get(), qwen3_bit | soprano_bit, &info) !=
+            LLAMA_DART_TTS_STATUS_OK ||
         info.model_type != LLAMA_DART_TTS_MODEL_TYPE_SOPRANO ||
         info.api_version != LLAMA_DART_TTS_API_VERSION || info.sample_rate <= 0 ||
         info.channels != 1 || info.capabilities != 0) {
@@ -242,7 +302,8 @@ int main(int argc, char **argv) {
         return 1;
     }
     llama_dart_tts_status status = LLAMA_DART_TTS_STATUS_OK;
-    tts_ptr tts(llama_dart_tts_init_v2(context.get(), mtmd.get(), &status), llama_dart_tts_free);
+    tts_ptr tts(llama_dart_tts_init_ext(context.get(), mtmd.get(), qwen3_bit | soprano_bit, &status),
+                llama_dart_tts_free);
     if (tts == nullptr) {
         std::fprintf(stderr, "failed to initialize Soprano TTS: %d\n", static_cast<int>(status));
         return 1;
@@ -260,6 +321,11 @@ int main(int argc, char **argv) {
     with_language.language = "en";
     if (!check_rejected_request(tts.get(), with_speaker, "speaker") ||
         !check_rejected_request(tts.get(), with_language, "language")) {
+        return 1;
+    }
+    if (llama_dart_tts_start_with_voice(tts.get(), &request, "female") !=
+        LLAMA_DART_TTS_STATUS_UNSUPPORTED) {
+        std::fprintf(stderr, "a Soprano request with a voice was not rejected\n");
         return 1;
     }
 
