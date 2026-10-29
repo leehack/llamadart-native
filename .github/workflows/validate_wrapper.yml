@@ -162,7 +162,8 @@ jobs:
   kleidiai-dispatch-emulated:
     needs: changes
     if: needs.changes.outputs.native == 'true'
-    runs-on: ubuntu-latest
+    # Same image and compilers as the release's Linux builds (native_release.yml).
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -359,7 +360,8 @@ jobs:
     needs: changes
     if: needs.changes.outputs.native == 'true'
     name: ${{ matrix.upstream == 'pinned' && format('linux-artifact-contract ({0})', matrix.arch) || format('linux-artifact-contract ({0}, {1})', matrix.arch, matrix.upstream) }}
-    runs-on: ubuntu-latest
+    # Same image and compilers as the release's Linux builds (native_release.yml).
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     strategy:
       fail-fast: false

@@ -365,7 +365,10 @@ jobs:
 
   build-linux:
     needs: resolve-tag
-    runs-on: ubuntu-latest
+    # Pinned: Ubuntu 26.04's GCC 15 breaks CUDA 12.8 nvcc, puts SVE in a
+    # Kleidi pack routine and raises the glibc floor. Unpin only as
+    # docs/platform_backend_strategy.md says.
+    runs-on: ubuntu-24.04
     env:
       CCACHE_DIR: ${{ github.workspace }}/.ccache
       CCACHE_MAXSIZE: 5G
