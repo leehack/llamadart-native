@@ -22,14 +22,14 @@ gains a state argument and `mtmd_gen_inp` loses `seed`, `state_data` and
 `state_size`. `mtmd_helper_gen_audio_set_input` seeds a fresh state from the
 helper input's `seed`, which the wrapper already sets. The v0.7.0 priming call
 from #122 is therefore compiled only when `LLAMADART_MTMD_HAS_GEN_STATE` is
-false. This change left the exported API at 89 required exports.
+false. The wrapper's exported API is unchanged: 89 required exports.
 
 v0.8.0 adds `n_past`, `out_mode` and `voice` to `mtmd_helper_gen_audio_inp`.
 The wrapper value-initialises that struct, so they stay off (no sequence
 continuation, no voice). `llama_dart_tts_get_info` and `llama_dart_tts_init`
-still accept only `MTMD_GEN_AUDIO_TYPE_QWEN3TTS`. Three exports added for #123,
-92 in all, run Soprano where the `LLAMADART_MTMD_HAS_SOPRANO` probe finds it
-(README, "Soprano"); LFM3-Audio reports unsupported everywhere.
+still accept only `MTMD_GEN_AUDIO_TYPE_QWEN3TTS`. LFM3-Audio is opt-in through
+their `_ext` variants ([lfm3_support.md](lfm3_support.md)); Soprano reports
+unsupported.
 
 ## Carried patches
 

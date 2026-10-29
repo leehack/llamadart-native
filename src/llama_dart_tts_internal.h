@@ -15,9 +15,10 @@ struct llama_dart_tts {
   llama_context *llama = nullptr;
   mtmd_context *mtmd = nullptr;
   mtmd_helper_gen_audio *generator = nullptr;
-  llama_dart_tts_model_type model_type = LLAMA_DART_TTS_MODEL_TYPE_QWEN3;
   llama_sampler *sampler = nullptr;
   mtmd_bitmap *speaker = nullptr;
+  llama_dart_tts_model_type model_type = LLAMA_DART_TTS_MODEL_TYPE_QWEN3;
+  uint32_t capabilities = 0;
   std::atomic<bool> cancel_requested{false};
   const int8_t *cancel_flag = nullptr;
   llama_dart_tts_state state = LLAMA_DART_TTS_STATE_IDLE;

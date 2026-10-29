@@ -8,11 +8,17 @@ on, not a general ISA verifier:
   BF16, RDM, LSE, CRC, LRCPC and LRCPC2 instructions may only appear when the
   variant's ``-march`` enables them. The armv8.0 baseline allows none of them,
   except LSE atomics inside libgcc's outline-atomic helpers, which branch to
-  them only after testing ``__aarch64_have_lse_atomics`` at run time. KleidiAI
+  them only after testing ``__aarch64_have_lse_atomics`` at run time. objdump
+  does not name that flag in the guard, so the guard's flag address must equal
+  the symbol's when the library keeps ``.symtab``, and every guard must test
+  one address either way. KleidiAI
   kernels keep them because KleidiAI selects kernels from the runtime HWCAP
   probe (``ggml_feats_get_arch64_runtime``), never from the compile flags.
 - SVE and SME stay inside the exact audited KleidiAI functions of
   ``validate_android_cpu_isa.py``, for the same pinned source pairs.
+- The family lists are a denylist: an instruction of an ARMv8.3+ extension
+  that is not listed here (for example FCMA or JSCVT) passes, and only the
+  QEMU smoke catches it.
 - A variant must contain each family it declares outside KleidiAI, so its
   ``-march`` took effect, and must export ``ggml_backend_score``.
 
@@ -67,10 +73,11 @@ CRC_MNEMONIC = re.compile(r"crc32c?[bhwx]")
 # libgcc's outline-atomic helpers open with these three instructions before
 # the single LSE instruction, then fall back to an exclusive-access loop.
 OUTLINE_ATOMIC_GUARD = (
-    re.compile(r"adrp\s+x16,"),
-    re.compile(r"ldrb\s+w16,\s*\[x16"),
+    re.compile(r"adrp\s+x16,\s*(0x[0-9a-fA-F]+)"),
+    re.compile(r"ldrb\s+w16,\s*\[x16(?:,\s*#(0x[0-9a-fA-F]+|\d+))?\]"),
     re.compile(r"cbz\s+w16,"),
 )
+LSE_FLAG_SYMBOL = "__aarch64_have_lse_atomics"
 FAMILIES = ("fp16", "fhm", "dotprod", "i8mm", "bf16", "rdm", "lse", "rcpc", "rcpc2", "crc")
 MARCH = re.compile(r"armv(\d+)(?:\.(\d+))?-a((?:\+[a-z0-9]+)*)")
 
@@ -121,13 +128,25 @@ def instruction_family(instruction: str) -> str | None:
     return None
 
 
-def is_outline_atomic(preceding: list[str]) -> bool:
-    return len(preceding) == len(OUTLINE_ATOMIC_GUARD) and all(
-        guard.match(instruction) for guard, instruction in zip(OUTLINE_ATOMIC_GUARD, preceding)
-    )
+def outline_atomic_flag_address(preceding: list[str]) -> int | None:
+    """The flag address an outline-atomic guard tests, or None when it is no guard."""
+    if len(preceding) != len(OUTLINE_ATOMIC_GUARD):
+        return None
+    matches = [guard.match(instruction) for guard, instruction in zip(OUTLINE_ATOMIC_GUARD, preceding)]
+    if not all(matches):
+        return None
+    return int(matches[0][1], 16) + int(matches[1][1] or "0", 0)
 
 
-def audit(symbol_text: str, disassembly: str, allowed: set[str]) -> tuple[dict, dict, list[str]]:
+def lse_flag_address(symtab_text: str) -> int | None:
+    pattern = rf"^\s*\d+:\s+([0-9a-fA-F]+)\s+\d+\s+OBJECT\s.*\s{LSE_FLAG_SYMBOL}$"
+    match = re.search(pattern, symtab_text, re.MULTILINE)
+    return int(match[1], 16) if match else None
+
+
+def audit(
+    symbol_text: str, disassembly: str, allowed: set[str], flag_address: int | None = None
+) -> tuple[dict, dict, list[str]]:
     kai_ranges = [
         (start, end) for start, end, name in android_isa.function_ranges(symbol_text) if name.startswith("kai_")
     ]
@@ -135,6 +154,7 @@ def audit(symbol_text: str, disassembly: str, allowed: set[str]) -> tuple[dict, 
     outside: dict[str, int] = {}
     failures: list[str] = []
     preceding: deque[str] = deque(maxlen=len(OUTLINE_ATOMIC_GUARD))
+    guard_addresses: set[int] = set()
     for line in disassembly.splitlines():
         match = android_isa.INSTRUCTION.fullmatch(line)
         if not match:
@@ -152,8 +172,22 @@ def audit(symbol_text: str, disassembly: str, allowed: set[str]) -> tuple[dict, 
             inside[family] = inside.get(family, 0) + 1
             continue
         outside[family] = outside.get(family, 0) + 1
-        if family not in allowed and not (family == "lse" and is_outline_atomic(previous)):
+        if family in allowed:
+            continue
+        guard_address = outline_atomic_flag_address(previous) if family == "lse" else None
+        if guard_address is None:
             failures.append(f"0x{address:x}: {instruction} ({family})")
+        elif flag_address is not None and guard_address != flag_address:
+            failures.append(
+                f"0x{address:x}: {instruction} (lse, guard tests 0x{guard_address:x} "
+                f"not {LSE_FLAG_SYMBOL} at 0x{flag_address:x})"
+            )
+        else:
+            guard_addresses.add(guard_address)
+    if len(guard_addresses) > 1:
+        failures.append(
+            "outline-atomic guards test different flags: " + ", ".join(f"0x{a:x}" for a in sorted(guard_addresses))
+        )
     return inside, outside, failures
 
 
@@ -162,13 +196,14 @@ def validate(
     symbol_text: str,
     disassembly: str,
     scalable_allowed: frozenset[str],
+    flag_address: int | None = None,
 ) -> str:
     march, features = variant_spec(variant)
     declared, allowed = allowed_families(march, features)
     total, scalable, scalable_functions = android_isa.validate_disassembly(
         symbol_text, disassembly, scalable_allowed
     )
-    inside, outside, failures = audit(symbol_text, disassembly, allowed)
+    inside, outside, failures = audit(symbol_text, disassembly, allowed, flag_address)
     if failures:
         raise ValueError(
             f"{variant} ({march}) contains ISA outside KleidiAI that it does not declare:\n"
@@ -205,6 +240,9 @@ def main() -> int:
     args = parser.parse_args()
     try:
         symbols = subprocess.check_output([args.readelf, "--dyn-syms", "--wide", str(args.library)], text=True)
+        flag_address = lse_flag_address(
+            subprocess.check_output([args.readelf, "--syms", "--wide", str(args.library)], text=True)
+        )
         disassembly = subprocess.check_output(
             [
                 args.objdump,
@@ -222,7 +260,7 @@ def main() -> int:
         scalable_allowed = (
             android_isa.validate_sources(args.llama_source, args.kleidiai_source) if has_scalable else frozenset()
         )
-        print(validate(args.variant, symbols, disassembly, scalable_allowed))
+        print(validate(args.variant, symbols, disassembly, scalable_allowed, flag_address))
     except (OSError, ValueError, subprocess.CalledProcessError) as error:
         print(f"Linux arm64 CPU ISA audit failed: {error}", file=sys.stderr)
         return 1

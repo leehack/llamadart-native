@@ -463,7 +463,8 @@ cmake -S . -B build/tts-smoke -G Ninja \
   -DLLAMADART_BUILD_TTS_SMOKE=ON
 cmake --build build/tts-smoke --target \
   llamadart_speculative_api_test llamadart_tts_api_test \
-  llamadart_tts_eval_test llamadart_mtmd_compat_test llamadart_tts_smoke
+  llamadart_tts_types_test llamadart_tts_eval_test llamadart_mtmd_compat_test \
+  llamadart_tts_smoke llamadart_tts_lfm3_smoke
 ctest --test-dir build/tts-smoke --output-on-failure
 build/tts-smoke/llamadart_tts_smoke \
   /path/to/Qwen3-TTS-model.gguf \
@@ -487,34 +488,32 @@ breaks, and no step returns `OK` after a break.
 Omit `--gpu` for a CPU-only run. An optional speaker-reference audio path may
 appear before the final `--gpu` flag.
 
-### Soprano
+### LFM3-Audio
 
-A build against llama.cpp v0.8.0 or later also runs Soprano (a Qwen3 backbone
-with a Vocos decoder projector) through `llama_dart_tts_get_info_v2` and
-`llama_dart_tts_init_v2`. `llama_dart_tts_model_type_supported` reports whether
-this build has it. `llama_dart_tts_get_info` and `llama_dart_tts_init` stay
-Qwen3-only: they report a Soprano projector as `UNKNOWN` and `UNSUPPORTED`.
-Soprano takes no speaker reference and no language; `llama_dart_tts_start`
-returns `UNSUPPORTED` for either. Its frame steps decode backbone tokens only,
-and the step that ends generation decodes the whole utterance at 32 kHz, which
-the eval callback can cancel. An utterance needs at least two frames.
-
-`llama_dart_soprano_tts_smoke` is built with the Qwen3 smoke. Convert
-[ekwek/Soprano-1.1-80M](https://huggingface.co/ekwek/Soprano-1.1-80M) with
-upstream `convert_hf_to_gguf.py`, once for the model and once with `--mmproj`,
-then run:
+Builds whose llama.cpp has the LFM3-Audio generator (v0.8.0 and later) also
+drive LFM3-Audio and LFM3-Omni speech output. Callers opt in by model type:
+`llama_dart_tts_get_info` and `llama_dart_tts_init` stay Qwen3-only, and
+`llama_dart_tts_get_info_ext` / `llama_dart_tts_init_ext` take a mask that
+names `LLAMA_DART_TTS_MODEL_TYPE_LFM3_AUDIO`. `llama_dart_tts_supported_model_types`
+reports whether the build has it. The wrapper renders `request.text` through the
+model's `tts` chat template with `request.language` and the voice of
+`llama_dart_tts_start_with_voice` (`female` or `male`). Output is complete PCM;
+speaker references, sequence continuation, text/audio interleaving and
+streaming are not exposed. Scope and upstream gaps:
+[docs/lfm3_support.md](docs/lfm3_support.md).
 
 ```bash
-build/tts-smoke/llamadart_soprano_tts_smoke \
-  /path/to/Soprano-1.1-80M.gguf \
-  /path/to/mmproj-Soprano-1.1-80M.gguf \
-  /tmp/soprano-smoke.wav "Hello from Llama Dart."
+build/tts-smoke/llamadart_tts_lfm3_smoke \
+  /path/to/LFM3-Audio-2B-Q4_K_M.gguf \
+  /path/to/mmproj-LFM3-Audio-2B-Q8_0.gguf \
+  /tmp/lfm3-smoke.wav --gpu
 ```
 
-It checks the Qwen3-only functions' rejection, Soprano metadata, the speaker
-and language rejections, cancel/reset, the one-frame failure, finite non-silent
-PCM, seeded repeats, a cancel during the audio decode, and `max_frames`
-truncation.
+It checks that the Qwen3-only exports still refuse the model, the capability
+metadata, speaker-reference and voice rejection, cancel before and during
+generation, reuse after cancel, seed, voice and language effects, `max_frames`
+truncation, and that ASR through the generic mtmd input exports transcribes the
+speech back to its text.
 
 ## Windows Build Notes
 

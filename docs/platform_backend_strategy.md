@@ -105,8 +105,16 @@ qualified releases as separate regression inputs.
     `make` and `pkg-config`.
 
   Unpin only with a CUDA toolkit that supports the image's GCC, an ISA audit
-  that admits that SVE by an exact audited range, and a Linux glibc floor raise
-  announced to `llamadart` consumers.
+  that admits that SVE by an exact audited range, a Linux glibc floor raise
+  announced to `llamadart` consumers, and an arm64 multiarch dependency
+  install that no longer downgrades `libpkgconf7 make pkg-config pkgconf`.
+
+  The floor is `GLIBC_2.38`, the highest version the 24.04 build imports.
+  `tools/check_glibc_floor.py` fails a shipped Linux `.so` above it, in
+  `build-linux` and `linux-artifact-contract`. Raise `GLIBC_FLOOR` in the same
+  change that announces the new floor.
+  `tests/test_runner_pins.py` fails when any of these jobs, or the Android
+  `build-android` and `android-vulkan-shaders` jobs, leaves `ubuntu-24.04`.
 - Windows ARM64 uses the `Visual Studio 18 2026` generator (CMake >= 4.2) with
   the ClangCL toolset. CI pins the `windows-11-vs2026-arm` runner because the
   `windows-11-arm` label moved to that image in September 2026

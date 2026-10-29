@@ -77,6 +77,10 @@ DEFAULT_REQUIRED_SYMBOLS = [
     "llama_dart_tts_get_output_info",
     "llama_dart_tts_read_pcm",
     "llama_dart_tts_last_error",
+    "llama_dart_tts_supported_model_types",
+    "llama_dart_tts_get_info_ext",
+    "llama_dart_tts_init_ext",
+    "llama_dart_tts_start_with_voice",
     "llama_dart_speculative_init",
     "llama_dart_speculative_free",
     "llama_dart_speculative_get_draft_context",
@@ -101,9 +105,6 @@ DEFAULT_REQUIRED_SYMBOLS = [
     "llama_dart_ngram_draft",
     "llama_dart_ngram_accept",
     "llama_dart_sampler_sample_and_accept_n",
-    "llama_dart_tts_model_type_supported",
-    "llama_dart_tts_get_info_v2",
-    "llama_dart_tts_init_v2",
 ]
 
 

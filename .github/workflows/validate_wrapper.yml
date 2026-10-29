@@ -400,6 +400,8 @@ jobs:
           python3 -m unittest discover -s tests -p test_linux_static_destructors.py
       - name: Build CPU-only Linux runtime
         run: python3 tools/build.py linux --arch "${{ matrix.arch }}" --backend cpu --jobs 2
+      - name: Check the glibc floor
+        run: python3 tools/check_glibc_floor.py "bin/linux/${{ matrix.arch }}"
       - name: Package and inspect Linux runtime
         run: |
           python3 tools/package_linux_artifact.py \
@@ -460,29 +462,22 @@ jobs:
           -DGGML_OPENMP=OFF
           -DLLAMADART_BUILD_TESTS=ON
           -DLLAMADART_BUILD_TTS_SMOKE=ON
-      # The Soprano tests take their expectation from this probe.
-      - name: Check that the Soprano probe follows the upstream release
-        env:
-          UPSTREAM: ${{ matrix.upstream }}
-        run: |
-          probe="$(sed -n 's/^LLAMADART_MTMD_HAS_SOPRANO:INTERNAL=//p' build/wrapper-contract/CMakeCache.txt)"
-          if [ "$UPSTREAM" = v0.8.0 ]; then test "$probe" = 1; else test -z "$probe"; fi
       - name: Build wrapper contract tests and smoke tool
         run: >-
           cmake --build build/wrapper-contract --target
           llamadart_speculative_api_test
           llamadart_build_identity_test
           llamadart_tts_api_test
+          llamadart_tts_types_test
           llamadart_tts_eval_test
           llamadart_tts_seed_test
-          llamadart_tts_family_test
           llamadart_mtmd_compat_test
           llamadart_image_token_limit_test
           llamadart_barrier_test
           llamadart_vulkan_device_info_test
           llamadart_exit_teardown_test
           llamadart_tts_smoke
-          llamadart_soprano_tts_smoke
+          llamadart_tts_lfm3_smoke
       - name: Run wrapper contract tests
         run: ctest --test-dir build/wrapper-contract --output-on-failure
       - name: Check that the build identity is reproducible and follows its inputs
@@ -596,6 +591,7 @@ jobs:
           llamadart_exit_teardown_test
           llamadart_vulkan_device_info_test
           llamadart_tts_api_test
+          llamadart_tts_types_test
           llamadart_image_token_limit_test
       - name: Run the barrier and Vulkan probe tests
         shell: pwsh
@@ -603,7 +599,7 @@ jobs:
           $wrapperDir = (Resolve-Path build/wx64).Path
           $upstreamDir = (Resolve-Path build/wx64/bin).Path
           $env:PATH = "$wrapperDir;$upstreamDir;$env:PATH"
-          ctest --test-dir build/wx64 -R "barrier|build_identity|vocabulary|vulkan_device_info|tts_api|image_token_limit" --timeout 120 --output-on-failure
+          ctest --test-dir build/wx64 -R "barrier|build_identity|vocabulary|vulkan_device_info|tts_api|tts_types|image_token_limit" --timeout 120 --output-on-failure
       - name: Validate wrapper exports
         shell: pwsh
         run: |

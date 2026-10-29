@@ -547,6 +547,8 @@ jobs:
             test -f "$CACHE_FILE" || { echo "Missing CMake cache at $CACHE_FILE"; exit 1; }
             grep -q '^GGML_CPU_KLEIDIAI:BOOL=ON$' "$CACHE_FILE" || { echo "Kleidi is not enabled in arm64 build"; exit 1; }
           fi
+      - name: Check the glibc floor
+        run: python3 tools/check_glibc_floor.py "bin/linux/${{ matrix.arch }}"
       - name: Stage upload payload
         run: |
           OUT_DIR="bin/linux/${{ matrix.arch }}"

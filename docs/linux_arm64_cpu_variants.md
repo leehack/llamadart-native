@@ -95,11 +95,18 @@ LSE, CRC, LRCPC and LRCPC2 instructions may appear only when the variant's
 `-march` enables them. `linux_armv8.2_2` may contain LSE, and `linux_armv8.6_1`
 LSE, LRCPC and LRCPC2. The baseline may contain none of them, except LSE inside
 libgcc's outline-atomic helpers, which the validator recognizes by their
-`adrp x16`, `ldrb w16`, `cbz w16` guard. KleidiAI kernels may contain them
-because KleidiAI picks kernels from the runtime HWCAP probe, not from compile
-flags. SVE and SME stay in the exact audited functions and pinned source pairs
+`adrp x16`, `ldrb w16`, `cbz w16` guard. objdump does not name the flag in
+the guard, so the validator compares its address with
+`__aarch64_have_lse_atomics` from `.symtab` when the library keeps one, and
+requires all guards in a library to test the same address. KleidiAI kernels
+may contain them because KleidiAI picks kernels from the runtime HWCAP probe,
+not from compile flags. SVE and SME stay in the exact audited functions and pinned source pairs
 of `tools/validate_android_cpu_isa.py`. Each variant must also contain its
 declared families outside KleidiAI and export `ggml_backend_score`.
+
+The family lists are a denylist. An instruction of an ARMv8.3+ extension the
+validator does not list (for example FCMA or JSCVT) passes it in the baseline
+and `linux_armv8.2_2`; only the QEMU run below catches it.
 
 The script then runs `tools/linux_cpu_variant_smoke.c` under QEMU, which raises
 SIGILL for any instruction the emulated CPU lacks. Selection loads every
