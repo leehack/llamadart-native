@@ -544,6 +544,7 @@ if (LLAMADART_BUILD_TESTS)
 
     # Contract assertions must execute against optimized Release libraries too.
     foreach(test_target llamadart_speculative_api_test llamadart_tts_api_test
+            llamadart_tts_types_test
             llamadart_build_identity_test
             llamadart_tts_eval_test llamadart_tts_seed_test llamadart_exit_teardown_test
             llamadart_mtmd_compat_test
