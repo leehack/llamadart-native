@@ -1,18 +1,30 @@
-# b11912 Android CPU ISA qualification
+# v0.8.0 Android CPU ISA qualification
 
-Candidate upstream is nightly b11912
-`961c376a2daa42220ec09663b9bde32c5fba1f70`, compared with audited v0.7.0
+Candidate upstream is stable v0.8.0
+`8642541b255bfb5dc39cd351a178be09013a55d6`, compared with audited v0.7.0
 `620d2225cc436ab0b001e3200e590e3b286ef9ab`. It uses KleidiAI v1.32.0 instead
-of v1.31.0. SVE/SME stays contained: b11912 adds two SVE kernels, and both are
+of v1.31.0. SVE/SME stays contained: v0.8.0 adds two SVE kernels, and both are
 reachable only through a runtime-checked Q8_0 table entry. Its complete source
 subtree pair is:
 
-- ggml/src: `70f69dc5934a43a747c855eb4e50f7f33aa81a3a8c45f9d1ef5b89fa73e429f7`
+- ggml/src: `0b14cd6eac9832e7e50cee546495581c0067e7bca5c0db1dee6c3f7c0f7cf1f3`
 - kai: `fd5b9ca98d07b81671eca377c258da74e72173f92f3cab0acdf6c17ab870bd9d`
 
 The production submodule, release workflow and downstream pins are unchanged.
 This document records local qualification. It does not claim a published or
-device-qualified b11912 runtime.
+device-qualified v0.8.0 runtime.
+
+## Delta from nightly b11912
+
+The dispatch audit below was first done on nightly b11912
+`961c376a2daa42220ec09663b9bde32c5fba1f70` (ggml/src
+`70f69dc5934a43a747c855eb4e50f7f33aa81a3a8c45f9d1ef5b89fa73e429f7`, same
+`kai`). v0.8.0 is b11912 plus 48 commits. Their only `ggml-cpu` change is
+upstream #31146, which lets `ggml_compute_forward_scale_f32`/`_bf16` walk
+non-contiguous rows; it adds no feature probe, selector, KleidiAI call or CMake
+change. The other `ggml/src` changes are in the CUDA, HIP, Metal, OpenCL,
+Hexagon, RPC, SYCL and Vulkan backends and one `ggml_scale_impl` assertion in
+`ggml.c`. The KleidiAI release, archive MD5 and `kai` digest are unchanged.
 
 ## Source and dispatch audit
 
@@ -65,13 +77,12 @@ does not cover numerical changes or accelerator backends.
 
 The production `build_android_arm64_cpu_variant` helper built
 `android_armv8.2_2` (`armv8.2-a+dotprod+fp16`, KleidiAI on, `GGML_NATIVE=OFF`)
-with NDK `28.2.13676358` on macOS arm64. The unmodified CLI rejected the exact
-pair above, reproducing the candidate lane failure. With the reviewed policy it
-passed: 261,695 instructions, with all 3,130 scalable instructions in 22 exact
-functions. That is the 20 v0.7.0 functions, still with 2,542 instructions, plus
+with NDK `28.2.13676358` on macOS arm64. With the reviewed policy it passed
+against v0.8.0: 261,765 instructions (b11912: 261,695), with all 3,130
+scalable instructions in the same 22 exact functions. That is the 20 v0.7.0 functions, still with 2,542 instructions, plus
 `kai_kernel_matmul_clamp_f32_qai8dxp1x8_qsi8cxp8x8_1x8_sve_dot` (201) and
 `kai_kernel_matmul_clamp_f32_qai8dxp4x8sf32_qsi8cxp4vsx8sf32bf32_16x4vs_sve_i8mm`
-(387). The validator grants these two only to the b11912 pair. Legacy and v0.7.0
+(387). The validator grants these two only to the v0.8.0 pair. Legacy and v0.7.0
 pairs keep their own sets, and cross-version pairs are rejected.
 
 ```bash
@@ -79,17 +90,17 @@ LLVM="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/darwin-x86_64/bin"
 python3 tools/validate_android_cpu_isa.py \
   --objdump "$LLVM/llvm-objdump" --readelf "$LLVM/llvm-readelf" \
   --llama-source third_party/llama.cpp \
-  --kleidiai-source build/android-isa-b11912/_deps/kleidiai-src \
-  build/android-isa-b11912/bin/libggml-cpu.so
+  --kleidiai-source build/android-isa/_deps/kleidiai-src \
+  build/android-isa/bin/libggml-cpu.so
 ```
 
 The compiled dispatch test detects `CPU_FEATURE_SVEI8MM` with a declaration
-probe. Against b11912 it checks all 128 masks, expecting mask 69 for the SVE
+probe. Against v0.8.0 it checks all 128 masks, expecting mask 69 for the SVE
 Q4_0 and Q8_0/Q6_K entries; older headers keep 64 masks and mask 7.
 A mutant that drops the Q8 mask-69 expectation fails the selector check.
 
-On an Apple M4 Max with `GGML_KLEIDIAI_SME=0`, every selector check and all 12
-matmuls passed. Q4_0 ran through DOTPROD, Q8_0 and Q6_K through I8MM, and Q4_K
+On an Apple M4 Max against v0.8.0, with and without `GGML_KLEIDIAI_SME=1`,
+every selector check and all 12 matmuls passed. Q4_0 ran through DOTPROD, Q8_0 and Q6_K through I8MM, and Q4_K
 fell back to the baseline buffer. With SME enabled, they passed through SME2.
 The CPU reports no SVE, so the new SVE kernels did not execute. The aarch64 GCC
 plus QEMU lane could not run locally: this host has no `qemu-aarch64`, no
@@ -98,7 +109,7 @@ plus QEMU lane could not run locally: this host has no `qemu-aarch64`, no
 ## Remaining gates
 
 - Hosted `android-arm64-isa`, `kleidiai-dispatch-emulated` (`cortex-a53` and
-  `max,sve=off,sme=off`) and `windows-arm64-kleidiai` b11912 rows.
+  `max,sve=off,sme=off`) and `windows-arm64-kleidiai` v0.8.0 rows.
   Windows compiles the two new `.S` files through upstream's MSVC lists and the
   existing ClangCL MARMASM settings; `cmake/kleidiai_windows.cmake` needs no
   change.
