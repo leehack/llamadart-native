@@ -400,6 +400,8 @@ jobs:
           python3 -m unittest discover -s tests -p test_linux_static_destructors.py
       - name: Build CPU-only Linux runtime
         run: python3 tools/build.py linux --arch "${{ matrix.arch }}" --backend cpu --jobs 2
+      - name: Check the glibc floor
+        run: python3 tools/check_glibc_floor.py "bin/linux/${{ matrix.arch }}"
       - name: Package and inspect Linux runtime
         run: |
           python3 tools/package_linux_artifact.py \
