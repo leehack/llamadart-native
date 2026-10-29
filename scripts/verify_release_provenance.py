@@ -642,6 +642,16 @@ def verify_documentation_contract(errors: list[str]) -> None:
 
 def verify_manifest_contract(errors: list[str]) -> None:
     patches_dir = ROOT / "patches/llama.cpp"
+
+    def fixed_upstream(entry: dict) -> bool:
+        fix = entry.get("upstream_fix")
+        if fix is None:
+            return False
+        patch = (patches_dir / entry["file"]).read_text()
+        source = ROOT / "third_party/llama.cpp" / re.search(
+            r"^\+\+\+ b/(\S+)$", patch, re.MULTILINE).group(1)
+        return source.is_file() and fix in source.read_text()
+
     carried_patches = [
         {
             "file": entry["file"],
@@ -649,6 +659,7 @@ def verify_manifest_contract(errors: list[str]) -> None:
             "tracking": entry["tracking"],
         }
         for entry in json.loads((patches_dir / "series.json").read_text())["patches"]
+        if not fixed_upstream(entry)
     ]
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)

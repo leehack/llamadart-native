@@ -23,7 +23,9 @@ evidence are documented in [v070_native_contracts.md](../../docs/v070_native_con
   patch `file`, the `tracking` issue, the `upstream` pull request or issue to
   watch (a permalink to the upstream lines when there is none), and
   `android_markers`: a `library` of the Android bundle and a `text` that only
-  the patched source compiles into it.
+  the patched source compiles into it. An optional `upstream_fix` is exact
+  text that the upstream repair puts in the patched source; see "Retiring a
+  patch upstream has fixed".
 - `NNNN-short-name.patch` is a unified diff (`git diff -U2` inside
   `third_party/llama.cpp`) of one existing `.c`, `.cpp`, `.m` or `.mm` file. A
   patch cannot add a file or edit a header: only a source that an upstream
@@ -60,11 +62,21 @@ bundle has every marker has every patch on its other platforms too.
 `python3 tools/llama_cpp_patches.py apply --strict --upstream
 third_party/llama.cpp --output <dir>` fails where the build would skip.
 
+## Retiring a patch upstream has fixed
+
+While older upstream commits still need a patch, give its entry the
+`upstream_fix` text instead of deleting it. A llama.cpp whose patched source
+contains that text has the fix: the build does not apply the patch, its
+markers are not required and the manifest does not list it. Any other
+llama.cpp still needs the patch, and it fails as above if the patch does not
+fit, so an upstream that rewrites the fix differently keeps the patch rather
+than losing it. Pick text that the unfixed sources do not contain.
+
 ## What a release records
 
 `assets.json` has `llama_cpp_patches`: the `file`, `sha256` and `tracking` of
-every patch, an empty list when there is none. `llama_cpp_commit` remains the
-upstream commit the patches apply to.
+every patch that the released llama.cpp needs, an empty list when there is
+none. `llama_cpp_commit` remains the upstream commit the patches apply to.
 
 ## Adding, refreshing or removing a patch
 
@@ -77,5 +89,6 @@ upstream commit the patches apply to.
 4. Describe the patch, its evidence and what removes it in the document of the
    rebuild that introduces it under `docs/`.
 
-Remove a patch when the pinned upstream contains the fix or the defect no
-longer reproduces without it.
+Remove a patch when no built upstream needs it any more: the pinned upstream
+and every `validate_wrapper.yml` row contain the fix, or the defect no longer
+reproduces without it.
