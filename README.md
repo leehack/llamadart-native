@@ -394,6 +394,37 @@ what a caller may do with the objects of a call that failed.
 vocabulary that the test writes. `llamadart_barrier_test` calls the helpers
 behind the barrier directly.
 
+## Cancel Byte
+
+A caller cancels a request by setting a byte it owns to nonzero from another
+thread. Three exports let that byte stop native work in flight instead of
+waiting for it:
+
+- `llama_dart_cancel_flag_abort_callback`, passed to
+  `llama_set_abort_callback` with the byte as its data, stops a
+  `llama_decode` or `llama_encode` after the node being computed; the call
+  returns 2. Upstream installs it only on the CPU backend, so a graph on a GPU
+  backend runs to its end.
+- `llama_dart_mtmd_encode_chunk_cancellable` is `mtmd_encode_chunk` with a
+  cancel byte, for STT audio and vision encodes. A clip encode runs on clip's
+  own backends, which upstream gives no abort callback, so the stop goes
+  through `mtmd_context_params.cb_eval`: install
+  `llama_dart_mtmd_eval_callback` there, which also does what
+  `llama_dart_tts_eval_callback` does inside a TTS step. During the call it
+  splits the encode after attention nodes and, once the byte is nonzero, ends
+  the compute after the next node. The call then returns
+  `LLAMA_DART_MTMD_ENCODE_CANCELLED` (2), and the context stays usable.
+
+Chunking leaves CPU output unchanged. Metal fuses ops only within one command
+buffer, whose node ranges depend on the size of the graph it computes, so on
+Metal a chunked encode fuses other ops than an unchunked one and its output
+differs slightly.
+
+`llamadart_cancel_flag_test` covers both. Its `decode` scenario uses the
+model that the exit teardown tests write; its `mtmd-encode` scenarios run when
+`LLAMADART_EXIT_TEARDOWN_TEST_MODEL` and `LLAMADART_EXIT_TEARDOWN_TEST_MMPROJ`
+name a real model and projector.
+
 ## Vulkan Device Facts
 
 `llama_dart_vulkan_get_device_count` and `llama_dart_vulkan_get_device_info`
