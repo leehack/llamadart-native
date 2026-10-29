@@ -180,6 +180,15 @@ unset(LLAMADART_SPECULATIVE_HAS_COMMON_BATCH CACHE)
 check_cxx_source_compiles("#include <common.h>
 int main() { return sizeof(common_batch) == 0; }"
     LLAMADART_SPECULATIVE_HAS_COMMON_BATCH)
+unset(LLAMADART_MTMD_HAS_LFM3A_GEN CACHE)
+check_cxx_source_compiles("#include <chat.h>
+#include <mtmd-helper.h>
+int main() {
+  return MTMD_GEN_AUDIO_TYPE_LFM3A == 0 ||
+         sizeof(decltype(&mtmd_helper_gen_audio_next_is_text)) == 0 ||
+         sizeof(decltype(&common_chat_get_tts_prompt)) == 0;
+}"
+    LLAMADART_MTMD_HAS_LFM3A_GEN)
 unset(LLAMADART_CONTEXT_HAS_MOE_CACHE CACHE)
 check_cxx_source_compiles("#include <llama.h>
 int main() { return sizeof(decltype(llama_context_params::moe_cache_size)) == 0; }"
@@ -250,6 +259,7 @@ target_compile_definitions(llamadart_lib PRIVATE
     LLAMADART_CONTEXT_HAS_MOE_CACHE=$<BOOL:${LLAMADART_CONTEXT_HAS_MOE_CACHE}>
     LLAMADART_MTMD_HELPER_HAS_EMBD_BATCH=$<BOOL:${LLAMADART_MTMD_HELPER_HAS_EMBD_BATCH}>
     LLAMADART_MTMD_HAS_GEN_STATE=$<BOOL:${LLAMADART_MTMD_HAS_GEN_STATE}>
+    LLAMADART_MTMD_HAS_LFM3A_GEN=$<BOOL:${LLAMADART_MTMD_HAS_LFM3A_GEN}>
     LLAMADART_SPECULATIVE_HAS_COMMON_BATCH=$<BOOL:${LLAMADART_SPECULATIVE_HAS_COMMON_BATCH}>
     LLAMADART_MTMD_HELPER_HAS_OPTIONS=$<BOOL:${LLAMADART_MTMD_HELPER_HAS_OPTIONS}>)
 
@@ -299,7 +309,21 @@ if (LLAMADART_BUILD_TESTS)
     add_executable(llamadart_tts_api_test tests/tts_api_test.c)
     target_link_libraries(llamadart_tts_api_test PRIVATE llamadart_lib)
     target_include_directories(llamadart_tts_api_test PRIVATE src)
+    target_compile_definitions(llamadart_tts_api_test PRIVATE
+        LLAMADART_MTMD_HAS_LFM3A_GEN=$<BOOL:${LLAMADART_MTMD_HAS_LFM3A_GEN}>)
     add_test(NAME llamadart_tts_api_test COMMAND llamadart_tts_api_test)
+
+    add_executable(llamadart_tts_types_test tests/tts_types_test.cpp)
+    target_compile_features(llamadart_tts_types_test PRIVATE cxx_std_17)
+    target_compile_definitions(llamadart_tts_types_test PRIVATE
+        LLAMADART_MTMD_HAS_LFM3A_GEN=$<BOOL:${LLAMADART_MTMD_HAS_LFM3A_GEN}>)
+    target_include_directories(llamadart_tts_types_test PRIVATE
+        src
+        third_party/llama.cpp/include
+        third_party/llama.cpp/ggml/include
+        third_party/llama.cpp/tools/mtmd
+    )
+    add_test(NAME llamadart_tts_types_test COMMAND llamadart_tts_types_test)
 
     add_executable(llamadart_build_identity_test tests/build_identity_test.c)
     target_link_libraries(llamadart_build_identity_test PRIVATE llamadart_lib)
@@ -569,6 +593,15 @@ if (LLAMADART_BUILD_TTS_SMOKE)
     target_compile_features(llamadart_tts_smoke PRIVATE cxx_std_17)
     target_link_libraries(llamadart_tts_smoke PRIVATE llamadart_lib)
     target_include_directories(llamadart_tts_smoke PRIVATE
+        third_party/llama.cpp/include
+        third_party/llama.cpp/tools/mtmd
+        src
+    )
+
+    add_executable(llamadart_tts_lfm3_smoke tools/tts_lfm3_smoke.cpp)
+    target_compile_features(llamadart_tts_lfm3_smoke PRIVATE cxx_std_17)
+    target_link_libraries(llamadart_tts_lfm3_smoke PRIVATE llamadart_lib)
+    target_include_directories(llamadart_tts_lfm3_smoke PRIVATE
         third_party/llama.cpp/include
         third_party/llama.cpp/tools/mtmd
         src

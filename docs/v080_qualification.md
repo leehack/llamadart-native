@@ -26,8 +26,10 @@ false. The wrapper's exported API is unchanged: 89 required exports.
 
 v0.8.0 adds `n_past`, `out_mode` and `voice` to `mtmd_helper_gen_audio_inp`.
 The wrapper value-initialises that struct, so they stay off (no sequence
-continuation, no voice). It still accepts only `MTMD_GEN_AUDIO_TYPE_QWEN3TTS`;
-the new Soprano and LFM3-Audio generators report unsupported.
+continuation, no voice). `llama_dart_tts_get_info` and `llama_dart_tts_init`
+still accept only `MTMD_GEN_AUDIO_TYPE_QWEN3TTS`. LFM3-Audio is opt-in through
+their `_ext` variants ([lfm3_support.md](lfm3_support.md)); Soprano reports
+unsupported.
 
 ## Carried patches
 

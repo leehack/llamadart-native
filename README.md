@@ -463,7 +463,8 @@ cmake -S . -B build/tts-smoke -G Ninja \
   -DLLAMADART_BUILD_TTS_SMOKE=ON
 cmake --build build/tts-smoke --target \
   llamadart_speculative_api_test llamadart_tts_api_test \
-  llamadart_tts_eval_test llamadart_mtmd_compat_test llamadart_tts_smoke
+  llamadart_tts_types_test llamadart_tts_eval_test llamadart_mtmd_compat_test \
+  llamadart_tts_smoke llamadart_tts_lfm3_smoke
 ctest --test-dir build/tts-smoke --output-on-failure
 build/tts-smoke/llamadart_tts_smoke \
   /path/to/Qwen3-TTS-model.gguf \
@@ -486,6 +487,33 @@ frame-72 decodes even when the flag returns to zero right after the decode
 breaks, and no step returns `OK` after a break.
 Omit `--gpu` for a CPU-only run. An optional speaker-reference audio path may
 appear before the final `--gpu` flag.
+
+### LFM3-Audio
+
+Builds whose llama.cpp has the LFM3-Audio generator (v0.8.0 and later) also
+drive LFM3-Audio and LFM3-Omni speech output. Callers opt in by model type:
+`llama_dart_tts_get_info` and `llama_dart_tts_init` stay Qwen3-only, and
+`llama_dart_tts_get_info_ext` / `llama_dart_tts_init_ext` take a mask that
+names `LLAMA_DART_TTS_MODEL_TYPE_LFM3_AUDIO`. `llama_dart_tts_supported_model_types`
+reports whether the build has it. The wrapper renders `request.text` through the
+model's `tts` chat template with `request.language` and the voice of
+`llama_dart_tts_start_with_voice` (`female` or `male`). Output is complete PCM;
+speaker references, sequence continuation, text/audio interleaving and
+streaming are not exposed. Scope and upstream gaps:
+[docs/lfm3_support.md](docs/lfm3_support.md).
+
+```bash
+build/tts-smoke/llamadart_tts_lfm3_smoke \
+  /path/to/LFM3-Audio-2B-Q4_K_M.gguf \
+  /path/to/mmproj-LFM3-Audio-2B-Q8_0.gguf \
+  /tmp/lfm3-smoke.wav --gpu
+```
+
+It checks that the Qwen3-only exports still refuse the model, the capability
+metadata, speaker-reference and voice rejection, cancel before and during
+generation, reuse after cancel, seed, voice and language effects, `max_frames`
+truncation, and that ASR through the generic mtmd input exports transcribes the
+speech back to its text.
 
 ## Windows Build Notes
 
