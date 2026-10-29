@@ -98,10 +98,10 @@ production submodule stays untouched.
 
 Upstream master `1242be66f` (`b11763`, 2026-10-20) still has the pooled-only
 condition and crashes the same way (exit 139 with SmolLM2-135M and
-Qwen3.5-0.8B on CPU). Validating leaf assignments in
-`ggml_gallocr_needs_realloc` would also stop the crash. Remove the patch once
-a qualified upstream release has either fix and `model-embedding-toggle`
-passes without it.
+Qwen3.5-0.8B on CPU). Upstream #31086 (`74bca395`, first in b11870) drops the
+pooling condition. v0.8.0 contains it, passes without the patch and retires
+it through `upstream_fix` ([v080_qualification.md](v080_qualification.md));
+v0.7.0 still applies it.
 
 The durable `model-embedding-toggle` test uses direct upstream calls with no
 speculative state. It starts from contexts created with extraction off and
