@@ -101,6 +101,9 @@ DEFAULT_REQUIRED_SYMBOLS = [
     "llama_dart_ngram_draft",
     "llama_dart_ngram_accept",
     "llama_dart_sampler_sample_and_accept_n",
+    "llama_dart_tts_model_type_supported",
+    "llama_dart_tts_get_info_v2",
+    "llama_dart_tts_init_v2",
 ]
 
 

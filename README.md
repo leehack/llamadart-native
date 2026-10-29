@@ -487,6 +487,35 @@ breaks, and no step returns `OK` after a break.
 Omit `--gpu` for a CPU-only run. An optional speaker-reference audio path may
 appear before the final `--gpu` flag.
 
+### Soprano
+
+A build against llama.cpp v0.8.0 or later also runs Soprano (a Qwen3 backbone
+with a Vocos decoder projector) through `llama_dart_tts_get_info_v2` and
+`llama_dart_tts_init_v2`. `llama_dart_tts_model_type_supported` reports whether
+this build has it. `llama_dart_tts_get_info` and `llama_dart_tts_init` stay
+Qwen3-only: they report a Soprano projector as `UNKNOWN` and `UNSUPPORTED`.
+Soprano takes no speaker reference and no language; `llama_dart_tts_start`
+returns `UNSUPPORTED` for either. Its frame steps decode backbone tokens only,
+and the step that ends generation decodes the whole utterance at 32 kHz, which
+the eval callback can cancel. An utterance needs at least two frames.
+
+`llama_dart_soprano_tts_smoke` is built with the Qwen3 smoke. Convert
+[ekwek/Soprano-1.1-80M](https://huggingface.co/ekwek/Soprano-1.1-80M) with
+upstream `convert_hf_to_gguf.py`, once for the model and once with `--mmproj`,
+then run:
+
+```bash
+build/tts-smoke/llamadart_soprano_tts_smoke \
+  /path/to/Soprano-1.1-80M.gguf \
+  /path/to/mmproj-Soprano-1.1-80M.gguf \
+  /tmp/soprano-smoke.wav "Hello from Llama Dart."
+```
+
+It checks the Qwen3-only functions' rejection, Soprano metadata, the speaker
+and language rejections, cancel/reset, the one-frame failure, finite non-silent
+PCM, seeded repeats, a cancel during the audio decode, and `max_frames`
+truncation.
+
 ## Windows Build Notes
 
 MSVC release builds keep interprocedural optimization enabled by default, but

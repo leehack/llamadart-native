@@ -61,6 +61,23 @@ int main(void) {
 
     llama_dart_tts_free(NULL);
 
+    assert(llama_dart_tts_model_type_supported(LLAMA_DART_TTS_MODEL_TYPE_QWEN3));
+    assert(!llama_dart_tts_model_type_supported(LLAMA_DART_TTS_MODEL_TYPE_NONE));
+    assert(!llama_dart_tts_model_type_supported(LLAMA_DART_TTS_MODEL_TYPE_UNKNOWN));
+    assert(!llama_dart_tts_model_type_supported(-1));
+    assert(llama_dart_tts_model_type_supported(LLAMA_DART_TTS_MODEL_TYPE_SOPRANO) ==
+           (LLAMADART_MTMD_HAS_SOPRANO != 0));
+
+    info.struct_size = sizeof(info);
+    assert(llama_dart_tts_get_info_v2(NULL, &info) == LLAMA_DART_TTS_STATUS_INVALID_ARGUMENT);
+    assert(llama_dart_tts_get_info_v2(NULL, NULL) == LLAMA_DART_TTS_STATUS_INVALID_ARGUMENT);
+    info.struct_size = sizeof(info) - 1;
+    assert(llama_dart_tts_get_info_v2(NULL, &info) == LLAMA_DART_TTS_STATUS_INVALID_ARGUMENT);
+    status = LLAMA_DART_TTS_STATUS_OK;
+    assert(llama_dart_tts_init_v2(NULL, NULL, &status) == NULL);
+    assert(status == LLAMA_DART_TTS_STATUS_INVALID_ARGUMENT);
+    assert(llama_dart_tts_init_v2(NULL, NULL, NULL) == NULL);
+
     // A failure that is not a caught exception leaves no last error.
     assert(llama_dart_last_error() == NULL);
     llama_dart_clear_last_error();

@@ -74,6 +74,8 @@ enum llama_dart_tts_status {
 enum llama_dart_tts_model_type {
     LLAMA_DART_TTS_MODEL_TYPE_NONE = 0,
     LLAMA_DART_TTS_MODEL_TYPE_QWEN3 = 1,
+    // Reported only by llama_dart_tts_get_info_v2.
+    LLAMA_DART_TTS_MODEL_TYPE_SOPRANO = 2,
     LLAMA_DART_TTS_MODEL_TYPE_UNKNOWN = 255,
 };
 
@@ -854,6 +856,41 @@ LLAMADART_API enum llama_dart_tts_status llama_dart_tts_read_pcm(
 // Returns a task-owned diagnostic string, valid until the next task call.
 LLAMADART_API const char * llama_dart_tts_last_error(
     const struct llama_dart_tts * tts);
+
+// Families beyond Qwen3-TTS. The functions above keep their Qwen3-only
+// contract: llama_dart_tts_get_info reports a Soprano projector as UNKNOWN and
+// UNSUPPORTED, and llama_dart_tts_init rejects it.
+//
+// Returns whether llama_dart_tts_init_v2 runs model_type in this build. QWEN3
+// always does; SOPRANO only when libllamadart was built against a llama.cpp
+// with the Soprano generator.
+LLAMADART_API bool llama_dart_tts_model_type_supported(int32_t model_type);
+
+// Like llama_dart_tts_get_info, and also reports SOPRANO, with its sample rate,
+// one channel and no capability bits, where
+// llama_dart_tts_model_type_supported(SOPRANO) is true. Any other generator is
+// UNKNOWN and UNSUPPORTED.
+LLAMADART_API enum llama_dart_tts_status llama_dart_tts_get_info_v2(
+    const struct mtmd_context * mtmd,
+    struct llama_dart_tts_info * out_info);
+
+// Like llama_dart_tts_init, for every family llama_dart_tts_get_info_v2
+// reports with OK. A Qwen3-TTS task behaves as one from llama_dart_tts_init.
+// A Soprano task differs:
+// - llama_dart_tts_start returns UNSUPPORTED for a speaker reference or a
+//   non-empty language and leaves the task as it was.
+// - Each frame step only decodes a backbone token. The step that ends
+//   generation (end of speech, max_frames or the end of the context) decodes
+//   the whole utterance's audio, so it is the long step; with
+//   llama_dart_tts_eval_callback installed, a cancel stops that decode at its
+//   next chunk boundary and the step returns CANCELLED.
+// - The decoder needs at least two frames; fewer make that step fail with
+//   UPSTREAM_ERROR.
+// - request->seed seeds the backbone sampler, the only sampler.
+LLAMADART_API struct llama_dart_tts * llama_dart_tts_init_v2(
+    struct llama_context * llama,
+    struct mtmd_context * mtmd,
+    enum llama_dart_tts_status * out_status);
 
 // Creates a sampler that applies llama.cpp's reasoning-token budget before an
 // optional grammar sampler. The returned sampler owns grammar_sampler.
