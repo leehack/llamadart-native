@@ -110,6 +110,9 @@ class AndroidCpuIsaTest(unittest.TestCase):
                              )) | frozenset({(
                                  "b571df853210d243a83b1ec34a6936f147916f0369d792f8bb0d17f37fc7894b",
                                  "deb324dbcf8c952ec149433ab58cbed0b2ab2374a557f0a4eea575b2da761377",
+                             ), (
+                                 "0b14cd6eac9832e7e50cee546495581c0067e7bca5c0db1dee6c3f7c0f7cf1f3",
+                                 "fd5b9ca98d07b81671eca377c258da74e72173f92f3cab0acdf6c17ab870bd9d",
                              )})
         self.assertEqual(audit.SOURCE_PAIRS, expected)
         for ggml, kai in expected:
@@ -134,9 +137,12 @@ class AndroidCpuIsaTest(unittest.TestCase):
     def test_cli_binds_exact_function_ranges_to_the_reviewed_source_pair(self):
         args = ["audit", "--objdump", "objdump", "--readelf", "readelf",
                 "--llama-source", "llama", "--kleidiai-source", "kleidiai", "test.so"]
+        allowed_by_pair = {audit.V070_SOURCE_PAIR: audit.DISPATCHED_FUNCTIONS_V070,
+                           audit.V080_SOURCE_PAIR: audit.DISPATCHED_FUNCTIONS_V080}
         for pair in audit.SOURCE_PAIRS:
-            allowed = audit.DISPATCHED_FUNCTIONS_V070 if pair == audit.V070_SOURCE_PAIR else audit.DISPATCHED_FUNCTIONS
-            for artifact_ranges in (audit.DISPATCHED_FUNCTIONS, audit.DISPATCHED_FUNCTIONS_V070):
+            allowed = allowed_by_pair.get(pair, audit.DISPATCHED_FUNCTIONS)
+            for artifact_ranges in (audit.DISPATCHED_FUNCTIONS, audit.DISPATCHED_FUNCTIONS_V070,
+                                    audit.DISPATCHED_FUNCTIONS_V080):
                 names = sorted(artifact_ranges)
                 symbols = "\n".join(symbol(name, 0x100 + i * 8) for i, name in enumerate(names))
                 body = "\n".join(f"{0x100 + i * 8:x}: 04bf5020 rdvl x0, #1" for i in range(len(names)))
@@ -145,6 +151,13 @@ class AndroidCpuIsaTest(unittest.TestCase):
                         mock.patch.object(audit, "tree_digest", side_effect=pair), \
                         contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
                     self.assertEqual(audit.main(), 0 if artifact_ranges == allowed else 1)
+
+    def test_v080_adds_only_the_runtime_gated_sve_q8_kernels(self):
+        self.assertEqual(audit.DISPATCHED_FUNCTIONS_V080 - audit.DISPATCHED_FUNCTIONS_V070, {
+            "kai_kernel_matmul_clamp_f32_qai8dxp1x8_qsi8cxp8x8_1x8_sve_dot",
+            "kai_kernel_matmul_clamp_f32_qai8dxp4x8sf32_qsi8cxp4vsx8sf32bf32_16x4vs_sve_i8mm",
+        })
+        self.assertLess(audit.DISPATCHED_FUNCTIONS_V070, audit.DISPATCHED_FUNCTIONS_V080)
 
     def test_added_caller_or_mutated_kernel_invalidates_approved_pair(self):
         with tempfile.TemporaryDirectory() as directory:
