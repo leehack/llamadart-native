@@ -130,19 +130,33 @@ int test_flag() {
 
 // Context evaluation hook of the decode scenario: once armed, it has every
 // node computed on its own and sets the cancel byte after node
-// g_store_after_node.
+// g_store_after_node. The CPU backend checks the abort callback only after a
+// node that computes something, so view nodes after the store still finish.
 std::atomic<int8_t> g_decode_flag{0};
 std::atomic<bool> g_split_nodes{false};
 int g_store_after_node = -1;
 int g_nodes_done = 0;
-int g_nodes_done_after_store = 0;
+int g_computed_after_store = 0;
 
-bool split_and_store(ggml_tensor *, bool ask, void *) {
+bool computes(const ggml_tensor *node) {
+  switch (node->op) {
+  case GGML_OP_NONE:
+  case GGML_OP_VIEW:
+  case GGML_OP_RESHAPE:
+  case GGML_OP_PERMUTE:
+  case GGML_OP_TRANSPOSE:
+    return false;
+  default:
+    return true;
+  }
+}
+
+bool split_and_store(ggml_tensor *node, bool ask, void *) {
   if (ask) {
     return g_split_nodes.load();
   }
-  if (g_decode_flag.load() != 0) {
-    ++g_nodes_done_after_store;
+  if (g_decode_flag.load() != 0 && computes(node)) {
+    ++g_computed_after_store;
   }
   if (g_nodes_done++ == g_store_after_node) {
     g_decode_flag.store(1);
@@ -207,8 +221,8 @@ int test_decode(const char *path) {
   g_split_nodes.store(true);
   g_store_after_node = 3;
   assert(decode_prompt(fixture) == 2);
-  assert(g_nodes_done == 4);
-  assert(g_nodes_done_after_store == 0);
+  assert(g_nodes_done > g_store_after_node);
+  assert(g_computed_after_store == 0);
   assert(llama_memory_seq_pos_max(memory, 0) == -1);
 
   g_split_nodes.store(false);
@@ -329,7 +343,8 @@ int test_mtmd_encode(const char *model_path, const char *mmproj_path,
   assert(llama_dart_mtmd_encode_chunk_cancellable(fixture.mtmd, fixture.chunk,
                                                   flag_byte) == 0);
   const std::vector<float> chunked = output(fixture);
-  // The CPU backend fuses nothing, so chunking leaves its output unchanged.
+  // The CPU backend fuses only RMS_NORM with MUL, which no boundary after
+  // attention splits, so chunking leaves its output unchanged.
   // Metal fuses only within one command buffer, whose node ranges depend on
   // the size of the graph it computes, so there chunking changes which ops
   // are fused.
