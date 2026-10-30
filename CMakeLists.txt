@@ -153,6 +153,14 @@ llamadart_configure_kleidiai_windows_assembly()
 # Probe declarations without calling upstream symbols or running target code.
 # Recheck after switching upstream revisions in an existing build.
 include(CheckCXXSourceCompiles)
+# Compile only: a linked probe also depends on whether the compiler emits an
+# inline function from the headers and on the library that defines it. GCC
+# emits chat.h's jinja functions, so a linked LFM3 probe failed on Linux and
+# compiled speech output out of the release bundles (llamadart-native#146).
+function(llamadart_probe_declaration result source)
+    set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)
+    check_cxx_source_compiles("${source}" ${result})
+endfunction()
 include(CMakePushCheckState)
 # Match the wrapper's C++17 contract when probing common.h (std::filesystem).
 set(CMAKE_CXX_STANDARD 17)
@@ -162,45 +170,45 @@ set(CMAKE_REQUIRED_INCLUDES
     "${CMAKE_CURRENT_SOURCE_DIR}/third_party/llama.cpp/ggml/include"
     "${CMAKE_CURRENT_SOURCE_DIR}/third_party/llama.cpp/tools/mtmd")
 unset(LLAMADART_MTMD_HELPER_HAS_OPTIONS CACHE)
-check_cxx_source_compiles("#include <mtmd-helper.h>
-int main() { return sizeof(decltype(mtmd_helper_init_opt_default())) == 0; }"
-    LLAMADART_MTMD_HELPER_HAS_OPTIONS)
+llamadart_probe_declaration(LLAMADART_MTMD_HELPER_HAS_OPTIONS
+    "#include <mtmd-helper.h>
+int main() { return sizeof(decltype(mtmd_helper_init_opt_default())) == 0; }")
 unset(LLAMADART_MTMD_HELPER_HAS_EMBD_BATCH CACHE)
-check_cxx_source_compiles("#include <mtmd-helper.h>
-int main() { return sizeof(mtmd_helper_embd_batch) == 0; }"
-    LLAMADART_MTMD_HELPER_HAS_EMBD_BATCH)
+llamadart_probe_declaration(LLAMADART_MTMD_HELPER_HAS_EMBD_BATCH
+    "#include <mtmd-helper.h>
+int main() { return sizeof(mtmd_helper_embd_batch) == 0; }")
 unset(LLAMADART_MTMD_HAS_GEN_STATE CACHE)
-check_cxx_source_compiles("#include <mtmd.h>
-int main() { return sizeof(decltype(&mtmd_gen_state_init)) == 0; }"
-    LLAMADART_MTMD_HAS_GEN_STATE)
+llamadart_probe_declaration(LLAMADART_MTMD_HAS_GEN_STATE
+    "#include <mtmd.h>
+int main() { return sizeof(decltype(&mtmd_gen_state_init)) == 0; }")
 unset(LLAMADART_MTMD_HAS_SOPRANO CACHE)
-check_cxx_source_compiles("#include <mtmd.h>
-int main() { return MTMD_GEN_AUDIO_TYPE_SOPRANO == MTMD_GEN_AUDIO_TYPE_NONE; }"
-    LLAMADART_MTMD_HAS_SOPRANO)
+llamadart_probe_declaration(LLAMADART_MTMD_HAS_SOPRANO
+    "#include <mtmd.h>
+int main() { return MTMD_GEN_AUDIO_TYPE_SOPRANO == MTMD_GEN_AUDIO_TYPE_NONE; }")
 list(APPEND CMAKE_REQUIRED_INCLUDES
     "${CMAKE_CURRENT_SOURCE_DIR}/third_party/llama.cpp/common"
     "${CMAKE_CURRENT_SOURCE_DIR}/third_party/llama.cpp/vendor")
 unset(LLAMADART_SPECULATIVE_HAS_COMMON_BATCH CACHE)
-check_cxx_source_compiles("#include <common.h>
-int main() { return sizeof(common_batch) == 0; }"
-    LLAMADART_SPECULATIVE_HAS_COMMON_BATCH)
+llamadart_probe_declaration(LLAMADART_SPECULATIVE_HAS_COMMON_BATCH
+    "#include <common.h>
+int main() { return sizeof(common_batch) == 0; }")
 unset(LLAMADART_MTMD_HAS_LFM3A_GEN CACHE)
-check_cxx_source_compiles("#include <chat.h>
+llamadart_probe_declaration(LLAMADART_MTMD_HAS_LFM3A_GEN
+    "#include <chat.h>
 #include <mtmd-helper.h>
 int main() {
   return MTMD_GEN_AUDIO_TYPE_LFM3A == 0 ||
          sizeof(decltype(&mtmd_helper_gen_audio_next_is_text)) == 0 ||
          sizeof(decltype(&common_chat_get_tts_prompt)) == 0;
-}"
-    LLAMADART_MTMD_HAS_LFM3A_GEN)
+}")
 unset(LLAMADART_CONTEXT_HAS_MOE_CACHE CACHE)
-check_cxx_source_compiles("#include <llama.h>
-int main() { return sizeof(decltype(llama_context_params::moe_cache_size)) == 0; }"
-    LLAMADART_CONTEXT_HAS_MOE_CACHE)
+llamadart_probe_declaration(LLAMADART_CONTEXT_HAS_MOE_CACHE
+    "#include <llama.h>
+int main() { return sizeof(decltype(llama_context_params::moe_cache_size)) == 0; }")
 unset(LLAMADART_HAS_BATCH_EXT CACHE)
-check_cxx_source_compiles("#include <llama.h>
-int main() { return sizeof(decltype(&llama_process)) == 0; }"
-    LLAMADART_HAS_BATCH_EXT)
+llamadart_probe_declaration(LLAMADART_HAS_BATCH_EXT
+    "#include <llama.h>
+int main() { return sizeof(decltype(&llama_process)) == 0; }")
 cmake_pop_check_state()
 if (TARGET ggml-vulkan AND LLAMADART_SPIRV_HEADERS_INCLUDE)
     target_include_directories(ggml-vulkan SYSTEM PRIVATE "${LLAMADART_SPIRV_HEADERS_INCLUDE}")
@@ -314,10 +322,16 @@ if (LLAMADART_BUILD_TESTS)
     add_executable(llamadart_tts_api_test tests/tts_api_test.c)
     target_link_libraries(llamadart_tts_api_test PRIVATE llamadart_lib)
     target_include_directories(llamadart_tts_api_test PRIVATE src)
-    target_compile_definitions(llamadart_tts_api_test PRIVATE
-        LLAMADART_MTMD_HAS_LFM3A_GEN=$<BOOL:${LLAMADART_MTMD_HAS_LFM3A_GEN}>
-        LLAMADART_MTMD_HAS_SOPRANO=$<BOOL:${LLAMADART_MTMD_HAS_SOPRANO}>)
+    find_package(Python3 COMPONENTS Interpreter REQUIRED)
+    execute_process(
+        COMMAND "${Python3_EXECUTABLE}" tools/expected_tts_model_types.py
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        OUTPUT_VARIABLE LLAMADART_EXPECTED_TTS_MODEL_TYPES
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        COMMAND_ERROR_IS_FATAL ANY)
     add_test(NAME llamadart_tts_api_test COMMAND llamadart_tts_api_test)
+    set_tests_properties(llamadart_tts_api_test PROPERTIES
+        ENVIRONMENT "LLAMADART_EXPECTED_TTS_MODEL_TYPES=${LLAMADART_EXPECTED_TTS_MODEL_TYPES}")
 
     add_executable(llamadart_tts_types_test tests/tts_types_test.cpp)
     target_compile_features(llamadart_tts_types_test PRIVATE cxx_std_17)
@@ -605,9 +619,9 @@ if (LLAMADART_BUILD_KLEIDIAI_TESTS)
         "${CMAKE_CURRENT_SOURCE_DIR}/third_party/llama.cpp/ggml/include"
         "${CMAKE_CURRENT_SOURCE_DIR}/third_party/llama.cpp/ggml/src/ggml-cpu/kleidiai")
     unset(LLAMADART_KLEIDIAI_HAS_KQUANTS CACHE)
-    check_cxx_source_compiles("#include <kernels.h>
-int main() { return sizeof(decltype(ggml_kleidiai_select_kernels_q4_k(CPU_FEATURE_NONE))) == 0; }"
-        LLAMADART_KLEIDIAI_HAS_KQUANTS)
+    llamadart_probe_declaration(LLAMADART_KLEIDIAI_HAS_KQUANTS
+        "#include <kernels.h>
+int main() { return sizeof(decltype(ggml_kleidiai_select_kernels_q4_k(CPU_FEATURE_NONE))) == 0; }")
     cmake_pop_check_state()
     target_compile_definitions(llamadart_kleidiai_dispatch_test PRIVATE
         LLAMADART_KLEIDIAI_HAS_KQUANTS=$<BOOL:${LLAMADART_KLEIDIAI_HAS_KQUANTS}>)

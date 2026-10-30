@@ -7,7 +7,7 @@ import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from workflow_text import WORKFLOWS, job_block, job_keys, matrix_rows, step_keys, step_name, steps  # noqa: E402
+from workflow_text import WORKFLOWS, job_block, job_keys, matrix_rows, step_keys, step_name, step_running, steps  # noqa: E402
 
 RELEASE = "native_release.yml"
 LANE = "validate_linux_release_rows.yml"
@@ -84,6 +84,13 @@ class ReleaseRowsMirrorTest(unittest.TestCase):
     def test_the_candidate_is_the_wrapper_lanes_candidate(self) -> None:
         name = "LLAMADART_V080_QUALIFICATION_SHA"
         self.assertEqual(workflow_env("validate_wrapper.yml")[name], workflow_env(LANE)[name])
+
+    def test_the_loaded_core_reports_the_tts_types_the_headers_promise(self) -> None:
+        # #146: a linked CMake probe compiled LFM3 speech out of the GCC bundles.
+        for workflow, job in ((RELEASE, "build-linux"), (LANE, "build-linux"), ("validate_wrapper.yml", "linux-artifact-contract")):
+            step = step_running(job_block(workflow, job), "tools/linux_dlopen_smoke.c")
+            self.assertIn('EXPECTED_TTS_MODEL_TYPES="$(python3 tools/expected_tts_model_types.py)"', step, (workflow, job))
+            self.assertEqual(2, step.count('libllamadart.so" "$EXPECTED_TTS_MODEL_TYPES"'), (workflow, job))
 
     def test_steps_are_not_skipped_or_allowed_to_fail(self) -> None:
         allowed_conditions = {

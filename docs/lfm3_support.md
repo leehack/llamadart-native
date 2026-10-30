@@ -30,7 +30,10 @@ A caller opts in with `llama_dart_tts_get_info_ext` and
 `llama_dart_tts_init_ext`, whose mask names
 `LLAMA_DART_TTS_MODEL_TYPE_LFM3_AUDIO`. `llama_dart_tts_supported_model_types`
 is the build probe: a wrapper built on v0.7.0 reports Qwen3 only, and an older
-wrapper lacks the symbols.
+wrapper lacks the symbols. CI compares the mask a built core reports with
+`tools/expected_tts_model_types.py`, which reads the upstream headers rather
+than the CMake probes, so a probe that wrongly compiles a type out fails the
+build ([#146](https://github.com/leehack/llamadart-native/issues/146)).
 
 The generator differs from Qwen3-TTS in ways an allowlist entry cannot cover:
 
@@ -43,6 +46,13 @@ The generator differs from Qwen3-TTS in ways an allowlist entry cannot cover:
 - Codes are sampled with the GGUF's sampling settings; the request's `top_k`,
   `top_p`, `min_p` and `temperature` are unused. `seed` seeds the code sampler
   and the generation state.
+- `request.language` is not validated. The wrapper renders it into the `tts`
+  template as given, so a code the model was not trained on still produces
+  audio; check it against the model card.
+- `llama_dart_tts_get_info_ext` sees the projector only, so it reports
+  LFM3-Audio `OK` for a projector paired with a text model that has no `tts`
+  chat template. `llama_dart_tts_init_ext` checks that template and returns
+  `UNSUPPORTED`; treat it as authoritative.
 - Each frame is decoded to PCM inside its step, so a cancel lands within one
   frame and there is no long final decode.
 
