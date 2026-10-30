@@ -22,7 +22,9 @@ gains a state argument and `mtmd_gen_inp` loses `seed`, `state_data` and
 `state_size`. `mtmd_helper_gen_audio_set_input` seeds a fresh state from the
 helper input's `seed`, which the wrapper already sets. The v0.7.0 priming call
 from #122 is therefore compiled only when `LLAMADART_MTMD_HAS_GEN_STATE` is
-false. The wrapper's exported API is unchanged: 89 required exports.
+false. This change leaves the wrapper's exported API unchanged at 89 required
+exports. `DEFAULT_REQUIRED_SYMBOLS` in `tools/validate_exports.py` holds the
+current list, which later opt-in exports extend.
 
 v0.8.0 adds `n_past`, `out_mode` and `voice` to `mtmd_helper_gen_audio_inp`.
 The wrapper value-initialises that struct, so they stay off (no sequence

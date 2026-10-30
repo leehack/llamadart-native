@@ -119,11 +119,13 @@ The historical `tag` field remains as a compatibility alias for
 valid. New manifests and release notes also bind the caller correlation ID,
 smoke policy/conclusion, exact workflow run, and workflow head SHA.
 
-Every release is built with the llama.cpp patches its native commit carries
-(`patches/llama.cpp/README.md`): the Android artifact validation fails a
-release whose bundle lacks one. `llama_cpp_patches` in `assets.json` lists the
-`file`, `sha256` and `tracking` issue of each one and is an empty list for
-unmodified upstream source.
+Every release is built with the llama.cpp patches of its native commit that
+its llama.cpp still needs (`patches/llama.cpp/README.md`): a patch whose
+`upstream_fix` text is in the upstream source is retired for that build, and
+the Android artifact validation fails a release whose bundle lacks a needed
+one. `llama_cpp_patches` in `assets.json` lists the `file`, `sha256` and
+`tracking` issue of each needed patch, so it can be shorter than
+`patches/llama.cpp/`, and is an empty list when none is needed.
 `llama_cpp_commit` stays the upstream commit the patches apply to: with a
 non-empty `llama_cpp_patches` the artifacts are that commit plus exactly those
 patches, and a comparison against upstream `llama.cpp` at the same commit must
