@@ -412,6 +412,16 @@ int main(int argc, char **argv) {
         std::fprintf(stderr, "non-finite sampling validation failed\n");
         return 1;
     }
+    // Qwen3 takes a speaker reference, so a malformed one is a decode failure.
+    const unsigned char bad_speaker[] = {0};
+    llama_dart_tts_request bad_speaker_request = request;
+    bad_speaker_request.speaker_audio = bad_speaker;
+    bad_speaker_request.speaker_audio_length = sizeof(bad_speaker);
+    if (llama_dart_tts_start(tts.get(), &bad_speaker_request) !=
+        LLAMA_DART_TTS_STATUS_SPEAKER_DECODE_FAILED) {
+        std::fprintf(stderr, "a malformed Qwen3 speaker reference was not decoded\n");
+        return 1;
+    }
     std::atomic<int8_t> cancel_flag{0};
     const int8_t *cancel_flag_address = reinterpret_cast<const int8_t *>(&cancel_flag);
     if (llama_dart_tts_set_cancel_flag(tts.get(), cancel_flag_address) !=

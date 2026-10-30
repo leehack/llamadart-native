@@ -76,6 +76,8 @@ enum llama_dart_tts_model_type {
     LLAMA_DART_TTS_MODEL_TYPE_QWEN3 = 1,
     // Reported only to callers that accept it, see llama_dart_tts_get_info_ext.
     LLAMA_DART_TTS_MODEL_TYPE_LFM3_AUDIO = 2,
+    // Reported only to callers that accept it, see llama_dart_tts_get_info_ext.
+    LLAMA_DART_TTS_MODEL_TYPE_SOPRANO = 3,
     LLAMA_DART_TTS_MODEL_TYPE_UNKNOWN = 255,
 };
 
@@ -932,10 +934,19 @@ LLAMADART_API const char * llama_dart_tts_last_error(
 // model's own GGUF settings (request top_k, top_p, min_p and temperature are
 // validated but unused), and returns complete PCM: no text/audio
 // interleaving, sequence continuation or streaming.
+//
+// SOPRANO (llamadart-native#123, a Qwen3 backbone with a Vocos decoder) has
+// no capability bits: llama_dart_tts_start returns UNSUPPORTED for a speaker
+// reference or a non-empty language. Frame steps decode backbone tokens only;
+// the step that ends generation (end of speech, max_frames or the end of the
+// context) decodes the whole utterance's audio, and with
+// llama_dart_tts_eval_callback installed a cancel stops that decode at its
+// next chunk boundary. Fewer than two frames fail that step with
+// UPSTREAM_ERROR. request->seed seeds the backbone sampler, the only sampler.
 
 // Returns the mask of model types llama_dart_tts_init_ext can create in this
-// build. QWEN3 is always set; LFM3_AUDIO only when the bundled mtmd has the
-// LFM3-Audio generator.
+// build. QWEN3 is always set; LFM3_AUDIO and SOPRANO only when the bundled
+// mtmd has their generators.
 LLAMADART_API uint32_t llama_dart_tts_supported_model_types(void);
 
 LLAMADART_API enum llama_dart_tts_status llama_dart_tts_get_info_ext(

@@ -13,6 +13,8 @@ constexpr uint32_t kQwen3 =
     llama_dart_tts_model_type_bit(LLAMA_DART_TTS_MODEL_TYPE_QWEN3);
 constexpr uint32_t kLfm3 =
     llama_dart_tts_model_type_bit(LLAMA_DART_TTS_MODEL_TYPE_LFM3_AUDIO);
+constexpr uint32_t kSoprano =
+    llama_dart_tts_model_type_bit(LLAMA_DART_TTS_MODEL_TYPE_SOPRANO);
 
 void legacy_mask_keeps_the_qwen3_only_contract() {
   assert(llama_dart_tts_legacy_model_types == kQwen3);
@@ -65,6 +67,39 @@ void lfm3_audio_follows_the_build() {
 #endif
 }
 
+void soprano_follows_the_build_and_the_mask() {
+#if LLAMADART_MTMD_HAS_SOPRANO
+  assert((llama_dart_tts_build_model_types & kSoprano) != 0);
+  assert(llama_dart_tts_model_type_from_upstream(MTMD_GEN_AUDIO_TYPE_SOPRANO) ==
+         LLAMA_DART_TTS_MODEL_TYPE_SOPRANO);
+  assert(llama_dart_tts_accepted_model_type(MTMD_GEN_AUDIO_TYPE_SOPRANO,
+                                            kQwen3 | kSoprano) ==
+         LLAMA_DART_TTS_MODEL_TYPE_SOPRANO);
+  assert(llama_dart_tts_accepted_model_type(MTMD_GEN_AUDIO_TYPE_SOPRANO,
+                                            llama_dart_tts_legacy_model_types) ==
+         LLAMA_DART_TTS_MODEL_TYPE_UNKNOWN);
+#else
+  assert((llama_dart_tts_build_model_types & kSoprano) == 0);
+#endif
+}
+
+void family_behaviour() {
+  const auto qwen3 = LLAMA_DART_TTS_MODEL_TYPE_QWEN3;
+  const auto lfm3 = LLAMA_DART_TTS_MODEL_TYPE_LFM3_AUDIO;
+  const auto soprano = LLAMA_DART_TTS_MODEL_TYPE_SOPRANO;
+  assert(llama_dart_tts_primes_code_predictor(qwen3));
+  assert(!llama_dart_tts_primes_code_predictor(lfm3));
+  assert(!llama_dart_tts_primes_code_predictor(soprano));
+  assert(llama_dart_tts_samples_backbone_token(qwen3));
+  assert(!llama_dart_tts_samples_backbone_token(lfm3));
+  assert(llama_dart_tts_samples_backbone_token(soprano));
+  assert(!llama_dart_tts_rejects_speaker_reference(qwen3));
+  assert(llama_dart_tts_rejects_speaker_reference(lfm3));
+  assert(llama_dart_tts_rejects_speaker_reference(soprano));
+  assert(llama_dart_tts_voice_supported(soprano, nullptr));
+  assert(!llama_dart_tts_voice_supported(soprano, "female"));
+}
+
 void voices() {
   const auto lfm3 = LLAMA_DART_TTS_MODEL_TYPE_LFM3_AUDIO;
   assert(llama_dart_tts_voice_supported(lfm3, nullptr));
@@ -89,6 +124,8 @@ int main() {
   legacy_mask_keeps_the_qwen3_only_contract();
   a_type_outside_the_mask_is_unknown();
   lfm3_audio_follows_the_build();
+  soprano_follows_the_build_and_the_mask();
+  family_behaviour();
   voices();
   return 0;
 }

@@ -1770,10 +1770,15 @@ static enum llama_dart_tts_status llama_dart_tts_start_impl(
     return llama_dart_tts_error(tts, LLAMA_DART_TTS_STATUS_INVALID_ARGUMENT,
                                 "unknown TTS voice");
   }
-  if (tts->model_type == LLAMA_DART_TTS_MODEL_TYPE_LFM3_AUDIO &&
+  if (llama_dart_tts_rejects_speaker_reference(tts->model_type) &&
       request->speaker_audio_length > 0) {
     return llama_dart_tts_error(tts, LLAMA_DART_TTS_STATUS_UNSUPPORTED,
                                 "the TTS model takes no speaker reference");
+  }
+  if (request->language != nullptr && request->language[0] != '\0' &&
+      (tts->capabilities & LLAMA_DART_TTS_CAPABILITY_LANGUAGE) == 0) {
+    return llama_dart_tts_error(tts, LLAMA_DART_TTS_STATUS_UNSUPPORTED,
+                                "the TTS model takes no language");
   }
 
   llama_dart_tts_release_task_resources(tts);
@@ -1844,7 +1849,8 @@ static enum llama_dart_tts_status llama_dart_tts_start_impl(
     return llama_dart_tts_fail(tts, LLAMA_DART_TTS_STATUS_UPSTREAM_ERROR,
                                "TTS input setup failed");
   }
-  if (!llama_dart_tts_prime_code_predictor(tts, seed)) {
+  if (llama_dart_tts_primes_code_predictor(tts->model_type) &&
+      !llama_dart_tts_prime_code_predictor(tts, seed)) {
     return llama_dart_tts_fail(tts, LLAMA_DART_TTS_STATUS_UPSTREAM_ERROR,
                                "TTS seed setup failed");
   }
@@ -1932,7 +1938,7 @@ static enum llama_dart_tts_status llama_dart_tts_step_impl(
       return status;
     }
     llama_token sampled = LLAMA_TOKEN_NULL;
-    if (tts->model_type == LLAMA_DART_TTS_MODEL_TYPE_QWEN3) {
+    if (llama_dart_tts_samples_backbone_token(tts->model_type)) {
       sampled = llama_sampler_sample(tts->sampler, tts->llama, -1);
       if (sampled == LLAMA_TOKEN_NULL) {
         const auto status = llama_dart_tts_fail(

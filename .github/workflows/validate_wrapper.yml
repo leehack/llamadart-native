@@ -462,6 +462,19 @@ jobs:
           -DGGML_OPENMP=OFF
           -DLLAMADART_BUILD_TESTS=ON
           -DLLAMADART_BUILD_TTS_SMOKE=ON
+      # The Soprano tests take their expectation from this probe.
+      - name: Check that the Soprano probe follows the checked-out llama.cpp
+        run: |
+          header=third_party/llama.cpp/tools/mtmd/mtmd.h
+          # Anchors, so that a moved header or cache entry cannot pass as "no Soprano".
+          grep -q 'MTMD_GEN_AUDIO_TYPE_QWEN3TTS' "$header"
+          grep -q '^LLAMADART_MTMD_HAS_SOPRANO:INTERNAL=' build/wrapper-contract/CMakeCache.txt
+          probe="$(sed -n 's/^LLAMADART_MTMD_HAS_SOPRANO:INTERNAL=//p' build/wrapper-contract/CMakeCache.txt)"
+          if grep -Eq '^[[:space:]]*MTMD_GEN_AUDIO_TYPE_SOPRANO[[:space:]]*[,=]' "$header"; then
+            test "$probe" = 1
+          else
+            test -z "$probe"
+          fi
       - name: Build wrapper contract tests and smoke tool
         run: >-
           cmake --build build/wrapper-contract --target
@@ -479,6 +492,7 @@ jobs:
           llamadart_exit_teardown_test
           llamadart_tts_smoke
           llamadart_tts_lfm3_smoke
+          llamadart_soprano_tts_smoke
       - name: Run wrapper contract tests
         run: ctest --test-dir build/wrapper-contract --output-on-failure
       - name: Check that the build identity is reproducible and follows its inputs

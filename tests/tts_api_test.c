@@ -63,11 +63,10 @@ int main(void) {
 
     const uint32_t qwen3 = 1u << LLAMA_DART_TTS_MODEL_TYPE_QWEN3;
     const uint32_t lfm3 = 1u << LLAMA_DART_TTS_MODEL_TYPE_LFM3_AUDIO;
-#if LLAMADART_MTMD_HAS_LFM3A_GEN
-    assert(llama_dart_tts_supported_model_types() == (qwen3 | lfm3));
-#else
-    assert(llama_dart_tts_supported_model_types() == qwen3);
-#endif
+    const uint32_t soprano = 1u << LLAMA_DART_TTS_MODEL_TYPE_SOPRANO;
+    assert(llama_dart_tts_supported_model_types() ==
+           (qwen3 | (LLAMADART_MTMD_HAS_LFM3A_GEN ? lfm3 : 0u) |
+            (LLAMADART_MTMD_HAS_SOPRANO ? soprano : 0u)));
     info.struct_size = sizeof(info);
     assert(llama_dart_tts_get_info_ext(NULL, qwen3 | lfm3, &info) == LLAMA_DART_TTS_STATUS_INVALID_ARGUMENT);
     assert(llama_dart_tts_get_info_ext(NULL, qwen3 | lfm3, NULL) == LLAMA_DART_TTS_STATUS_INVALID_ARGUMENT);
