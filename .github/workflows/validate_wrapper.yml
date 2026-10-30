@@ -463,12 +463,18 @@ jobs:
           -DLLAMADART_BUILD_TESTS=ON
           -DLLAMADART_BUILD_TTS_SMOKE=ON
       # The Soprano tests take their expectation from this probe.
-      - name: Check that the Soprano probe follows the upstream release
-        env:
-          UPSTREAM: ${{ matrix.upstream }}
+      - name: Check that the Soprano probe follows the checked-out llama.cpp
         run: |
+          header=third_party/llama.cpp/tools/mtmd/mtmd.h
+          # Anchors, so that a moved header or cache entry cannot pass as "no Soprano".
+          grep -q 'MTMD_GEN_AUDIO_TYPE_QWEN3TTS' "$header"
+          grep -q '^LLAMADART_MTMD_HAS_SOPRANO:INTERNAL=' build/wrapper-contract/CMakeCache.txt
           probe="$(sed -n 's/^LLAMADART_MTMD_HAS_SOPRANO:INTERNAL=//p' build/wrapper-contract/CMakeCache.txt)"
-          if [ "$UPSTREAM" = v0.8.0 ]; then test "$probe" = 1; else test -z "$probe"; fi
+          if grep -Eq '^[[:space:]]*MTMD_GEN_AUDIO_TYPE_SOPRANO[[:space:]]*[,=]' "$header"; then
+            test "$probe" = 1
+          else
+            test -z "$probe"
+          fi
       - name: Build wrapper contract tests and smoke tool
         run: >-
           cmake --build build/wrapper-contract --target

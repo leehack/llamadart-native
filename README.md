@@ -521,14 +521,19 @@ Builds whose llama.cpp has the Soprano generator (v0.8.0 and later) also drive
 Soprano, a Qwen3 backbone with a Vocos decoder projector, for callers whose
 `_ext` mask names `LLAMA_DART_TTS_MODEL_TYPE_SOPRANO`; the Qwen3-only exports
 and other masks report it as `UNKNOWN`. It has no capability bits:
-`llama_dart_tts_start` returns `UNSUPPORTED` for a speaker reference, a
-language or a voice. Frame steps decode backbone tokens only; the step that
-ends generation decodes the whole utterance at 32 kHz, and the eval callback
-can cancel that decode. An utterance needs at least two frames.
+`llama_dart_tts_start` returns `UNSUPPORTED` for a speaker reference or a
+language, and `llama_dart_tts_start_with_voice` for a voice. Frame steps decode
+backbone tokens only; the step that ends generation decodes the whole utterance
+at 32 kHz, and the eval callback stops that decode at its next chunk boundary.
+A short utterance's decode is a single chunk. An utterance needs at least two
+frames. Upstream expects normalized English text and shows `--temp 0`; the
+wrapper's default temperature is 0.8, so set `request.temperature` for
+upstream-matching output.
 
 No llama.cpp-format Soprano GGUF is published. Convert
 [ekwek/Soprano-1.1-80M](https://huggingface.co/ekwek/Soprano-1.1-80M) with
-upstream `convert_hf_to_gguf.py`, once for the model and once with `--mmproj`:
+upstream `convert_hf_to_gguf.py`, once for the model and once with `--mmproj`
+(upstream's `tools/tts/README.md`), and run the smoke from a Release build:
 
 ```bash
 build/tts-smoke/llamadart_soprano_tts_smoke \
@@ -539,8 +544,9 @@ build/tts-smoke/llamadart_soprano_tts_smoke \
 
 It checks that callers without the Soprano bit see `UNKNOWN`, the capability
 metadata, the speaker, language and voice rejections, cancel/reset, the
-one-frame failure, finite non-silent PCM, seeded repeats, a cancel during the
-audio decode and `max_frames` truncation.
+one-frame failure, finite non-silent PCM, seeded repeats, a cancel issued
+inside the audio decode (it must stop at the decode's first chunk boundary)
+and `max_frames` truncation.
 
 ## Windows Build Notes
 

@@ -14,7 +14,6 @@
 #include <limits>
 #include <memory>
 #include <string>
-#include <thread>
 #include <vector>
 
 using steady_clock = std::chrono::steady_clock;
@@ -140,66 +139,49 @@ static bool same_pcm(const std::vector<float> &a, const std::vector<float> &b) {
            std::memcmp(a.data(), b.data(), a.size() * sizeof(float)) == 0;
 }
 
-// Cancels once a step after the first frame has run for cancel_after_ms: only
-// the end-of-generation audio decode lasts that long.
+// Soprano's frame steps run only the backbone, so the first mtmd graph node of
+// a task is in its audio decode. The probe cancels there and counts the chunk
+// ends that follow: the decode must stop at its first one.
+static std::atomic<llama_dart_tts *> cancel_at_decode{nullptr};
+static std::atomic<int> chunk_ends_after_cancel{0};
+static std::atomic<bool> cancel_issued{false};
+
+static bool probe_eval_callback(struct ggml_tensor *tensor, bool ask, void *user_data) {
+    if (ask) {
+        if (llama_dart_tts *tts = cancel_at_decode.exchange(nullptr)) {
+            llama_dart_tts_cancel(tts);
+            cancel_issued.store(true);
+        }
+    } else if (cancel_issued.load()) {
+        chunk_ends_after_cancel.fetch_add(1);
+    }
+    return llama_dart_tts_eval_callback(tensor, ask, user_data);
+}
+
 static bool cancel_during_decode(llama_dart_tts *tts, const llama_dart_tts_request &request,
-                                 double cancel_after_ms, double return_within_ms,
-                                 double *cancel_to_return_ms) {
+                                 double *cancel_step_ms) {
     if (llama_dart_tts_start(tts, &request) != LLAMA_DART_TTS_STATUS_OK) {
         return fail("failed to start the in-decode cancel probe");
     }
-    std::atomic<bool> running{false};
-    std::atomic<bool> done{false};
-    std::atomic<bool> cancelled{false};
-    std::atomic<int64_t> running_since{0};
-    std::atomic<int64_t> cancelled_at{0};
-    const auto origin = steady_clock::now();
-    auto now_us = [&origin] {
-        return std::chrono::duration_cast<std::chrono::microseconds>(steady_clock::now() - origin)
-            .count();
-    };
-    std::thread canceller([&] {
-        while (!done.load()) {
-            if (running.load() && now_us() - running_since.load() >= cancel_after_ms * 1000.0) {
-                cancelled_at.store(now_us());
-                cancelled.store(true);
-                llama_dart_tts_cancel(tts);
-                return;
-            }
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
-        }
-    });
+    chunk_ends_after_cancel.store(0);
+    cancel_issued.store(false);
+    cancel_at_decode.store(tts);
     llama_dart_tts_progress progress{};
-    llama_dart_tts_status status = LLAMA_DART_TTS_STATUS_OK;
-    int64_t returned_at = 0;
-    for (;;) {
-        progress.struct_size = sizeof(progress);
-        running_since.store(now_us());
-        running.store(progress.frames_generated > 0);
-        status = llama_dart_tts_step(tts, &progress);
-        running.store(false);
-        returned_at = now_us();
-        if (status != LLAMA_DART_TTS_STATUS_OK ||
-            progress.state == LLAMA_DART_TTS_STATE_COMPLETED) {
-            break;
-        }
-    }
-    done.store(true);
-    canceller.join();
-    *cancel_to_return_ms = (returned_at - cancelled_at.load()) / 1000.0;
+    const llama_dart_tts_status status = run_to_end(tts, &progress, cancel_step_ms);
+    cancel_at_decode.store(nullptr);
     if (llama_dart_tts_reset(tts) != LLAMA_DART_TTS_STATUS_OK) {
         return fail("reset after the in-decode cancel probe failed");
     }
-    if (!cancelled.load() || status != LLAMA_DART_TTS_STATUS_CANCELLED ||
-        progress.state != LLAMA_DART_TTS_STATE_CANCELLED) {
-        std::fprintf(stderr, "in-decode cancel: fired=%d status=%d state=%d\n",
-                     static_cast<int>(cancelled.load()), static_cast<int>(status),
-                     static_cast<int>(progress.state));
+    if (!cancel_issued.load() || status != LLAMA_DART_TTS_STATUS_CANCELLED ||
+        progress.state != LLAMA_DART_TTS_STATE_CANCELLED || progress.frames_generated < 2) {
+        std::fprintf(stderr, "in-decode cancel: issued=%d status=%d state=%d frames=%d\n",
+                     static_cast<int>(cancel_issued.load()), static_cast<int>(status),
+                     static_cast<int>(progress.state), progress.frames_generated);
         return false;
     }
-    if (*cancel_to_return_ms > return_within_ms) {
-        std::fprintf(stderr, "in-decode cancel took %.1f ms to return, bound %.1f ms\n",
-                     *cancel_to_return_ms, return_within_ms);
+    if (chunk_ends_after_cancel.load() > 1) {
+        std::fprintf(stderr, "the decode ran %d chunks after the cancel\n",
+                     chunk_ends_after_cancel.load());
         return false;
     }
     return true;
@@ -280,7 +262,7 @@ int main(int argc, char **argv) {
     }
     mtmd_context_params mtmd_params = mtmd_context_params_default();
     mtmd_params.use_gpu = use_gpu;
-    mtmd_params.cb_eval = llama_dart_tts_eval_callback;
+    mtmd_params.cb_eval = probe_eval_callback;
     std::unique_ptr<mtmd_context, decltype(&mtmd_free)> mtmd(
         mtmd_init_from_file(argv[2], model.get(), mtmd_params), mtmd_free);
     if (mtmd == nullptr) {
@@ -360,7 +342,7 @@ int main(int argc, char **argv) {
         return 1;
     }
     double cancel_ms = 0.0;
-    if (!cancel_during_decode(tts.get(), request, decode_ms / 4, decode_ms / 3, &cancel_ms)) {
+    if (!cancel_during_decode(tts.get(), request, &cancel_ms)) {
         return 1;
     }
     llama_dart_tts_request repeat = request;
@@ -402,7 +384,7 @@ int main(int argc, char **argv) {
         return 1;
     }
     std::printf("PASS backend=%s model_type=%d sample_rate=%d samples=%zu frames=%d "
-                "decode_ms=%.1f cancel_ms=%.1f truncated_samples=%zu\n",
+                "decode_ms=%.1f cancel_step_ms=%.1f truncated_samples=%zu\n",
                 use_gpu ? "gpu" : "cpu", static_cast<int>(info.model_type), info.sample_rate,
                 first.size(), first_progress.frames_generated, decode_ms, cancel_ms,
                 short_pcm.size());
