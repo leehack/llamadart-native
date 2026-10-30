@@ -57,8 +57,10 @@ python3 tools/build.py windows --arch x64 --backend vulkan
 5. Verify release assets (`assets.json`, `SHA256SUMS`, per-target bundles) and
    confirm that the native tag, upstream ref/commit, and native commit are
    distinct and correct in the manifest and release notes, and that
-   `llama_cpp_patches` lists exactly the files of `patches/llama.cpp/` at the
-   native commit. Download the final
+   `llama_cpp_patches` lists exactly the `patches/llama.cpp/series.json`
+   entries at the native commit that the released llama.cpp needs: an entry
+   whose `upstream_fix` text is already in the upstream source is left out.
+   Download the final
    release-result JSON and verify its workflow/release metadata, digests,
    checksum entries, bundle coverage, correlation, and smoke conclusion.
 
