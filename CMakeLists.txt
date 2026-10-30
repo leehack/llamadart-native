@@ -392,6 +392,21 @@ if (LLAMADART_BUILD_TESTS)
     add_test(NAME llamadart_vulkan_device_info_test
         COMMAND llamadart_vulkan_device_info_test)
 
+    add_executable(llamadart_cancel_flag_test tests/cancel_flag_test.cpp)
+    target_compile_features(llamadart_cancel_flag_test PRIVATE cxx_std_17)
+    target_link_libraries(llamadart_cancel_flag_test PRIVATE
+        llamadart_lib ggml Threads::Threads)
+    target_include_directories(llamadart_cancel_flag_test PRIVATE
+        third_party/llama.cpp/tools/mtmd
+        src
+    )
+    if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        target_compile_definitions(llamadart_cancel_flag_test PRIVATE
+            LLAMADART_TEST_CPU_BACKEND="$<TARGET_FILE:ggml-cpu>")
+    endif()
+    add_test(NAME llamadart_cancel_flag_flag
+        COMMAND llamadart_cancel_flag_test flag)
+
     add_executable(llamadart_exit_teardown_test tests/exit_teardown_test.cpp)
     target_compile_features(llamadart_exit_teardown_test PRIVATE cxx_std_17)
     target_compile_definitions(llamadart_exit_teardown_test PRIVATE
@@ -537,6 +552,20 @@ if (LLAMADART_BUILD_TESTS)
                         "${LLAMADART_EXIT_TEARDOWN_TEST_MMPROJ}")
             endforeach()
         endif()
+
+        add_test(NAME llamadart_cancel_flag_decode
+            COMMAND llamadart_cancel_flag_test decode "${exit_teardown_model}")
+        set_tests_properties(llamadart_cancel_flag_decode PROPERTIES
+            FIXTURES_REQUIRED llamadart_exit_teardown_model)
+        if (LLAMADART_EXIT_TEARDOWN_TEST_MODEL AND
+                LLAMADART_EXIT_TEARDOWN_TEST_MMPROJ)
+            foreach(device cpu gpu)
+                add_test(NAME llamadart_cancel_flag_mtmd-encode-${device}
+                    COMMAND llamadart_cancel_flag_test mtmd-encode
+                        "${exit_teardown_model}"
+                        "${LLAMADART_EXIT_TEARDOWN_TEST_MMPROJ}" ${device})
+            endforeach()
+        endif()
     endif()
 
     # The Linux presets give every binary the run path $ORIGIN, which the
@@ -552,7 +581,7 @@ if (LLAMADART_BUILD_TESTS)
     # Contract assertions must execute against optimized Release libraries too.
     foreach(test_target llamadart_speculative_api_test llamadart_tts_api_test
             llamadart_tts_types_test
-            llamadart_build_identity_test
+            llamadart_build_identity_test llamadart_cancel_flag_test
             llamadart_tts_eval_test llamadart_tts_seed_test llamadart_exit_teardown_test
             llamadart_mtmd_compat_test
             llamadart_vulkan_device_info_test llamadart_barrier_test llamadart_image_token_limit_test)

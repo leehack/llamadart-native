@@ -257,9 +257,10 @@ LLAMADART_API void llama_dart_set_log_level(int level);
 // llama_dart_set_log_level, the
 // llama_dart_exit_ functions other than llama_dart_exit_track and
 // llama_dart_exit_free, the draft context and need_embd getters,
-// llama_dart_tts_eval_callback, the llama_dart_vulkan_ functions, which
-// report through their own status, and the llama_dart_tts_ functions that only
-// read or set fields of the task (api_version, request_default,
+// llama_dart_tts_eval_callback, llama_dart_mtmd_eval_callback,
+// llama_dart_cancel_flag_abort_callback, the llama_dart_vulkan_ functions,
+// which report through their own status, and the llama_dart_tts_ functions
+// that only read or set fields of the task (api_version, request_default,
 // supported_model_types, cancel, get_output_info, read_pcm, last_error).
 // They leave the last error unchanged.
 //
@@ -272,8 +273,9 @@ LLAMADART_API void llama_dart_set_log_level(int level);
 //   llama_dart_synchronize, llama_dart_memory_clear, the state functions and
 //   the mtmd evaluation helpers): free it. Its memory and its outputs are in
 //   no defined state.
-// - An mtmd context (llama_dart_mtmd_tokenize, llama_dart_mtmd_encode_chunk
-//   and the evaluation helpers): free it.
+// - An mtmd context (llama_dart_mtmd_tokenize, llama_dart_mtmd_encode_chunk,
+//   llama_dart_mtmd_encode_chunk_cancellable and the evaluation helpers): free
+//   it.
 // - A model whose adapter failed to load (llama_dart_adapter_lora_init): free
 //   it.
 // - Speculative, MTP and n-gram state: free it.
@@ -417,7 +419,8 @@ LLAMADART_API int32_t llama_dart_vulkan_get_device_info(
 //   llama_dart_exit_free;
 // - llama_dart_decode, llama_dart_encode, llama_dart_process and the other
 //   llama_dart functions below that wrap an upstream function of the same
-//   name, and the three llama_dart_mtmd_bitmap_init functions;
+//   name, llama_dart_mtmd_encode_chunk_cancellable, and the three
+//   llama_dart_mtmd_bitmap_init functions;
 // - the libllamadart functions that create, free, or run a task, draft or
 //   batch on, TTS, speculative, MTP or n-gram state;
 // - llama_dart_sampler_sample_and_accept_n;
@@ -725,6 +728,63 @@ LLAMADART_API int32_t llama_dart_mtmd_helper_decode_image_chunk(
     llama_pos * new_n_past,
     int32_t (*callback)(struct llama_batch batch, void * user_data),
     void * user_data);
+
+// Cancel byte
+//
+// A caller cancels a request by setting a byte it owns to nonzero, from any
+// thread. These functions let the byte stop the llama.cpp decode or clip
+// encode in flight. Each read of the byte is a relaxed atomic load.
+
+// Returned by llama_dart_mtmd_encode_chunk_cancellable for an encode that the
+// cancel byte stopped or kept from starting.
+enum llama_dart_mtmd_encode_status {
+    LLAMA_DART_MTMD_ENCODE_CANCELLED = 2,
+};
+
+// ggml_abort_callback for llama_set_abort_callback, with the cancel byte as
+// abort_callback_data: true when the byte is nonzero, false for NULL data.
+// Once the byte is nonzero, a decode or encode on the context stops after the
+// node being computed and returns 2. On a transformer model llama_decode
+// removes the positions of the ubatch it stopped and keeps those of earlier
+// ubatches. On a recurrent or hybrid model (llama_model_is_recurrent,
+// llama_model_is_hybrid) the sequence's memory is undefined after a 2,
+// because upstream cannot roll recurrent state back: clear the sequence and
+// prefill it again. Upstream installs the callback only on the CPU backend,
+// so a graph on a GPU backend runs to its end, though a multi-ubatch decode
+// still stops at the next ubatch's CPU split. On a context that
+// llama_dart_tts_* drives, a stop during the prompt step fails the task with
+// LLAMA_DART_TTS_STATUS_UPSTREAM_ERROR rather than cancelling it; reset the
+// task to reuse it. The byte must stay readable until
+// llama_set_abort_callback(ctx, NULL, NULL) returns or the context is freed.
+// The callback touches no llama.cpp object.
+LLAMADART_API bool llama_dart_cancel_flag_abort_callback(void * data);
+
+// ggml_backend_sched_eval_callback for mtmd_context_params.cb_eval, in place
+// of llama_dart_tts_eval_callback; cb_eval_user_data is unused. While
+// llama_dart_tts_step runs on the calling thread it answers as
+// llama_dart_tts_eval_callback does. While
+// llama_dart_mtmd_encode_chunk_cancellable runs on the calling thread, it
+// splits the encode's graph computes into chunks as the TTS callback does and,
+// once the call's cancel byte is nonzero, ends each scheduler split's compute
+// after its next computed node. Otherwise it requests no tensors.
+LLAMADART_API bool llama_dart_mtmd_eval_callback(
+    struct ggml_tensor * tensor,
+    bool ask,
+    void * user_data);
+
+// mtmd_encode_chunk that *cancel_flag can stop. Returns
+// LLAMA_DART_MTMD_ENCODE_CANCELLED without encoding when the byte is nonzero
+// on entry, and after an encode that llama_dart_mtmd_eval_callback stopped;
+// mtmd_get_output_embd then holds incomplete embeddings, and the mtmd context
+// stays usable. The encode stops early only when ctx was created with
+// llama_dart_mtmd_eval_callback as cb_eval; with another callback the byte is
+// read on entry only. A NULL cancel_flag encodes as
+// llama_dart_mtmd_encode_chunk does. The byte must stay readable until the
+// call returns.
+LLAMADART_API int32_t llama_dart_mtmd_encode_chunk_cancellable(
+    struct mtmd_context * ctx,
+    const struct mtmd_input_chunk * chunk,
+    const int8_t * cancel_flag);
 
 LLAMADART_API enum ggml_status llama_dart_ggml_backend_sched_graph_compute(
     ggml_backend_sched_t sched,

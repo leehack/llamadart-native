@@ -1,5 +1,6 @@
 #include "llama_dart_wrapper.h"
 #include "llama_dart_barrier_internal.h"
+#include "llama_dart_cancel_eval_internal.h"
 #include "llama_dart_evaluate_internal.h"
 #include "llama_dart_image_token_limit_internal.h"
 #include "llama_dart_mtmd_compat.h"
@@ -1461,6 +1462,56 @@ LLAMADART_API int32_t llama_dart_mtmd_helper_decode_image_chunk(
     return llama_dart_decode_image_chunk_compat(
         ctx, lctx, chunk, encoded_embd, n_past, seq_id, n_batch, new_n_past,
         callback, user_data);
+  });
+}
+
+static thread_local llama_dart_cancel_eval_state
+    *llama_dart_active_cancel_eval = nullptr;
+
+struct llama_dart_cancel_eval_scope {
+  llama_dart_cancel_eval_state *previous;
+
+  explicit llama_dart_cancel_eval_scope(llama_dart_cancel_eval_state *state)
+      : previous(llama_dart_active_cancel_eval) {
+    llama_dart_active_cancel_eval = state;
+  }
+  ~llama_dart_cancel_eval_scope() { llama_dart_active_cancel_eval = previous; }
+  llama_dart_cancel_eval_scope(const llama_dart_cancel_eval_scope &) = delete;
+  llama_dart_cancel_eval_scope &
+  operator=(const llama_dart_cancel_eval_scope &) = delete;
+};
+
+LLAMADART_API bool llama_dart_cancel_flag_abort_callback(void *data) {
+  return llama_dart_cancel_flag_set(static_cast<const int8_t *>(data));
+}
+
+LLAMADART_API bool llama_dart_mtmd_eval_callback(struct ggml_tensor *tensor,
+                                                 bool ask, void *user_data) {
+  if (llama_dart_tts_active_eval != nullptr) {
+    return llama_dart_tts_eval_callback(tensor, ask, user_data);
+  }
+  llama_dart_cancel_eval_state *state = llama_dart_active_cancel_eval;
+  if (state == nullptr) {
+    return !ask;
+  }
+  return llama_dart_cancel_eval_answer(state, tensor, ask);
+}
+
+LLAMADART_API int32_t llama_dart_mtmd_encode_chunk_cancellable(
+    struct mtmd_context *ctx, const struct mtmd_input_chunk *chunk,
+    const int8_t *cancel_flag) {
+  return llama_dart_barrier<int32_t>(LLAMA_DART_STATUS_EXCEPTION, [=] {
+    llama_dart_exit_call call;
+    if (llama_dart_cancel_flag_set(cancel_flag)) {
+      return static_cast<int32_t>(LLAMA_DART_MTMD_ENCODE_CANCELLED);
+    }
+    llama_dart_cancel_eval_state state(cancel_flag);
+    llama_dart_cancel_eval_scope scope(&state);
+    const int32_t status = mtmd_encode_chunk(ctx, chunk);
+    if (status == 0 && state.observed.load(std::memory_order_acquire)) {
+      return static_cast<int32_t>(LLAMA_DART_MTMD_ENCODE_CANCELLED);
+    }
+    return status;
   });
 }
 
