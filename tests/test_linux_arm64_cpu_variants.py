@@ -4,6 +4,7 @@ import argparse
 from pathlib import Path
 import subprocess
 import sys
+import tempfile
 import unittest
 from unittest import mock
 
@@ -340,6 +341,60 @@ class ValidateTest(unittest.TestCase):
     def test_unknown_variant_is_rejected(self) -> None:
         with self.assertRaisesRegex(ValueError, "Unknown Linux arm64 CPU variant"):
             isa.variant_spec("linux_armv9.2_1")
+
+
+class CommandLineFlagWiringTest(unittest.TestCase):
+    """main() must read the flag from .symtab and carry it down to the audit."""
+
+    def run_audit(self, symtab: str) -> subprocess.CompletedProcess[str]:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            library = root / "libggml-cpu.so"
+            library.write_bytes(b"")
+            (root / "dynsym.txt").write_text(GGML + "\n")
+            (root / "symtab.txt").write_text(symtab + "\n")
+            (root / "disassembly.txt").write_text(disassembly(*OUTLINE_GUARD, LDADD, RET) + "\n")
+            readelf = root / "readelf"
+            readelf.write_text(
+                "#!/bin/sh\n"
+                f'if [ "$1" = "--syms" ]; then cat "{root}/symtab.txt"; else cat "{root}/dynsym.txt"; fi\n'
+            )
+            objdump = root / "objdump"
+            objdump.write_text(f'#!/bin/sh\ncat "{root}/disassembly.txt"\n')
+            readelf.chmod(0o755)
+            objdump.chmod(0o755)
+            return subprocess.run(
+                [
+                    sys.executable,
+                    str(ROOT / "tools/validate_linux_arm64_cpu_isa.py"),
+                    "--objdump", str(objdump),
+                    "--readelf", str(readelf),
+                    "--llama-source", directory,
+                    "--kleidiai-source", directory,
+                    "--variant", "baseline",
+                    str(library),
+                ],
+                capture_output=True,
+                text=True,
+            )
+
+    @staticmethod
+    def flag_symbol(address: int) -> str:
+        return f"  7: {address:016x} 1 OBJECT LOCAL HIDDEN 21 {isa.LSE_FLAG_SYMBOL}"
+
+    def test_a_guard_testing_another_address_fails(self) -> None:
+        result = self.run_audit(self.flag_symbol(0x2000))
+        self.assertEqual(1, result.returncode, result.stdout)
+        self.assertIn(f"guard tests 0x1000 not {isa.LSE_FLAG_SYMBOL} at 0x2000", result.stderr)
+
+    def test_a_guard_testing_the_flag_passes(self) -> None:
+        result = self.run_audit(self.flag_symbol(0x1000))
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertIn("PASS baseline", result.stdout)
+
+    def test_a_stripped_library_falls_back_to_guard_agreement(self) -> None:
+        result = self.run_audit("  1: 0000000000000000 0 NOTYPE LOCAL DEFAULT UND")
+        self.assertEqual(0, result.returncode, result.stderr)
 
 
 class WorkflowWiringTest(unittest.TestCase):

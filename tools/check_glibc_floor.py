@@ -18,19 +18,26 @@ import subprocess
 import sys
 
 GLIBC_FLOOR = (2, 38)
-UNDEFINED_GLIBC_IMPORT = re.compile(r"\sUND\s+(\S+?)@GLIBC_(\d+(?:\.\d+)+)")
+READELF_GLIBC_IMPORT = re.compile(r"\sUND\s+(\S+?)@GLIBC_(\d+(?:\.\d+)+)")
+OBJDUMP_GLIBC_IMPORT = re.compile(r"\*UND\*\s+\S+\s+\(?GLIBC_(\d+(?:\.\d+)+)\)?\s+(\S+)")
 
 
 def parse_version(text: str) -> tuple[int, ...]:
     return tuple(int(part) for part in text.split("."))
 
 
-def imports_above_floor(readelf_dyn_syms: str, floor: tuple[int, ...] = GLIBC_FLOOR) -> dict[str, tuple[int, ...]]:
+def imports_above_floor(dynamic_symbols: str, floor: tuple[int, ...] = GLIBC_FLOOR) -> dict[str, tuple[int, ...]]:
+    """Read ``readelf --dyn-syms`` or ``objdump -T`` output."""
     above: dict[str, tuple[int, ...]] = {}
-    for line in readelf_dyn_syms.splitlines():
-        match = UNDEFINED_GLIBC_IMPORT.search(line)
-        if match and parse_version(match[2]) > floor:
-            above[match[1]] = parse_version(match[2])
+    for line in dynamic_symbols.splitlines():
+        if match := READELF_GLIBC_IMPORT.search(line):
+            name, version = match[1], parse_version(match[2])
+        elif match := OBJDUMP_GLIBC_IMPORT.search(line):
+            name, version = match[2], parse_version(match[1])
+        else:
+            continue
+        if version > floor:
+            above[name] = version
     return above
 
 

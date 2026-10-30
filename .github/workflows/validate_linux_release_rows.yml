@@ -1,0 +1,388 @@
+name: Validate Linux Release Rows
+
+# native_release.yml's Linux jobs without their upload, because the release runs
+# only when dispatched and #132 went unnoticed until one failed.
+# tests/test_linux_release_rows.py fails when the two differ.
+on:
+  pull_request:
+    paths:
+      - .github/actions/**
+      - .github/workflows/native_release.yml
+      - .github/workflows/validate_linux_release_rows.yml
+      - CMakeLists.txt
+      - CMakePresets.json
+      - cmake/**
+      - third_party/llama.cpp
+      - tools/apt_retry.sh
+      - tools/build.py
+      - tools/check_glibc_floor.py
+      - tools/check_linux_arm64_cpu_variants.sh
+      - tools/docker/**
+      - tools/install_cuda_redist.py
+      - tools/linux_dlopen_smoke.c
+      - tools/package_linux_artifact.py
+      - tools/validate_build_identity.py
+      - tools/validate_exports.py
+      - tools/validate_linux_arm64_cpu_isa.py
+      - tools/validate_linux_artifact.py
+  schedule:
+    - cron: '23 5 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CUDA_REDIST_VERSION: 12.8.1
+  CMAKE_C_COMPILER_LAUNCHER: ccache
+  CMAKE_CXX_COMPILER_LAUNCHER: ccache
+  CMAKE_CUDA_COMPILER_LAUNCHER: ccache
+  LLAMADART_V080_QUALIFICATION_SHA: 8642541b255bfb5dc39cd351a178be09013a55d6
+
+# The caches are restored only: saving one here could evict the release's.
+jobs:
+  build-linux:
+    # Pinned: Ubuntu 26.04's GCC 15 breaks CUDA 12.8 nvcc, puts SVE in a
+    # Kleidi pack routine and raises the glibc floor. Unpin only as
+    # docs/platform_backend_strategy.md says.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_MAXSIZE: 5G
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            backend: vulkan
+            include_core: true
+            needs_vulkan: true
+            needs_openblas: false
+            needs_cuda: false
+            backend_glob: libggml-vulkan.so
+            upstream: pinned
+          - arch: x64
+            backend: cuda
+            include_core: false
+            needs_vulkan: false
+            needs_openblas: false
+            needs_cuda: true
+            backend_glob: libggml-cuda.so
+            upstream: pinned
+          - arch: x64
+            backend: blas
+            include_core: false
+            needs_vulkan: false
+            needs_openblas: true
+            needs_cuda: false
+            backend_glob: libggml-blas.so
+            upstream: pinned
+          - arch: arm64
+            backend: vulkan
+            include_core: true
+            needs_vulkan: true
+            needs_openblas: false
+            needs_cuda: false
+            backend_glob: libggml-vulkan.so
+            upstream: pinned
+          - arch: arm64
+            backend: blas
+            include_core: false
+            needs_vulkan: false
+            needs_openblas: true
+            needs_cuda: false
+            backend_glob: libggml-blas.so
+            upstream: pinned
+          # No other lane compiles the CUDA backend against the release candidate.
+          - arch: x64
+            backend: cuda
+            include_core: false
+            needs_vulkan: false
+            needs_openblas: false
+            needs_cuda: true
+            backend_glob: libggml-cuda.so
+            upstream: v0.8.0
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          submodules: recursive
+          persist-credentials: false
+      - name: Select candidate upstream
+        if: matrix.upstream != 'pinned'
+        run: |
+          git -C third_party/llama.cpp fetch --depth=1 origin "$LLAMADART_V080_QUALIFICATION_SHA"
+          git -C third_party/llama.cpp checkout --detach "$LLAMADART_V080_QUALIFICATION_SHA"
+          test "$(git -C third_party/llama.cpp rev-parse HEAD)" = "$LLAMADART_V080_QUALIFICATION_SHA"
+      - name: Install build deps
+        run: |
+          . tools/apt_retry.sh
+
+          if [ "${{ matrix.arch }}" = "arm64" ]; then
+            sudo dpkg --add-architecture arm64
+            source /etc/os-release
+            sed "s/@VERSION_CODENAME@/${VERSION_CODENAME}/g" tools/docker/ubuntu.sources.template \
+              | sudo tee /etc/apt/sources.list.d/ubuntu.sources >/dev/null
+          fi
+          apt_get_update
+          apt_get_install ccache ninja-build pkg-config make
+          if [ "${{ matrix.arch }}" = "arm64" ]; then
+            apt_get_install gcc-aarch64-linux-gnu g++-aarch64-linux-gnu qemu-user llvm
+          fi
+          if [ "${{ matrix.needs_vulkan }}" = "true" ]; then
+            apt_get_install libvulkan-dev glslc
+            if [ "${{ matrix.arch }}" = "arm64" ]; then
+              apt_get_install libvulkan-dev:arm64
+            fi
+          fi
+          if [ "${{ matrix.needs_openblas }}" = "true" ]; then
+            if [ "${{ matrix.arch }}" = "arm64" ]; then
+              apt_get_install libopenblas-dev:arm64
+            else
+              apt_get_install libopenblas-dev
+            fi
+          fi
+          if [ "${{ matrix.needs_cuda }}" = "true" ]; then
+            cuda_root="${RUNNER_TEMP}/cuda-${CUDA_REDIST_VERSION}"
+            python3 tools/install_cuda_redist.py \
+              --version "${CUDA_REDIST_VERSION}" \
+              --platform linux-x86_64 \
+              --destination "${cuda_root}"
+            test -f "${cuda_root}/lib64/libcudadevrt.a" || { echo "Missing CUDA device runtime static library" >&2; exit 1; }
+            test -f "${cuda_root}/lib64/libcudart_static.a" || { echo "Missing CUDA runtime static library" >&2; exit 1; }
+            {
+              echo "${cuda_root}/bin"
+              echo "${cuda_root}/nvvm/bin"
+            } >> "${GITHUB_PATH}"
+            {
+              echo "CUDA_PATH=${cuda_root}"
+              echo "CUDAToolkit_ROOT=${cuda_root}"
+              echo "LD_LIBRARY_PATH=${cuda_root}/lib64:${cuda_root}/lib64/stubs:${cuda_root}/lib:${cuda_root}/lib/stubs:${LD_LIBRARY_PATH:-}"
+            } >> "${GITHUB_ENV}"
+            "${cuda_root}/bin/nvcc" --version | tee nvcc-version.txt
+            cuda_major_minor="$(printf '%s' "${CUDA_REDIST_VERSION}" | cut -d. -f1,2)"
+            grep -Eq "release ${cuda_major_minor//./\\.}([^0-9.]|$)" nvcc-version.txt || {
+              echo "Expected CUDA ${CUDA_REDIST_VERSION} nvcc" >&2
+              exit 1
+            }
+          fi
+      - name: Restore release ccache
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ccache-linux-${{ matrix.arch }}-${{ matrix.backend }}-${{ github.run_id }}
+          restore-keys: |
+            ccache-linux-${{ matrix.arch }}-${{ matrix.backend }}-
+            ccache-linux-${{ matrix.arch }}-
+      - name: Prime ccache
+        run: |
+          mkdir -p "${CCACHE_DIR}"
+          ccache --max-size "${CCACHE_MAXSIZE}"
+          ccache --zero-stats
+      - name: Build
+        run: python3 tools/build.py linux --arch "${{ matrix.arch }}" --backend "${{ matrix.backend }}"
+      - name: Report ccache stats
+        if: always()
+        uses: ./.github/actions/ccache-stats
+        with:
+          label: linux/${{ matrix.arch }}/${{ matrix.backend }}
+      - name: Validate Linux backend artifacts
+        run: |
+          OUT_DIR="bin/linux/${{ matrix.arch }}"
+          test -f "$OUT_DIR/${{ matrix.backend_glob }}" || { echo "Missing $OUT_DIR/${{ matrix.backend_glob }}"; exit 1; }
+          if [ "${{ matrix.include_core }}" = "true" ]; then
+            test -f "$OUT_DIR/libllamadart.so" || { echo "Missing $OUT_DIR/libllamadart.so"; exit 1; }
+            python3 tools/validate_exports.py \
+              --format readelf \
+              --tool readelf \
+              "$OUT_DIR/libllamadart.so"
+            python3 tools/validate_build_identity.py "$OUT_DIR/libllamadart.so"
+          fi
+          for lib in "$OUT_DIR"/*.so; do
+            readelf -d "$lib" | grep -E 'Library runpath: \[\$ORIGIN(:|\])' >/dev/null || {
+              echo "Expected RUNPATH to start with \$ORIGIN in $lib" >&2
+              readelf -d "$lib" | grep -F 'RUNPATH' >&2 || true
+              exit 1
+            }
+          done
+          if [ "${{ matrix.needs_cuda }}" = "true" ]; then
+            CACHE_FILE="build/linux-x64-full/CMakeCache.txt"
+            test -f "$CACHE_FILE" || { echo "Missing CMake cache at $CACHE_FILE"; exit 1; }
+            grep -R \
+              --include='CMakeCache.txt' \
+              --include='*.ninja' \
+              --include='*.vcxproj' \
+              -E '120a-real|compute_120a|sm_120a' build/linux-x64-full >/dev/null || \
+              strings "$OUT_DIR/${{ matrix.backend_glob }}" | grep -E 'compute_120a|sm_120a' >/dev/null || {
+              echo "Expected CUDA Blackwell architecture marker in linux CUDA build" >&2
+              exit 1
+            }
+            ldd "$OUT_DIR/${{ matrix.backend_glob }}" | tee ldd-cuda.txt
+            missing_deps="$(awk '/not found/ { print $1 }' ldd-cuda.txt || true)"
+            unexpected_missing=0
+            for dep in $missing_deps; do
+              if [ "$dep" = "libcuda.so.1" ]; then
+                continue
+              fi
+              case "$dep" in
+                libggml*.so.*|libllama.so.*|libmtmd.so.*)
+                  canonical="${dep%%.so.*}.so"
+                  if [ -f "$OUT_DIR/$canonical" ]; then
+                    continue
+                  fi
+                  ;;
+              esac
+              echo "Unexpected unresolved shared library dependency: $dep" >&2
+              unexpected_missing=1
+            done
+            if [ "$unexpected_missing" -ne 0 ]; then
+              exit 1
+            fi
+          fi
+          if [ "${{ matrix.arch }}" = "arm64" ]; then
+            CACHE_FILE="build/linux-arm64-full/CMakeCache.txt"
+            test -f "$CACHE_FILE" || { echo "Missing CMake cache at $CACHE_FILE"; exit 1; }
+            grep -q '^GGML_CPU_KLEIDIAI:BOOL=ON$' "$CACHE_FILE" || { echo "Kleidi is not enabled in arm64 build"; exit 1; }
+          fi
+      - name: Check the glibc floor
+        run: python3 tools/check_glibc_floor.py "bin/linux/${{ matrix.arch }}"
+      - name: Stage upload payload
+        run: |
+          OUT_DIR="bin/linux/${{ matrix.arch }}"
+          PAYLOAD="artifact_payload"
+          mkdir -p "$PAYLOAD"
+          if [ "${{ matrix.include_core }}" = "true" ]; then
+            python3 tools/package_linux_artifact.py \
+              --input-dir "$OUT_DIR" \
+              --output "$PAYLOAD/runtime.tar.gz"
+            python3 tools/validate_linux_artifact.py "$PAYLOAD/runtime.tar.gz"
+          else
+            python3 tools/package_linux_artifact.py \
+              --input-dir "$OUT_DIR" \
+              --output "$PAYLOAD/runtime.tar.gz" \
+              --pattern "${{ matrix.backend_glob }}"
+          fi
+          ls -la "$PAYLOAD"
+      - name: Validate clean Linux consumer dlopen
+        if: ${{ matrix.include_core }}
+        run: |
+          EXTRACT_DIR="${RUNNER_TEMP}/llamadart-clean-${{ matrix.arch }}"
+          mkdir -p "$EXTRACT_DIR"
+          tar -xzf artifact_payload/runtime.tar.gz -C "$EXTRACT_DIR"
+          if [ "${{ matrix.arch }}" = "arm64" ]; then
+            aarch64-linux-gnu-gcc tools/linux_dlopen_smoke.c -o "${RUNNER_TEMP}/linux-dlopen-smoke-arm64" -ldl
+            env -u LD_LIBRARY_PATH qemu-aarch64 -L /usr/aarch64-linux-gnu \
+              "${RUNNER_TEMP}/linux-dlopen-smoke-arm64" "$EXTRACT_DIR/libllamadart.so"
+          else
+            cc tools/linux_dlopen_smoke.c -o "${RUNNER_TEMP}/linux-dlopen-smoke-x64" -ldl
+            env -u LD_LIBRARY_PATH \
+              "${RUNNER_TEMP}/linux-dlopen-smoke-x64" "$EXTRACT_DIR/libllamadart.so"
+          fi
+      - name: Audit and select the Linux arm64 CPU variants
+        if: ${{ matrix.arch == 'arm64' && matrix.include_core }}
+        env:
+          QEMU_SYSROOT: /usr/aarch64-linux-gnu
+        run: tools/check_linux_arm64_cpu_variants.sh "${RUNNER_TEMP}/llamadart-clean-arm64"
+
+  build-linux-hip:
+    runs-on: ubuntu-latest
+    container: rocm/dev-ubuntu-22.04:6.1.2
+    timeout-minutes: 180
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_MAXSIZE: 5G
+    strategy:
+      fail-fast: false
+      matrix:
+        upstream: [pinned, v0.8.0]
+    steps:
+      - name: Install Git
+        run: |
+          apt_get_update() {
+            for attempt in 1 2 3; do
+              if apt-get -o Acquire::Retries=3 update; then
+                return 0
+              fi
+              if [ "$attempt" = "3" ]; then
+                return 1
+              fi
+              sleep $((attempt * 15))
+            done
+          }
+          apt_get_install() {
+            for attempt in 1 2 3; do
+              if DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=3 install -y "$@"; then
+                return 0
+              fi
+              if [ "$attempt" = "3" ]; then
+                return 1
+              fi
+              sleep $((attempt * 15))
+            done
+          }
+          apt_get_update
+          apt_get_install git
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          submodules: recursive
+          persist-credentials: false
+      - name: Select candidate upstream
+        if: matrix.upstream != 'pinned'
+        run: |
+          git -C third_party/llama.cpp fetch --depth=1 origin "$LLAMADART_V080_QUALIFICATION_SHA"
+          git -C third_party/llama.cpp checkout --detach "$LLAMADART_V080_QUALIFICATION_SHA"
+          test "$(git -C third_party/llama.cpp rev-parse HEAD)" = "$LLAMADART_V080_QUALIFICATION_SHA"
+      - name: Install build deps
+        run: |
+          . tools/apt_retry.sh
+          DEBIAN_FRONTEND=noninteractive apt_get_install build-essential binutils ccache ninja-build pkg-config python3 python3-pip rocblas-dev hipblas-dev
+          python3 -m pip install --upgrade cmake
+          cmake --version
+      - name: Restore release ccache
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ccache-linux-x64-hip-${{ github.run_id }}
+          restore-keys: |
+            ccache-linux-x64-hip-
+      - name: Prime ccache
+        run: |
+          mkdir -p "${CCACHE_DIR}"
+          ccache --max-size "${CCACHE_MAXSIZE}"
+          ccache --zero-stats
+      - name: Build
+        run: python3 tools/build.py linux --arch x64 --backend hip
+      - name: Report ccache stats
+        if: always()
+        uses: ./.github/actions/ccache-stats
+        with:
+          label: linux/x64/hip
+      - name: Validate Linux HIP artifacts
+        run: |
+          OUT_DIR="bin/linux/x64"
+          test -f "$OUT_DIR/libggml-hip.so" || { echo "Missing $OUT_DIR/libggml-hip.so"; exit 1; }
+          for lib in "$OUT_DIR"/*.so; do
+            readelf -d "$lib" | grep -E 'Library runpath: \[\$ORIGIN(:|\])' >/dev/null || {
+              echo "Expected RUNPATH to start with \$ORIGIN in $lib" >&2
+              readelf -d "$lib" | grep -F 'RUNPATH' >&2 || true
+              exit 1
+            }
+          done
+      - name: Check the glibc floor
+        run: python3 tools/check_glibc_floor.py bin/linux/x64
+      - name: Stage upload payload
+        run: |
+          OUT_DIR="bin/linux/x64"
+          PAYLOAD="artifact_payload"
+          mkdir -p "$PAYLOAD"
+          python3 tools/package_linux_artifact.py \
+            --input-dir "$OUT_DIR" \
+            --output "$PAYLOAD/runtime.tar.gz" \
+            --pattern "libggml-hip.so"
+          ls -la "$PAYLOAD"

@@ -88,31 +88,46 @@ qualified releases as separate regression inputs.
   - auto-built OpenCL ICD loader from `third_party/OpenCL-ICD-Loader` + `third_party/OpenCL-Headers`
 - Linux arm64 builds on x64 runners require `aarch64-linux-gnu-gcc/g++`, `libopenblas-dev:arm64`, and `libvulkan-dev:arm64`.
 - Release Linux builds (`build-linux`) and the PR lanes that stand in for them
-  (`linux-artifact-contract`, `kleidiai-dispatch-emulated`) run on a pinned
+  (`linux-artifact-contract`, `kleidiai-dispatch-emulated`, and
+  `build-linux` in `validate_linux_release_rows.yml`) run on a pinned
   `ubuntu-24.04` runner (GCC 13, glibc 2.39). On the Ubuntu 26.04 image that
   `ubuntu-latest` moved to in October 2026 (#132):
   - CUDA 12.8 `nvcc` rejects the host GCC 15.
   - GCC 14 and 15 emit SVE (`and z29.s, z29.s, #0x3f`) in the local
     `pack_metadata` routine of KleidiAI's
     `kai_matmul_pack_rhs_nxk_qai4c32p16vsx4s1s0sf16_qai4c32k256sf16s32s0_sme.c`,
-    which KleidiAI compiles with `-march=armv8.2-a+sve+sve2`. ggml reaches it
-    only after its SME2+FP16 kernel check, but the baseline ISA audit reads
-    `.dynsym` and cannot attribute a local routine, so it fails. GCC 13 emits
-    no SVE in that file.
+    which KleidiAI compiles with `-march=armv8.2-a+sve+sve2`. The baseline ISA
+    audit reads `.dynsym` and cannot attribute a local routine, so it fails.
+    GCC 13 emits no SVE in that file. ggml reaches the routine only through
+    `q4_k_rhs_pack`, whose one table entry requires `SME2 | FP16` (v0.7.0 and
+    v0.8.0; KleidiAI v1.31.0 and v1.32.0 have the same file). That gate does
+    not make the SVE safe: the routine runs outside streaming mode, and SME2
+    does not imply SVE there. On an Apple M4 Max (SME2, no FEAT_SVE) this
+    instruction raises SIGILL outside streaming mode and runs inside it.
   - The arm64 `libggml-cpu.so` needs `sqrtf@GLIBC_2.43`, so it no longer loads
     on Ubuntu 24.04 or Debian 13.
   - The arm64 multiarch dependency install stops because apt would downgrade
     `make` and `pkg-config`.
 
-  Unpin only with a CUDA toolkit that supports the image's GCC, an ISA audit
-  that admits that SVE by an exact audited range, a Linux glibc floor raise
-  announced to `llamadart` consumers, and an arm64 multiarch dependency
-  install that no longer downgrades `libpkgconf7 make pkg-config pkgconf`.
+  Unpin only with a CUDA toolkit that supports the image's GCC, a build whose
+  `pack_metadata` has no SVE outside streaming mode (or a kernel gate that also
+  requires SVE), a Linux glibc floor raise announced to `llamadart` consumers,
+  and an arm64 multiarch dependency install that no longer downgrades
+  `libpkgconf7 make pkg-config pkgconf`. Admitting that SVE to the ISA audit by
+  an exact range is not enough on its own.
 
   The floor is `GLIBC_2.38`, the highest version the 24.04 build imports.
-  `tools/check_glibc_floor.py` fails a shipped Linux `.so` above it, in
-  `build-linux` and `linux-artifact-contract`. Raise `GLIBC_FLOOR` in the same
-  change that announces the new floor.
+  `tools/check_glibc_floor.py` fails a Linux `.so` above it in `build-linux`,
+  `linux-artifact-contract` and `validate_linux_release_rows.yml`.
+  `tools/validate_linux_artifact.py` applies the same floor to the merged
+  bundles at release, which is what covers `libggml-hip.so` from the ROCm
+  container. Raise `GLIBC_FLOOR` in the same change that announces the new
+  floor.
+
+  `validate_linux_release_rows.yml` runs the release's Linux job bodies without
+  their upload, weekly and on pull requests that change their inputs, plus
+  CUDA and HIP at the v0.8.0 candidate. `tests/test_linux_release_rows.py` fails
+  when it stops matching `native_release.yml`.
   `tests/test_runner_pins.py` fails when any of these jobs, or the Android
   `build-android` and `android-vulkan-shaders` jobs, leaves `ubuntu-24.04`.
 - Windows ARM64 uses the `Visual Studio 18 2026` generator (CMake >= 4.2) with

@@ -376,6 +376,42 @@ class ValidateLinuxArtifactTest(unittest.TestCase):
             symbols.write_text(defined)
             self.assertEqual(validate_archive(archive_path, str(tool), "readelf"), [])
 
+    def floor_errors(self, tool_listing: str, mode: str) -> list[str]:
+        """Errors of a bundle whose libggml-hip.so imports ``tool_listing``."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            archive_path = root / "runtime.tar.gz"
+            with tarfile.open(archive_path, "w:gz") as archive:
+                for name in ("libllamadart.so", "libmtmd.so", "libggml-hip.so"):
+                    member = tarfile.TarInfo(name)
+                    member.size = 1
+                    archive.addfile(member, BytesIO(b"x"))
+            (root / "listing.txt").write_text(tool_listing)
+            tool = root / "tool"
+            tool.write_text(
+                "#!/bin/sh\n"
+                f'case "$*" in *libggml-hip.so*) cat "{root}/listing.txt";; esac\n'
+            )
+            tool.chmod(0o755)
+            return [
+                error
+                for error in validate_archive(archive_path, str(tool), mode)
+                if "GLIBC" in error
+            ]
+
+    def test_a_backend_above_the_glibc_floor_fails_the_bundle(self) -> None:
+        listings = {
+            "readelf": "     6: 0000000000000000     0 FUNC    GLOBAL DEFAULT  UND sqrtf@GLIBC_{} (5)\n",
+            "objdump": "0000000000000000      DF *UND*\t0000000000000000 (GLIBC_{}) sqrtf\n",
+        }
+        for mode, listing in listings.items():
+            with self.subTest(mode=mode):
+                self.assertEqual(
+                    ["libggml-hip.so: imports sqrtf@GLIBC_2.43, above the GLIBC_2.38 floor"],
+                    self.floor_errors(listing.format("2.43"), mode),
+                )
+                self.assertEqual([], self.floor_errors(listing.format("2.38"), mode))
+
     def test_missing_explicit_tool_reports_a_clean_cli_error(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             missing_tool = Path(directory) / "missing-readelf"
