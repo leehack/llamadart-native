@@ -9,6 +9,7 @@
 #include "llama_dart_tts_eval_internal.h"
 #include "llama_dart_tts_internal.h"
 #include "llama_dart_tts_seed_internal.h"
+#include "llama_dart_tts_types_internal.h"
 
 #include "common.h"
 #include "llama-ext.h"
@@ -18,6 +19,9 @@
 #include "reasoning-budget.h"
 #include "sampling.h"
 #include "speculative.h"
+#if LLAMADART_MTMD_HAS_LFM3A_GEN
+#include "chat.h"
+#endif
 
 #include <algorithm>
 #include <atomic>
@@ -123,26 +127,19 @@ static llama_dart_tts_status llama_dart_tts_mark_cancelled(
   return LLAMA_DART_TTS_STATUS_CANCELLED;
 }
 
-static llama_dart_tts_model_type llama_dart_tts_model_type_from_upstream(
-    mtmd_gen_audio_type type) {
+static uint32_t llama_dart_tts_capabilities(
+    const mtmd_context *mtmd, llama_dart_tts_model_type type) {
   switch (type) {
-  case MTMD_GEN_AUDIO_TYPE_NONE:
-    return LLAMA_DART_TTS_MODEL_TYPE_NONE;
-  case MTMD_GEN_AUDIO_TYPE_QWEN3TTS:
-    return LLAMA_DART_TTS_MODEL_TYPE_QWEN3;
-  default:
-    return LLAMA_DART_TTS_MODEL_TYPE_UNKNOWN;
-  }
-}
-
-static uint32_t llama_dart_tts_capabilities(const mtmd_context *mtmd,
-                                            mtmd_gen_audio_type type) {
-  switch (type) {
-  case MTMD_GEN_AUDIO_TYPE_QWEN3TTS:
+  case LLAMA_DART_TTS_MODEL_TYPE_QWEN3:
     return LLAMA_DART_TTS_CAPABILITY_LANGUAGE |
            (mtmd_support_audio(mtmd)
                 ? LLAMA_DART_TTS_CAPABILITY_SPEAKER_REFERENCE
                 : 0u);
+  case LLAMA_DART_TTS_MODEL_TYPE_LFM3_AUDIO:
+    // Its audio encoder is for chat input; the generator has no voice
+    // conditioning and ignores a speaker reference.
+    return LLAMA_DART_TTS_CAPABILITY_LANGUAGE |
+           LLAMA_DART_TTS_CAPABILITY_VOICE;
   default:
     return 0;
   }
@@ -1632,17 +1629,20 @@ llama_dart_tts_request_default(void) {
 }
 
 static enum llama_dart_tts_status llama_dart_tts_get_info_impl(
-    const struct mtmd_context *mtmd, struct llama_dart_tts_info *out_info) {
+    const struct mtmd_context *mtmd, uint32_t accepted_model_types,
+    struct llama_dart_tts_info *out_info) {
   if (mtmd == nullptr || out_info == nullptr ||
       out_info->struct_size < sizeof(*out_info)) {
     return LLAMA_DART_TTS_STATUS_INVALID_ARGUMENT;
   }
   const mtmd_gen_audio_info upstream = mtmd_gen_audio_get_info(mtmd);
+  const llama_dart_tts_model_type model_type =
+      llama_dart_tts_accepted_model_type(upstream.type, accepted_model_types);
   out_info->api_version = LLAMA_DART_TTS_API_VERSION;
-  out_info->model_type =
-      llama_dart_tts_model_type_from_upstream(upstream.type);
-  out_info->capabilities = llama_dart_tts_capabilities(mtmd, upstream.type);
-  const bool supported = upstream.type == MTMD_GEN_AUDIO_TYPE_QWEN3TTS;
+  out_info->model_type = model_type;
+  out_info->capabilities = llama_dart_tts_capabilities(mtmd, model_type);
+  const bool supported = model_type != LLAMA_DART_TTS_MODEL_TYPE_NONE &&
+                         model_type != LLAMA_DART_TTS_MODEL_TYPE_UNKNOWN;
   out_info->sample_rate = supported ? upstream.sample_rate : 0;
   out_info->channels = supported ? 1 : 0;
   return !supported
@@ -1653,22 +1653,30 @@ static enum llama_dart_tts_status llama_dart_tts_get_info_impl(
 LLAMADART_API enum llama_dart_tts_status llama_dart_tts_get_info(
     const struct mtmd_context *mtmd, struct llama_dart_tts_info *out_info) {
   return llama_dart_barrier(LLAMA_DART_TTS_STATUS_UPSTREAM_ERROR, [=] {
-    return llama_dart_tts_get_info_impl(mtmd, out_info);
+    return llama_dart_tts_get_info_impl(
+        mtmd, llama_dart_tts_legacy_model_types, out_info);
   });
 }
 
 static struct llama_dart_tts *llama_dart_tts_init_impl(
     struct llama_context *llama, struct mtmd_context *mtmd,
-    enum llama_dart_tts_status *out_status) {
+    uint32_t accepted_model_types, enum llama_dart_tts_status *out_status) {
   llama_dart_exit_creating_call call;
   if (out_status != nullptr) {
     *out_status = LLAMA_DART_TTS_STATUS_INVALID_ARGUMENT;
   }
-  const mtmd_gen_audio_type type =
-      mtmd == nullptr ? MTMD_GEN_AUDIO_TYPE_NONE
-                      : mtmd_gen_audio_get_info(mtmd).type;
-  if (llama == nullptr || mtmd == nullptr ||
-      type != MTMD_GEN_AUDIO_TYPE_QWEN3TTS) {
+  const llama_dart_tts_model_type model_type =
+      mtmd == nullptr ? LLAMA_DART_TTS_MODEL_TYPE_NONE
+                      : llama_dart_tts_accepted_model_type(
+                            mtmd_gen_audio_get_info(mtmd).type,
+                            accepted_model_types);
+  const bool supported =
+      model_type != LLAMA_DART_TTS_MODEL_TYPE_NONE &&
+      model_type != LLAMA_DART_TTS_MODEL_TYPE_UNKNOWN &&
+      (model_type != LLAMA_DART_TTS_MODEL_TYPE_LFM3_AUDIO ||
+       (llama != nullptr &&
+        llama_model_chat_template(llama_get_model(llama), "tts") != nullptr));
+  if (llama == nullptr || mtmd == nullptr || !supported) {
     if (out_status != nullptr && llama != nullptr && mtmd != nullptr) {
       *out_status = LLAMA_DART_TTS_STATUS_UNSUPPORTED;
     }
@@ -1691,6 +1699,8 @@ static struct llama_dart_tts *llama_dart_tts_init_impl(
   tts->llama = llama;
   tts->mtmd = mtmd;
   tts->generator = generator;
+  tts->model_type = model_type;
+  tts->capabilities = llama_dart_tts_capabilities(mtmd, model_type);
   llama_dart_exit_track_created(tts, llama_dart_tts_free_object,
                                 LLAMA_DART_EXIT_STAGE_SESSION, llama, mtmd);
   if (out_status != nullptr) {
@@ -1703,7 +1713,8 @@ LLAMADART_API struct llama_dart_tts *llama_dart_tts_init(
     struct llama_context *llama, struct mtmd_context *mtmd,
     enum llama_dart_tts_status *out_status) {
   llama_dart_tts *tts = llama_dart_barrier<llama_dart_tts *>(nullptr, [=] {
-    return llama_dart_tts_init_impl(llama, mtmd, out_status);
+    return llama_dart_tts_init_impl(
+        llama, mtmd, llama_dart_tts_legacy_model_types, out_status);
   });
   if (tts == nullptr && llama_dart_error.set && out_status != nullptr) {
     *out_status = LLAMA_DART_TTS_STATUS_UPSTREAM_ERROR;
@@ -1726,7 +1737,7 @@ static void llama_dart_tts_free_object(void *object) {
 
 static enum llama_dart_tts_status llama_dart_tts_start_impl(
     struct llama_dart_tts *tts,
-    const struct llama_dart_tts_request *request) {
+    const struct llama_dart_tts_request *request, const char *voice) {
   llama_dart_exit_call call;
   if (tts == nullptr) {
     return LLAMA_DART_TTS_STATUS_INVALID_ARGUMENT;
@@ -1749,6 +1760,20 @@ static enum llama_dart_tts_status llama_dart_tts_start_impl(
        request->speaker_audio == nullptr)) {
     return llama_dart_tts_error(tts, LLAMA_DART_TTS_STATUS_INVALID_ARGUMENT,
                                 "invalid TTS request");
+  }
+  if (voice != nullptr &&
+      (tts->capabilities & LLAMA_DART_TTS_CAPABILITY_VOICE) == 0) {
+    return llama_dart_tts_error(tts, LLAMA_DART_TTS_STATUS_UNSUPPORTED,
+                                "the TTS model does not select voices");
+  }
+  if (!llama_dart_tts_voice_supported(tts->model_type, voice)) {
+    return llama_dart_tts_error(tts, LLAMA_DART_TTS_STATUS_INVALID_ARGUMENT,
+                                "unknown TTS voice");
+  }
+  if (tts->model_type == LLAMA_DART_TTS_MODEL_TYPE_LFM3_AUDIO &&
+      request->speaker_audio_length > 0) {
+    return llama_dart_tts_error(tts, LLAMA_DART_TTS_STATUS_UNSUPPORTED,
+                                "the TTS model takes no speaker reference");
   }
 
   llama_dart_tts_release_task_resources(tts);
@@ -1790,10 +1815,25 @@ static enum llama_dart_tts_status llama_dart_tts_start_impl(
                                "sampler initialization failed");
   }
 
+  std::string prompt;
+#if LLAMADART_MTMD_HAS_LFM3A_GEN
+  if (tts->model_type == LLAMA_DART_TTS_MODEL_TYPE_LFM3_AUDIO) {
+    const common_chat_templates_ptr templates =
+        common_chat_templates_init(llama_get_model(tts->llama), "");
+    prompt = common_chat_get_tts_prompt(
+        templates.get(), std::string(request->text, request->text_length),
+        tts->language, voice != nullptr ? voice : "");
+    if (prompt.empty()) {
+      return llama_dart_tts_fail(tts, LLAMA_DART_TTS_STATUS_UPSTREAM_ERROR,
+                                 "TTS chat template rendering failed");
+    }
+  }
+#endif
+
   mtmd_helper_gen_audio_inp input{};
   input.seq_id = tts->sequence_id;
-  input.prompt = request->text;
-  input.prompt_len = request->text_length;
+  input.prompt = prompt.empty() ? request->text : prompt.c_str();
+  input.prompt_len = prompt.empty() ? request->text_length : prompt.size();
   input.speaker_ref = tts->speaker;
   input.lang = tts->language.empty() ? nullptr : tts->language.c_str();
   input.top_k = request->top_k;
@@ -1816,7 +1856,39 @@ LLAMADART_API enum llama_dart_tts_status llama_dart_tts_start(
     struct llama_dart_tts *tts,
     const struct llama_dart_tts_request *request) {
   return llama_dart_tts_barrier(
-      tts, [=] { return llama_dart_tts_start_impl(tts, request); });
+      tts, [=] { return llama_dart_tts_start_impl(tts, request, nullptr); });
+}
+
+LLAMADART_API uint32_t llama_dart_tts_supported_model_types(void) {
+  return llama_dart_tts_build_model_types;
+}
+
+LLAMADART_API enum llama_dart_tts_status llama_dart_tts_get_info_ext(
+    const struct mtmd_context *mtmd, uint32_t accepted_model_types,
+    struct llama_dart_tts_info *out_info) {
+  return llama_dart_barrier(LLAMA_DART_TTS_STATUS_UPSTREAM_ERROR, [=] {
+    return llama_dart_tts_get_info_impl(mtmd, accepted_model_types, out_info);
+  });
+}
+
+LLAMADART_API struct llama_dart_tts *llama_dart_tts_init_ext(
+    struct llama_context *llama, struct mtmd_context *mtmd,
+    uint32_t accepted_model_types, enum llama_dart_tts_status *out_status) {
+  llama_dart_tts *tts = llama_dart_barrier<llama_dart_tts *>(nullptr, [=] {
+    return llama_dart_tts_init_impl(llama, mtmd, accepted_model_types,
+                                    out_status);
+  });
+  if (tts == nullptr && llama_dart_error.set && out_status != nullptr) {
+    *out_status = LLAMA_DART_TTS_STATUS_UPSTREAM_ERROR;
+  }
+  return tts;
+}
+
+LLAMADART_API enum llama_dart_tts_status llama_dart_tts_start_with_voice(
+    struct llama_dart_tts *tts, const struct llama_dart_tts_request *request,
+    const char *voice) {
+  return llama_dart_tts_barrier(
+      tts, [=] { return llama_dart_tts_start_impl(tts, request, voice); });
 }
 
 static enum llama_dart_tts_status llama_dart_tts_step_impl(
@@ -1859,29 +1931,43 @@ static enum llama_dart_tts_status llama_dart_tts_step_impl(
       llama_dart_tts_write_progress(tts, out_progress);
       return status;
     }
-    const llama_token sampled =
-        llama_sampler_sample(tts->sampler, tts->llama, -1);
-    if (sampled == LLAMA_TOKEN_NULL) {
+    llama_token sampled = LLAMA_TOKEN_NULL;
+    if (tts->model_type == LLAMA_DART_TTS_MODEL_TYPE_QWEN3) {
+      sampled = llama_sampler_sample(tts->sampler, tts->llama, -1);
+      if (sampled == LLAMA_TOKEN_NULL) {
+        const auto status = llama_dart_tts_fail(
+            tts, LLAMA_DART_TTS_STATUS_UPSTREAM_ERROR,
+            "TTS token sampling failed");
+        llama_dart_tts_write_progress(tts, out_progress);
+        return status;
+      }
+      const llama_vocab *vocab = llama_model_get_vocab(
+          llama_get_model(tts->llama));
+      if (vocab == nullptr) {
+        const auto status = llama_dart_tts_fail(
+            tts, LLAMA_DART_TTS_STATUS_UPSTREAM_ERROR,
+            "TTS vocabulary is unavailable");
+        llama_dart_tts_write_progress(tts, out_progress);
+        return status;
+      }
+      if (llama_vocab_is_eog(vocab, sampled)) {
+        const auto status = llama_dart_tts_finish_output(tts);
+        llama_dart_tts_write_progress(tts, out_progress);
+        return status;
+      }
+    }
+#if LLAMADART_MTMD_HAS_LFM3A_GEN
+    // LFM3-Audio frames come from the hidden state and end on its
+    // end-of-audio code; a text slot would need the caller's text sampling.
+    if (tts->model_type == LLAMA_DART_TTS_MODEL_TYPE_LFM3_AUDIO &&
+        mtmd_helper_gen_audio_next_is_text(tts->generator)) {
       const auto status = llama_dart_tts_fail(
           tts, LLAMA_DART_TTS_STATUS_UPSTREAM_ERROR,
-          "TTS token sampling failed");
+          "TTS generation asked for a text token");
       llama_dart_tts_write_progress(tts, out_progress);
       return status;
     }
-    const llama_vocab *vocab = llama_model_get_vocab(
-        llama_get_model(tts->llama));
-    if (vocab == nullptr) {
-      const auto status = llama_dart_tts_fail(
-          tts, LLAMA_DART_TTS_STATUS_UPSTREAM_ERROR,
-          "TTS vocabulary is unavailable");
-      llama_dart_tts_write_progress(tts, out_progress);
-      return status;
-    }
-    if (llama_vocab_is_eog(vocab, sampled)) {
-      const auto status = llama_dart_tts_finish_output(tts);
-      llama_dart_tts_write_progress(tts, out_progress);
-      return status;
-    }
+#endif
     const float *state = llama_get_embeddings_ith(tts->llama, -1);
     const float *next_state = nullptr;
     bool stop = false;

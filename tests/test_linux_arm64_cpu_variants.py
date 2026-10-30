@@ -222,6 +222,62 @@ class ValidateTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, r"ldadd.*\(lse\)"):
             self.validate("baseline", [KAI, GGML], *OUTLINE_GUARD, "2fc: d503201f nop", LDADD, RET)
 
+    def test_outline_atomic_exemption_covers_only_the_lse_family(self) -> None:
+        for line, family in ((LDAPR, "rcpc"), (STLUR, "rcpc2"), (CRC32W, "crc"), (SDOT, "dotprod"), (FMLA_8H, "fp16")):
+            with self.subTest(family=family), self.assertRaisesRegex(ValueError, rf"\({family}\)"):
+                self.validate("baseline", [KAI, GGML], *OUTLINE_GUARD, line, RET)
+
+    def test_outline_atomic_guard_must_use_x16_and_cbz(self) -> None:
+        adrp, ldrb, cbz = OUTLINE_GUARD
+        mutants = {
+            "adrp x17": (adrp.replace("x16", "x17"), ldrb, cbz),
+            "adrp x15": (adrp.replace("x16", "x15"), ldrb, cbz),
+            "ldrb dest": (adrp, ldrb.replace("w16, [x16]", "w15, [x16]"), cbz),
+            "ldrb base": (adrp, ldrb.replace("[x16]", "[x15]"), cbz),
+            "cbz reg": (adrp, ldrb, cbz.replace("w16", "w15")),
+            "cbnz": (adrp, ldrb, cbz.replace("cbz", "cbnz")),
+        }
+        for name, guard_lines in mutants.items():
+            with self.subTest(mutant=name), self.assertRaisesRegex(ValueError, r"ldadd.*\(lse\)"):
+                self.validate("baseline", [KAI, GGML], *guard_lines, LDADD, RET)
+
+    def test_outline_atomic_guard_is_recognised_anywhere_in_the_stream(self) -> None:
+        bti = "2e8: d503245f bti c"
+        nop = "2e0: d503201f nop"
+        self.assertIn("lse=1/0", self.validate("baseline", [KAI, GGML], nop, bti, *OUTLINE_GUARD, LDADD, RET))
+        second = ("400: 90000010 adrp x16, 0x1000", "404: 39400210 ldrb w16, [x16]", "408: 34000050 cbz w16, 0x410", "40c: b8200020 ldadd w0, w0, [x1]")
+        self.assertIn("lse=2/0", self.validate("baseline", [KAI, GGML], *OUTLINE_GUARD, LDADD, RET, bti, *second))
+        for lead in ((), (OUTLINE_GUARD[2],), (OUTLINE_GUARD[1], OUTLINE_GUARD[2])):
+            with self.subTest(lead=len(lead)), self.assertRaisesRegex(ValueError, r"ldadd.*\(lse\)"):
+                self.validate("baseline", [KAI, GGML], *lead, LDADD, RET)
+
+    def test_outline_atomic_guard_must_test_the_lse_flag(self) -> None:
+        flag = 0x1000
+        guarded = (*OUTLINE_GUARD, LDADD)
+        self.assertEqual([], isa.audit(GGML, disassembly(*guarded), set(), flag)[2])
+        offset_guard = (OUTLINE_GUARD[0], "2f4: 39408610 ldrb w16, [x16, #0x21]", OUTLINE_GUARD[2])
+        self.assertEqual([], isa.audit(GGML, disassembly(*offset_guard, LDADD), set(), 0x1021)[2])
+        for wrong in (0x2000, 0x1021):
+            with self.subTest(flag=wrong):
+                failures = isa.audit(GGML, disassembly(*guarded), set(), wrong)[2]
+                self.assertEqual(1, len(failures))
+                self.assertIn("__aarch64_have_lse_atomics", failures[0])
+
+    def test_outline_atomic_guards_must_agree_when_the_flag_symbol_is_stripped(self) -> None:
+        other = ("30c: 90000010 adrp x16, 0x2000", OUTLINE_GUARD[1], OUTLINE_GUARD[2])
+        failures = isa.audit(GGML, disassembly(*OUTLINE_GUARD, LDADD, *other, LDADD), set())[2]
+        self.assertEqual(["outline-atomic guards test different flags: 0x1000, 0x2000"], failures)
+
+    def test_lse_flag_address_reads_the_symtab_object(self) -> None:
+        symtab = "\n".join(
+            [
+                "    33: 0000000000000510    44 FUNC    LOCAL  DEFAULT    11 init_have_lse_atomics",
+                "    63: 0000000000020021     1 OBJECT  LOCAL  DEFAULT    21 __aarch64_have_lse_atomics",
+            ]
+        )
+        self.assertEqual(0x20021, isa.lse_flag_address(symtab))
+        self.assertIsNone(isa.lse_flag_address(symtab.splitlines()[0]))
+
     def test_baseline_rejects_each_armv8_3_to_8_6_family_the_qemu_smoke_would_trap_on(self) -> None:
         for line, family in ((LDAPR, "rcpc"), (STLUR, "rcpc2"), (CRC32W, "crc")):
             with self.subTest(family=family), self.assertRaisesRegex(ValueError, rf"\({family}\)"):

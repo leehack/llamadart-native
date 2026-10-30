@@ -12,13 +12,14 @@ from pathlib import Path, PurePosixPath
 
 ROOT = Path(__file__).resolve().parents[1]
 PATCHES_DIR = ROOT / "patches" / "llama.cpp"
+UPSTREAM_DIR = ROOT / "third_party" / "llama.cpp"
 SERIES_NAME = "series.json"
 # A patched file replaces a source of an upstream target, so it must be one:
 # a header is included from the submodule by sources this does not see.
 SOURCE_SUFFIXES = frozenset({".c", ".cc", ".cpp", ".cxx", ".m", ".mm"})
 PATCH_NAME = re.compile(r"\d{4}-[a-z0-9]+(?:-[a-z0-9]+)*\.patch")
 HUNK_HEADER = re.compile(r"@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@")
-SERIES_KEYS = frozenset({"file", "tracking", "upstream", "android_markers"})
+SERIES_KEYS = frozenset({"file", "tracking", "upstream", "android_markers", "upstream_fix"})
 MARKER_KEYS = frozenset({"library", "text"})
 
 
@@ -85,6 +86,9 @@ def load_series(patches_dir: Path = PATCHES_DIR) -> list[dict]:
                 f"{series_path}: {name}: \"android_markers\" must list at least one "
                 "{library, text}"
             )
+        fix = entry.get("upstream_fix")
+        if fix is not None and not (isinstance(fix, str) and fix.strip()):
+            raise PatchError(f"{series_path}: {name}: \"upstream_fix\" must be source text")
         names.append(name)
     if names != sorted(set(names)):
         raise PatchError(f"{series_path}: patches must be unique and in name order")
@@ -152,6 +156,24 @@ def parse_patch(name: str, text: str) -> Patch:
     return Patch(name, paths[0], tuple(hunks))
 
 
+def required_series(upstream: Path = UPSTREAM_DIR, patches_dir: Path = PATCHES_DIR) -> list[dict]:
+    """The series entries this llama.cpp needs: those whose upstream fix it lacks.
+
+    An entry's "upstream_fix" is text that the upstream repair puts in the
+    patched source. A missing source never retires a patch.
+    """
+    required: list[dict] = []
+    for entry in load_series(patches_dir):
+        fix = entry.get("upstream_fix")
+        if fix is not None:
+            name = entry["file"]
+            source = upstream / parse_patch(name, _read_text(patches_dir / name)).path
+            if source.is_file() and fix in _read_text(source):
+                continue
+        required.append(entry)
+    return required
+
+
 def apply_available(
     upstream: Path, patches_dir: Path = PATCHES_DIR
 ) -> tuple[dict[str, str], list[str]]:
@@ -159,11 +181,12 @@ def apply_available(
 
     A hunk applies only where its context and removed lines occur exactly
     once: there is no fuzz and no offset search. A patch that does not fit
-    this upstream is skipped whole.
+    this upstream is skipped whole. A patch whose upstream fix this llama.cpp
+    has is neither applied nor reported.
     """
     patched: dict[str, str] = {}
     skipped: list[str] = []
-    for entry in load_series(patches_dir):
+    for entry in required_series(upstream, patches_dir):
         name = entry["file"]
         patch = parse_patch(name, _read_text(patches_dir / name))
         try:
@@ -195,22 +218,26 @@ def apply_series(upstream: Path, patches_dir: Path = PATCHES_DIR) -> dict[str, s
     return patched
 
 
-def manifest_entries(patches_dir: Path = PATCHES_DIR) -> list[dict[str, str]]:
-    """What a release manifest records of the carried patches."""
+def manifest_entries(
+    patches_dir: Path = PATCHES_DIR, upstream: Path = UPSTREAM_DIR
+) -> list[dict[str, str]]:
+    """What a release manifest records of the patches this llama.cpp carries."""
     return [
         {
             "file": entry["file"],
             "sha256": hashlib.sha256((patches_dir / entry["file"]).read_bytes()).hexdigest(),
             "tracking": entry["tracking"],
         }
-        for entry in load_series(patches_dir)
+        for entry in required_series(upstream, patches_dir)
     ]
 
 
-def android_marker_errors(out_dir: Path, patches_dir: Path = PATCHES_DIR) -> list[str]:
+def android_marker_errors(
+    out_dir: Path, patches_dir: Path = PATCHES_DIR, upstream: Path = UPSTREAM_DIR
+) -> list[str]:
     """Names each bundled library that lacks the text a carried patch compiles in."""
     errors: list[str] = []
-    for entry in load_series(patches_dir):
+    for entry in required_series(upstream, patches_dir):
         for marker in entry["android_markers"]:
             library = out_dir / marker["library"]
             if library.is_file() and marker["text"].encode() not in library.read_bytes():
@@ -249,7 +276,8 @@ def main() -> int:
     apply.add_argument("--output", type=Path, required=True)
     apply.add_argument("--strict", action="store_true",
                        help="fail when a patch does not apply instead of skipping it")
-    commands.add_parser("manifest", help="print the carried patches as JSON")
+    manifest = commands.add_parser("manifest", help="print the carried patches as JSON")
+    manifest.add_argument("--upstream", type=Path, default=UPSTREAM_DIR)
     args = parser.parse_args()
     try:
         if args.command == "apply":
@@ -259,7 +287,7 @@ def main() -> int:
                 print(f"skipped {reason}", file=sys.stderr)
             print(";".join(paths))
         else:
-            print(json.dumps(manifest_entries(args.patches)))
+            print(json.dumps(manifest_entries(args.patches, args.upstream)))
     except PatchError as error:
         print(f"llama.cpp patches: {error}", file=sys.stderr)
         return 1

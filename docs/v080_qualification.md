@@ -26,23 +26,39 @@ false. The wrapper's exported API is unchanged: 89 required exports.
 
 v0.8.0 adds `n_past`, `out_mode` and `voice` to `mtmd_helper_gen_audio_inp`.
 The wrapper value-initialises that struct, so they stay off (no sequence
-continuation, no voice). It still accepts only `MTMD_GEN_AUDIO_TYPE_QWEN3TTS`;
-the new Soprano and LFM3-Audio generators report unsupported.
+continuation, no voice). `llama_dart_tts_get_info` and `llama_dart_tts_init`
+still accept only `MTMD_GEN_AUDIO_TYPE_QWEN3TTS`. LFM3-Audio is opt-in through
+their `_ext` variants ([lfm3_support.md](lfm3_support.md)); Soprano reports
+unsupported.
 
 ## Carried patches
 
-All three apply strictly to v0.8.0.
+All three apply strictly to v0.8.0; 0001 and 0002 are applied.
 
 - 0001 (Adreno 750, #79) is still needed: upstream PR #29165 is an open draft,
   and the matvec reduction-mode selection it guards is unchanged.
 - 0002 (buffer device address, leehack/llamadart#782) is still needed: v0.8.0
   still takes `bufferDeviceAddress` from `VkPhysicalDeviceVulkan12Features`
   without checking for the entry point.
-- 0003 (#114) is redundant on v0.8.0: upstream #31086 makes `set_embeddings`
-  re-reserve on every toggle. A build without it passes every native test,
-  including `model-session` and `model-embedding-toggle`. It stays in
-  `series.json` while the pinned v0.7.0 and its rows still build from this
-  series; remove it with the change that moves the pin to v0.8.0.
+- 0003 (#114) is retired on v0.8.0: upstream #31086 (`74bca395`, first in
+  b11870) makes `set_embeddings` re-reserve on every toggle. Its
+  `upstream_fix` text is that condition, so a v0.8.0 build does not apply it,
+  its Android marker is not required and `assets.json` does not list it.
+  v0.7.0 lacks the text and still applies it. Delete the patch once no
+  `validate_wrapper.yml` row builds v0.7.0 or older.
+
+  Evidence, 2026-10-29, Apple M4 Max, macOS arm64, CPU/Accelerate, Metal and
+  KleidiAI off, Release:
+
+  | Build | `model-session` | `model-embedding-toggle` | Native CTest |
+  | --- | --- | --- | --- |
+  | v0.8.0 with 0003 | pass | pass | 57/57 |
+  | v0.8.0 without 0003 | pass | pass | 57/57 |
+  | v0.7.0 without 0003 (negative control) | SEGFAULT | abort | not run |
+
+  Each test passes on the same v0.8.0 builds with real SmolLM2-135M-Instruct
+  Q8_0 and Qwen3.5-0.8B Q4_K_M weights, and exits 139 with both on the v0.7.0
+  negative control.
 
 ## Consumer ABI delta from v0.7.0
 
