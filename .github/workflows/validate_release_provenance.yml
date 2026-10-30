@@ -43,6 +43,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
+          submodules: true
       - name: Verify release version policy
         run: python3 -m unittest discover -s tests -p 'test_*.py'
       - name: Verify immutable historical release metadata

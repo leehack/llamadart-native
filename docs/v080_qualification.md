@@ -5,14 +5,13 @@ next runtime candidate (issue #112). It is nightly b11912 plus 48 commits and
 v0.7.0 `620d2225cc436ab0b001e3200e590e3b286ef9ab` plus 291. Its native
 release identity is the stable tag `v0.8.0`, which `latest` selects.
 
-The production submodule stays at v0.7.0. `validate_wrapper.yml` builds v0.8.0
-in a `v0.8.0` row of every native lane.
+Native `v0.8.0` was published on 2026-10-30 and the production submodule is
+at v0.8.0 (`update-llama-submodule`, 8005b57). `validate_wrapper.yml` keeps a
+`v0.7.0` row of every native lane, so patch 0003 stays until that row goes.
 
-The scheduled stable dispatcher already selects v0.8.0. On 2026-10-29 it
-dispatched `native_release.yml` from `main` before this change, and every
-build job failed compiling the wrapper against the v0.8.0 `mtmd` API; nothing
-was published. Once this change is on `main`, the next scheduled run can build
-and publish `v0.8.0` without a further code change.
+The first scheduled dispatch, on 2026-10-29, failed in every build job
+compiling the wrapper against the v0.8.0 `mtmd` API and published nothing; the
+2026-10-30 dispatch built and published it.
 
 ## Wrapper change
 

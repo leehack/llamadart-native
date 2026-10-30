@@ -13,7 +13,9 @@ namespace {
 
 constexpr uint32_t kEdgeSeeds[] = {0u, 1u, 0x7fffffffu, LLAMA_DEFAULT_SEED - 1};
 
-// The projector RNG rule of clip_image_batch_encode at the pinned llama.cpp:
+// The projector RNG rule of clip_image_batch_encode at llama.cpp v0.7.0, the
+// last release without mtmd_gen_state (LLAMADART_MTMD_HAS_GEN_STATE false),
+// which is the only build that primes the code predictor:
 // https://github.com/ggml-org/llama.cpp/blob/620d2225cc436ab0b001e3200e590e3b286ef9ab/tools/mtmd/clip.cpp#L4603-L4606
 struct projector_rng {
   std::mt19937 rng{12345u};
