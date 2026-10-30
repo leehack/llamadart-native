@@ -149,6 +149,10 @@ class ApplyTests(unittest.TestCase):
         del fixture.series[0]["android_markers"]
         fixture.write_series()
         self.assert_rejected(fixture, '"android_markers" must list at least one')
+        fixture.series = [dict(fixture.series[0], upstream_fix=" ",
+                               android_markers=[{"library": "libthing.so", "text": "m"}])]
+        fixture.write_series()
+        self.assert_rejected(fixture, '"upstream_fix" must be source text')
 
     def test_an_unchanged_copy_keeps_its_timestamp(self) -> None:
         fixture = self.fixture(**{"0001_edit_b": EDIT_B})
@@ -200,13 +204,43 @@ class ApplyTests(unittest.TestCase):
         (bundle / "libthing.so").write_bytes(b"\x7fELF b2 marker\x00")
         self.assertEqual([], patches.android_marker_errors(bundle, fixture.patches))
 
+    def test_a_patch_whose_upstream_fix_is_present_is_retired_everywhere(self) -> None:
+        fixture = self.fixture(**{"0001_edit_b": EDIT_B, "0002_edit_d": EDIT_D})
+        fixture.series[0]["upstream_fix"] = "int b = 200;\n"
+        fixture.write_series()
+        bundle = fixture.output
+        bundle.mkdir()
+        (bundle / "libthing.so").write_bytes(b"\x7fELF marker 0002-edit-d.patch\x00")
+        self.assertEqual(
+            "int a = 1;\nint b = 20;\nint b2 = 21;\nint c = 3;\nint d = 40;\n",
+            fixture.apply()[SOURCE], "the fix is absent, so the patch applies")
+        self.assertEqual(["libthing.so: built without 0001-edit-b.patch (no 'marker "
+                          "0001-edit-b.patch')"],
+                         patches.android_marker_errors(bundle, fixture.patches, fixture.upstream))
+        (fixture.upstream / SOURCE).write_text(
+            ORIGINAL.replace("int b = 2;", "int b = 200;"), encoding="utf-8")
+        # The retired hunk would not fit either; it must not be reported as skipped.
+        self.assertEqual(
+            ({SOURCE: "int a = 1;\nint b = 200;\nint c = 3;\nint d = 40;\n"}, []),
+            patches.apply_available(fixture.upstream, fixture.patches))
+        self.assertEqual(["0002-edit-d.patch"],
+                         [entry["file"] for entry in patches.manifest_entries(
+                             fixture.patches, fixture.upstream)])
+        self.assertEqual([], patches.android_marker_errors(
+            bundle, fixture.patches, fixture.upstream))
+        (fixture.upstream / SOURCE).unlink()
+        self.assertEqual(["0001-edit-b.patch", "0002-edit-d.patch"],
+                         [entry["file"] for entry in patches.required_series(
+                             fixture.upstream, fixture.patches)],
+                         "a missing source never retires a patch")
+
     def test_the_manifest_names_each_patch_and_its_digest(self) -> None:
         fixture = self.fixture(**{"0001_edit_b": EDIT_B})
         self.assertEqual(
             [{"file": "0001-edit-b.patch",
               "sha256": hashlib.sha256(EDIT_B.encode()).hexdigest(),
               "tracking": "https://example.invalid/issue"}],
-            patches.manifest_entries(fixture.patches))
+            patches.manifest_entries(fixture.patches, fixture.upstream))
 
 
 class CarriedSeriesTests(unittest.TestCase):
@@ -226,7 +260,7 @@ class CarriedSeriesTests(unittest.TestCase):
                          "third_party/llama.cpp is not checked out")
     def test_the_series_applies_to_the_checked_out_llama_cpp(self) -> None:
         patched = patches.apply_series(UPSTREAM)
-        for entry in patches.load_series():
+        for entry in patches.required_series(UPSTREAM):
             path = patches.parse_patch(entry["file"], (patches.PATCHES_DIR / entry["file"])
                                        .read_text(encoding="utf-8")).path
             original = (UPSTREAM / path).read_text(encoding="utf-8")
