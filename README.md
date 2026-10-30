@@ -207,6 +207,8 @@ Assets are suffixed with platform/arch, for example:
   one exact native release dispatch and emits its immutable inputs.
 - `scripts/verify_release_provenance.py`: verifies exact-source checkout, source
   tag, and manifest provenance contracts.
+- `.github/workflows/validate_linux_release_rows.yml`: runs the release's Linux
+  job bodies without publishing, weekly and on changes to their inputs.
 - `docs/platform_backend_strategy.md`: platform/backend matrix.
 - `docs/release_version_policy.md`: stable/nightly channels, wrapper rebuild
   ordering, provenance, and downstream coordination.

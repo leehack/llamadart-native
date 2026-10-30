@@ -11,8 +11,13 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 import re
 import shutil
 import subprocess
+import sys
 import tarfile
 import tempfile
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import check_glibc_floor  # noqa: E402
 
 
 LOCAL_LIBRARY_PREFIXES = ("libllamadart", "libllama", "libggml", "libmtmd")
@@ -125,12 +130,12 @@ def parse_imports(raw: str, mode: str) -> set[str]:
     return imports
 
 
-def inspect_imports(path: Path, tool: str, mode: str) -> set[str]:
+def inspect_dynamic_symbols(path: Path, tool: str, mode: str) -> str:
     options = ["-T"] if mode == "objdump" else ["--dyn-syms", "-W"]
     result = subprocess.run(
         [tool, *options, str(path)], check=True, capture_output=True, text=True
     )
-    return parse_imports(result.stdout, mode)
+    return result.stdout
 
 
 def safe_member_name(name: str) -> str:
@@ -285,7 +290,7 @@ def validate_archive(archive_path: Path, tool: str, mode: str) -> list[str]:
                 )
             if name.startswith(LOCAL_LIBRARY_PREFIXES):
                 try:
-                    imports = inspect_imports(root / name, tool, mode)
+                    dynamic_symbols = inspect_dynamic_symbols(root / name, tool, mode)
                 except subprocess.CalledProcessError as error:
                     errors.append(
                         f"{name}: symbol inspection failed with exit code {error.returncode}"
@@ -294,11 +299,22 @@ def validate_archive(archive_path: Path, tool: str, mode: str) -> list[str]:
                 except OSError as error:
                     errors.append(f"{name}: symbol inspection failed: {error}")
                     continue
+                imports = parse_imports(dynamic_symbols, mode)
                 for symbol in FORBIDDEN_LOCAL_IMPORTS:
                     if symbol in imports:
                         errors.append(
                             f"{name}: imports {symbol}, so C exit() destroys its statics"
                         )
+                # Unlike the per-row build checks, this sees the bundle as
+                # shipped, including the backend the ROCm container builds.
+                floor_label = ".".join(map(str, check_glibc_floor.GLIBC_FLOOR))
+                for symbol, version in sorted(
+                    check_glibc_floor.imports_above_floor(dynamic_symbols).items()
+                ):
+                    errors.append(
+                        f"{name}: imports {symbol}@GLIBC_{'.'.join(map(str, version))}, "
+                        f"above the GLIBC_{floor_label} floor"
+                    )
 
         mtmd = metadata.get("libmtmd.so")
         if mtmd is None:

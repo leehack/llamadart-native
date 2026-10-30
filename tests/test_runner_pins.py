@@ -14,6 +14,7 @@ PINNED_JOBS = {
         "kleidiai-dispatch-emulated",
         "android-vulkan-shaders",
     ),
+    "validate_linux_release_rows.yml": ("build-linux",),
 }
 
 
