@@ -404,7 +404,9 @@ waiting for it:
   `llama_set_abort_callback` with the byte as its data, stops a
   `llama_decode` or `llama_encode` after the node being computed; the call
   returns 2. Upstream installs it only on the CPU backend, so a graph on a GPU
-  backend runs to its end.
+  backend runs to its end. After a 2, a recurrent or hybrid model's sequence
+  memory is undefined (upstream cannot roll recurrent state back): clear the
+  sequence and prefill it again.
 - `llama_dart_mtmd_encode_chunk_cancellable` is `mtmd_encode_chunk` with a
   cancel byte, for STT audio and vision encodes. A clip encode runs on clip's
   own backends, which upstream gives no abort callback, so the stop goes

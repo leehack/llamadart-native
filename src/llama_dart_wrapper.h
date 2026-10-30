@@ -742,12 +742,19 @@ enum llama_dart_mtmd_encode_status {
 // ggml_abort_callback for llama_set_abort_callback, with the cancel byte as
 // abort_callback_data: true when the byte is nonzero, false for NULL data.
 // Once the byte is nonzero, a decode or encode on the context stops after the
-// node being computed and returns 2; llama_decode removes the positions of the
-// ubatch it stopped and keeps those of earlier ubatches. Upstream installs the
-// callback only on the CPU backend, so a graph on a GPU backend runs to its
-// end. The byte must stay readable until llama_set_abort_callback(ctx, NULL,
-// NULL) returns or the context is freed. The callback touches no llama.cpp
-// object.
+// node being computed and returns 2. On a transformer model llama_decode
+// removes the positions of the ubatch it stopped and keeps those of earlier
+// ubatches. On a recurrent or hybrid model (llama_model_is_recurrent,
+// llama_model_is_hybrid) the sequence's memory is undefined after a 2,
+// because upstream cannot roll recurrent state back: clear the sequence and
+// prefill it again. Upstream installs the callback only on the CPU backend,
+// so a graph on a GPU backend runs to its end, though a multi-ubatch decode
+// still stops at the next ubatch's CPU split. On a context that
+// llama_dart_tts_* drives, a stop during the prompt step fails the task with
+// LLAMA_DART_TTS_STATUS_UPSTREAM_ERROR rather than cancelling it; reset the
+// task to reuse it. The byte must stay readable until
+// llama_set_abort_callback(ctx, NULL, NULL) returns or the context is freed.
+// The callback touches no llama.cpp object.
 LLAMADART_API bool llama_dart_cancel_flag_abort_callback(void * data);
 
 // ggml_backend_sched_eval_callback for mtmd_context_params.cb_eval, in place
