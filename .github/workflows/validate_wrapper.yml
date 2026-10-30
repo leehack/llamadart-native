@@ -468,6 +468,7 @@ jobs:
           llamadart_speculative_api_test
           llamadart_build_identity_test
           llamadart_tts_api_test
+          llamadart_tts_types_test
           llamadart_tts_eval_test
           llamadart_tts_seed_test
           llamadart_mtmd_compat_test
@@ -476,6 +477,7 @@ jobs:
           llamadart_vulkan_device_info_test
           llamadart_exit_teardown_test
           llamadart_tts_smoke
+          llamadart_tts_lfm3_smoke
       - name: Run wrapper contract tests
         run: ctest --test-dir build/wrapper-contract --output-on-failure
       - name: Check that the build identity is reproducible and follows its inputs
@@ -589,6 +591,7 @@ jobs:
           llamadart_exit_teardown_test
           llamadart_vulkan_device_info_test
           llamadart_tts_api_test
+          llamadart_tts_types_test
           llamadart_image_token_limit_test
       - name: Run the barrier and Vulkan probe tests
         shell: pwsh
@@ -596,7 +599,7 @@ jobs:
           $wrapperDir = (Resolve-Path build/wx64).Path
           $upstreamDir = (Resolve-Path build/wx64/bin).Path
           $env:PATH = "$wrapperDir;$upstreamDir;$env:PATH"
-          ctest --test-dir build/wx64 -R "barrier|build_identity|vocabulary|vulkan_device_info|tts_api|image_token_limit" --timeout 120 --output-on-failure
+          ctest --test-dir build/wx64 -R "barrier|build_identity|vocabulary|vulkan_device_info|tts_api|tts_types|image_token_limit" --timeout 120 --output-on-failure
       - name: Validate wrapper exports
         shell: pwsh
         run: |

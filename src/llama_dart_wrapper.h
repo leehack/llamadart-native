@@ -74,12 +74,15 @@ enum llama_dart_tts_status {
 enum llama_dart_tts_model_type {
     LLAMA_DART_TTS_MODEL_TYPE_NONE = 0,
     LLAMA_DART_TTS_MODEL_TYPE_QWEN3 = 1,
+    // Reported only to callers that accept it, see llama_dart_tts_get_info_ext.
+    LLAMA_DART_TTS_MODEL_TYPE_LFM3_AUDIO = 2,
     LLAMA_DART_TTS_MODEL_TYPE_UNKNOWN = 255,
 };
 
 enum llama_dart_tts_capability {
     LLAMA_DART_TTS_CAPABILITY_LANGUAGE = 1u << 0,
     LLAMA_DART_TTS_CAPABILITY_SPEAKER_REFERENCE = 1u << 1,
+    LLAMA_DART_TTS_CAPABILITY_VOICE = 1u << 2,
 };
 
 enum llama_dart_tts_state {
@@ -254,9 +257,9 @@ LLAMADART_API void llama_dart_set_log_level(int level);
 // llama_dart_exit_free, the draft context and need_embd getters,
 // llama_dart_tts_eval_callback, the llama_dart_vulkan_ functions, which
 // report through their own status, and the llama_dart_tts_ functions that only
-// read or set fields of the task (api_version, request_default, cancel,
-// get_output_info, read_pcm, last_error). They leave the last error
-// unchanged.
+// read or set fields of the task (api_version, request_default,
+// supported_model_types, cancel, get_output_info, read_pcm, last_error).
+// They leave the last error unchanged.
 //
 // After a caught exception, the objects that were passed to the call may be
 // partly updated. What a caller may still do with each of them:
@@ -854,6 +857,47 @@ LLAMADART_API enum llama_dart_tts_status llama_dart_tts_read_pcm(
 // Returns a task-owned diagnostic string, valid until the next task call.
 LLAMADART_API const char * llama_dart_tts_last_error(
     const struct llama_dart_tts * tts);
+
+// Model-type opt-in (llamadart-native#130). llama_dart_tts_get_info and
+// llama_dart_tts_init accept QWEN3 only and report every other generator as
+// UNKNOWN. The _ext variants take a mask of (1u << model type) naming every
+// type the caller handles; a type outside the mask, or one this build cannot
+// drive, is reported and refused exactly as those exports do.
+//
+// LFM3_AUDIO (LFM3-Audio and LFM3-Omni) speaks request->text through the
+// model's "tts" chat template, rendered by llama.cpp with request->language
+// (a code such as "en" or a language name; NULL or "" for the template's
+// default, English) and the voice of llama_dart_tts_start_with_voice. It
+// rejects speaker references with UNSUPPORTED, samples audio codes with the
+// model's own GGUF settings (request top_k, top_p, min_p and temperature are
+// validated but unused), and returns complete PCM: no text/audio
+// interleaving, sequence continuation or streaming.
+
+// Returns the mask of model types llama_dart_tts_init_ext can create in this
+// build. QWEN3 is always set; LFM3_AUDIO only when the bundled mtmd has the
+// LFM3-Audio generator.
+LLAMADART_API uint32_t llama_dart_tts_supported_model_types(void);
+
+LLAMADART_API enum llama_dart_tts_status llama_dart_tts_get_info_ext(
+    const struct mtmd_context * mtmd,
+    uint32_t accepted_model_types,
+    struct llama_dart_tts_info * out_info);
+
+// LFM3_AUDIO also needs the model's "tts" chat template, else UNSUPPORTED.
+LLAMADART_API struct llama_dart_tts * llama_dart_tts_init_ext(
+    struct llama_context * llama,
+    struct mtmd_context * mtmd,
+    uint32_t accepted_model_types,
+    enum llama_dart_tts_status * out_status);
+
+// llama_dart_tts_start with a voice; NULL is the model's default voice and
+// otherwise identical to llama_dart_tts_start. A voice needs
+// LLAMA_DART_TTS_CAPABILITY_VOICE, else UNSUPPORTED. LFM3_AUDIO voices are
+// "female" (default) and "male", in any case; others are INVALID_ARGUMENT.
+LLAMADART_API enum llama_dart_tts_status llama_dart_tts_start_with_voice(
+    struct llama_dart_tts * tts,
+    const struct llama_dart_tts_request * request,
+    const char * voice);
 
 // Creates a sampler that applies llama.cpp's reasoning-token budget before an
 // optional grammar sampler. The returned sampler owns grammar_sampler.

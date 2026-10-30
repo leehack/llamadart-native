@@ -61,6 +61,24 @@ int main(void) {
 
     llama_dart_tts_free(NULL);
 
+    const uint32_t qwen3 = 1u << LLAMA_DART_TTS_MODEL_TYPE_QWEN3;
+    const uint32_t lfm3 = 1u << LLAMA_DART_TTS_MODEL_TYPE_LFM3_AUDIO;
+#if LLAMADART_MTMD_HAS_LFM3A_GEN
+    assert(llama_dart_tts_supported_model_types() == (qwen3 | lfm3));
+#else
+    assert(llama_dart_tts_supported_model_types() == qwen3);
+#endif
+    info.struct_size = sizeof(info);
+    assert(llama_dart_tts_get_info_ext(NULL, qwen3 | lfm3, &info) == LLAMA_DART_TTS_STATUS_INVALID_ARGUMENT);
+    assert(llama_dart_tts_get_info_ext(NULL, qwen3 | lfm3, NULL) == LLAMA_DART_TTS_STATUS_INVALID_ARGUMENT);
+    info.struct_size = sizeof(info) - 1;
+    assert(llama_dart_tts_get_info_ext(NULL, qwen3 | lfm3, &info) == LLAMA_DART_TTS_STATUS_INVALID_ARGUMENT);
+    status = LLAMA_DART_TTS_STATUS_OK;
+    assert(llama_dart_tts_init_ext(NULL, NULL, qwen3 | lfm3, &status) == NULL);
+    assert(status == LLAMA_DART_TTS_STATUS_INVALID_ARGUMENT);
+    assert(llama_dart_tts_start_with_voice(NULL, &request, NULL) == LLAMA_DART_TTS_STATUS_INVALID_ARGUMENT);
+    assert(llama_dart_tts_start_with_voice(NULL, &request, "male") == LLAMA_DART_TTS_STATUS_INVALID_ARGUMENT);
+
     // A failure that is not a caught exception leaves no last error.
     assert(llama_dart_last_error() == NULL);
     llama_dart_clear_last_error();
