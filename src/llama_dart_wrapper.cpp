@@ -129,20 +129,9 @@ static llama_dart_tts_status llama_dart_tts_mark_cancelled(
 
 static uint32_t llama_dart_tts_capabilities(
     const mtmd_context *mtmd, llama_dart_tts_model_type type) {
-  switch (type) {
-  case LLAMA_DART_TTS_MODEL_TYPE_QWEN3:
-    return LLAMA_DART_TTS_CAPABILITY_LANGUAGE |
-           (mtmd_support_audio(mtmd)
-                ? LLAMA_DART_TTS_CAPABILITY_SPEAKER_REFERENCE
-                : 0u);
-  case LLAMA_DART_TTS_MODEL_TYPE_LFM3_AUDIO:
-    // Its audio encoder is for chat input; the generator has no voice
-    // conditioning and ignores a speaker reference.
-    return LLAMA_DART_TTS_CAPABILITY_LANGUAGE |
-           LLAMA_DART_TTS_CAPABILITY_VOICE;
-  default:
-    return 0;
-  }
+  return llama_dart_tts_model_capabilities(
+      type,
+      type == LLAMA_DART_TTS_MODEL_TYPE_QWEN3 && mtmd_support_audio(mtmd));
 }
 
 static llama_sampler *
@@ -1775,8 +1764,8 @@ static enum llama_dart_tts_status llama_dart_tts_start_impl(
     return llama_dart_tts_error(tts, LLAMA_DART_TTS_STATUS_UNSUPPORTED,
                                 "the TTS model takes no speaker reference");
   }
-  if (request->language != nullptr && request->language[0] != '\0' &&
-      (tts->capabilities & LLAMA_DART_TTS_CAPABILITY_LANGUAGE) == 0) {
+  if (!llama_dart_tts_language_supported(tts->capabilities,
+                                         request->language)) {
     return llama_dart_tts_error(tts, LLAMA_DART_TTS_STATUS_UNSUPPORTED,
                                 "the TTS model takes no language");
   }

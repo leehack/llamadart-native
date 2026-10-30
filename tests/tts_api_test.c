@@ -5,6 +5,8 @@
 #include "llama_dart_wrapper.h"
 
 #include <assert.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 int main(void) {
@@ -64,9 +66,17 @@ int main(void) {
     const uint32_t qwen3 = 1u << LLAMA_DART_TTS_MODEL_TYPE_QWEN3;
     const uint32_t lfm3 = 1u << LLAMA_DART_TTS_MODEL_TYPE_LFM3_AUDIO;
     const uint32_t soprano = 1u << LLAMA_DART_TTS_MODEL_TYPE_SOPRANO;
-    assert(llama_dart_tts_supported_model_types() ==
-           (qwen3 | (LLAMADART_MTMD_HAS_LFM3A_GEN ? lfm3 : 0u) |
-            (LLAMADART_MTMD_HAS_SOPRANO ? soprano : 0u)));
+    // Read from the checked-out llama.cpp headers, not from the build's own
+    // probes, which would agree with a probe that wrongly compiled a type out.
+    const char *expected_text = getenv("LLAMADART_EXPECTED_TTS_MODEL_TYPES");
+    assert(expected_text != NULL && *expected_text != '\0');
+    const uint32_t expected = (uint32_t)strtoul(expected_text, NULL, 0);
+    const uint32_t supported = llama_dart_tts_supported_model_types();
+    if (supported != expected) {
+        fprintf(stderr, "supported TTS model types 0x%x, expected 0x%x (qwen3 0x%x, lfm3 0x%x, soprano 0x%x)\n",
+                supported, expected, qwen3, lfm3, soprano);
+    }
+    assert(supported == expected);
     info.struct_size = sizeof(info);
     assert(llama_dart_tts_get_info_ext(NULL, qwen3 | lfm3, &info) == LLAMA_DART_TTS_STATUS_INVALID_ARGUMENT);
     assert(llama_dart_tts_get_info_ext(NULL, qwen3 | lfm3, NULL) == LLAMA_DART_TTS_STATUS_INVALID_ARGUMENT);

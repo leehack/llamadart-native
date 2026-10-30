@@ -70,6 +70,31 @@ llama_dart_tts_accepted_model_type(mtmd_gen_audio_type type,
              : LLAMA_DART_TTS_MODEL_TYPE_UNKNOWN;
 }
 
+static inline uint32_t
+llama_dart_tts_model_capabilities(llama_dart_tts_model_type type,
+                                  bool takes_speaker_audio) {
+  switch (type) {
+  case LLAMA_DART_TTS_MODEL_TYPE_QWEN3:
+    return LLAMA_DART_TTS_CAPABILITY_LANGUAGE |
+           (takes_speaker_audio ? LLAMA_DART_TTS_CAPABILITY_SPEAKER_REFERENCE
+                                : 0u);
+  case LLAMA_DART_TTS_MODEL_TYPE_LFM3_AUDIO:
+    // Its audio encoder is for chat input; the generator has no voice
+    // conditioning and ignores a speaker reference.
+    return LLAMA_DART_TTS_CAPABILITY_LANGUAGE |
+           LLAMA_DART_TTS_CAPABILITY_VOICE;
+  default:
+    return 0;
+  }
+}
+
+// An empty language means none was requested, so it is valid for every model.
+static inline bool llama_dart_tts_language_supported(uint32_t capabilities,
+                                                     const char *language) {
+  return language == nullptr || language[0] == '\0' ||
+         (capabilities & LLAMA_DART_TTS_CAPABILITY_LANGUAGE) != 0;
+}
+
 // The LFM3-Audio "tts" chat template falls back to its default voice for any
 // other name, so an unknown voice is rejected here instead of being ignored.
 static inline bool llama_dart_tts_voice_supported(

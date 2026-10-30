@@ -413,14 +413,15 @@ jobs:
           EXTRACT_DIR="${RUNNER_TEMP}/llamadart-clean-${{ matrix.arch }}"
           mkdir -p "$EXTRACT_DIR"
           tar -xzf "linux-${{ matrix.arch }}.tar.gz" -C "$EXTRACT_DIR"
+          EXPECTED_TTS_MODEL_TYPES="$(python3 tools/expected_tts_model_types.py)"
           if [ "${{ matrix.arch }}" = "arm64" ]; then
             aarch64-linux-gnu-gcc tools/linux_dlopen_smoke.c -o "${RUNNER_TEMP}/linux-dlopen-smoke-arm64" -ldl
             env -u LD_LIBRARY_PATH qemu-aarch64 -L /usr/aarch64-linux-gnu \
-              "${RUNNER_TEMP}/linux-dlopen-smoke-arm64" "$EXTRACT_DIR/libllamadart.so"
+              "${RUNNER_TEMP}/linux-dlopen-smoke-arm64" "$EXTRACT_DIR/libllamadart.so" "$EXPECTED_TTS_MODEL_TYPES"
           else
             cc tools/linux_dlopen_smoke.c -o "${RUNNER_TEMP}/linux-dlopen-smoke-x64" -ldl
             env -u LD_LIBRARY_PATH \
-              "${RUNNER_TEMP}/linux-dlopen-smoke-x64" "$EXTRACT_DIR/libllamadart.so"
+              "${RUNNER_TEMP}/linux-dlopen-smoke-x64" "$EXTRACT_DIR/libllamadart.so" "$EXPECTED_TTS_MODEL_TYPES"
           fi
       - name: Audit and select the Linux arm64 CPU variants
         if: matrix.arch == 'arm64'
