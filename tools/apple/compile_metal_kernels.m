@@ -2,7 +2,9 @@
 //
 // ggml embeds Metal source and compiles it on the user's device, so the OS, not
 // the Xcode that built the release, decides whether a kernel compiles. The macro
-// sets are the ones ggml-metal-device.m passes on the devices of these OS versions.
+// sets are the ones ggml-metal-device.m passes. A runner's paravirtual device
+// reports no bfloat support, so loading a model there compiles without BF16 and
+// cannot see what user devices compile.
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
 
@@ -15,6 +17,12 @@ int main(int argc, char ** argv) {
         NSString * directory = [NSString stringWithUTF8String:argv[1]];
         NSOperatingSystemVersion os = [[NSProcessInfo processInfo] operatingSystemVersion];
         id<MTLDevice> device = MTLCreateSystemDefaultDevice();
+#if TARGET_OS_OSX
+        // macOS 14 runners have a device but no system default one.
+        if (device == nil) {
+            device = MTLCopyAllDevices().firstObject;
+        }
+#endif
         if (device == nil) {
             fprintf(stderr, "no Metal device, so this OS's compiler cannot be asked\n");
             return 2;

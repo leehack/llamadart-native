@@ -41,14 +41,14 @@ jobs:
           name: metal_os_floor_dylib
           path: bin/macos/arm64/libllamadart.dylib
 
-  compile:
+  compile-macos:
     needs: build
     # A release passes its own artifact, and build is skipped.
     if: ${{ !cancelled() && (needs.build.result == 'success' || needs.build.result == 'skipped') }}
     strategy:
       fail-fast: false
       matrix:
-        # The macOS floor, the newest macOS before Metal 4, and the current one.
+        # The macOS floor, the last macOS before the 26 compilers, and the current one.
         runner: [macos-14, macos-15, macos-26]
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 20
@@ -66,3 +66,43 @@ jobs:
           clang -fobjc-arc -framework Foundation -framework Metal \
             tools/apple/compile_metal_kernels.m -o compile_metal_kernels
           ./compile_metal_kernels kernels
+
+  compile-ios-simulator:
+    needs: build
+    if: ${{ !cancelled() && (needs.build.result == 'success' || needs.build.result == 'skipped') }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # The oldest iOS and the newest iOS 18 on these runners; a simulator
+        # runtime brings that iOS version's Metal compiler. No runner has iOS 16.
+        include:
+          - runner: macos-14
+            runtime: iOS-17-0
+          - runner: macos-15
+            runtime: iOS-18-6
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v8
+        with:
+          name: ${{ inputs.artifact || 'metal_os_floor_dylib' }}
+          path: artifact
+      - name: Compile every embedded kernel with this iOS version's Metal compiler
+        env:
+          RUNTIME: com.apple.CoreSimulator.SimRuntime.${{ matrix.runtime }}
+        run: |
+          python3 tools/extract_metal_kernels.py artifact/libllamadart.dylib kernels
+          clang -target arm64-apple-ios16.4-simulator \
+            -isysroot "$(xcrun --sdk iphonesimulator --show-sdk-path)" \
+            -fobjc-arc -framework Foundation -framework Metal \
+            tools/apple/compile_metal_kernels.m -o compile_metal_kernels
+          device_type="$(xcrun simctl list devicetypes -j | python3 -c '
+          import json, sys
+          print(next(d["identifier"] for d in json.load(sys.stdin)["devicetypes"]
+                     if d["name"].startswith("iPhone")))')"
+          simulator="$(xcrun simctl create metal-floor "$device_type" "$RUNTIME")"
+          xcrun simctl bootstatus "$simulator" -b > /dev/null
+          xcrun simctl spawn "$simulator" "$PWD/compile_metal_kernels" "$PWD/kernels"
