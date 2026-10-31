@@ -19,7 +19,10 @@ SERIES_NAME = "series.json"
 SOURCE_SUFFIXES = frozenset({".c", ".cc", ".cpp", ".cxx", ".m", ".mm"})
 PATCH_NAME = re.compile(r"\d{4}-[a-z0-9]+(?:-[a-z0-9]+)*\.patch")
 HUNK_HEADER = re.compile(r"@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@")
-SERIES_KEYS = frozenset({"file", "tracking", "upstream", "android_markers", "upstream_fix"})
+SERIES_KEYS = frozenset({
+    "file", "tracking", "upstream", "android_markers", "apple_markers", "upstream_fix",
+    "upstream_fix_path", "required_text",
+})
 MARKER_KEYS = frozenset({"library", "text"})
 
 
@@ -75,20 +78,35 @@ def load_series(patches_dir: Path = PATCHES_DIR) -> list[dict]:
                 raise PatchError(f"{series_path}: {name}: \"{key}\" must be an https URL")
         # The artifact check is what keeps a release from losing a patch, so
         # every patch must give it something to find.
-        markers = entry.get("android_markers")
-        if not isinstance(markers, list) or not markers or not all(
-            isinstance(marker, dict)
-            and set(marker) == MARKER_KEYS
-            and all(isinstance(value, str) and value for value in marker.values())
-            for marker in markers
+        marker_lists = [entry[key] for key in ("android_markers", "apple_markers") if key in entry]
+        if not marker_lists or not all(
+            isinstance(markers, list) and markers and all(
+                isinstance(marker, dict)
+                and set(marker) == MARKER_KEYS
+                and all(isinstance(value, str) and value for value in marker.values())
+                for marker in markers
+            )
+            for markers in marker_lists
         ):
             raise PatchError(
-                f"{series_path}: {name}: \"android_markers\" must list at least one "
-                "{library, text}"
+                f"{series_path}: {name}: \"android_markers\" or \"apple_markers\" must list "
+                "at least one {library, text}"
             )
         fix = entry.get("upstream_fix")
         if fix is not None and not (isinstance(fix, str) and fix.strip()):
             raise PatchError(f"{series_path}: {name}: \"upstream_fix\" must be source text")
+        fix_path = entry.get("upstream_fix_path")
+        if fix_path is not None and (fix is None or not isinstance(fix_path, str)):
+            raise PatchError(
+                f"{series_path}: {name}: \"upstream_fix_path\" needs \"upstream_fix\""
+            )
+        required = entry.get("required_text")
+        if required is not None and not (
+            isinstance(required, dict)
+            and set(required) == {"path", "text"}
+            and all(isinstance(value, str) and value for value in required.values())
+        ):
+            raise PatchError(f"{series_path}: {name}: \"required_text\" must be {{path, text}}")
         names.append(name)
     if names != sorted(set(names)):
         raise PatchError(f"{series_path}: patches must be unique and in name order")
@@ -160,14 +178,16 @@ def required_series(upstream: Path = UPSTREAM_DIR, patches_dir: Path = PATCHES_D
     """The series entries this llama.cpp needs: those whose upstream fix it lacks.
 
     An entry's "upstream_fix" is text that the upstream repair puts in the
-    patched source. A missing source never retires a patch.
+    patched source, or in "upstream_fix_path" when it repairs another file. A
+    missing source never retires a patch.
     """
     required: list[dict] = []
     for entry in load_series(patches_dir):
         fix = entry.get("upstream_fix")
         if fix is not None:
             name = entry["file"]
-            source = upstream / parse_patch(name, _read_text(patches_dir / name)).path
+            source = upstream / entry.get(
+                "upstream_fix_path", parse_patch(name, _read_text(patches_dir / name)).path)
             if source.is_file() and fix in _read_text(source):
                 continue
         required.append(entry)
@@ -190,6 +210,13 @@ def apply_available(
         name = entry["file"]
         patch = parse_patch(name, _read_text(patches_dir / name))
         try:
+            required = entry.get("required_text")
+            if required is not None:
+                target = upstream / required["path"]
+                if not target.is_file() or required["text"] not in _read_text(target):
+                    raise NotApplicable(
+                        f"{name}: {required['path']} does not contain the text it edits"
+                    )
             text = patched.get(patch.path)
             if text is None:
                 source = upstream / patch.path
@@ -232,20 +259,35 @@ def manifest_entries(
     ]
 
 
-def android_marker_errors(
-    out_dir: Path, patches_dir: Path = PATCHES_DIR, upstream: Path = UPSTREAM_DIR
+def marker_errors(
+    key: str, out_dir: Path, patches_dir: Path, upstream: Path, require_library: bool = False
 ) -> list[str]:
     """Names each bundled library that lacks the text a carried patch compiles in."""
     errors: list[str] = []
     for entry in required_series(upstream, patches_dir):
-        for marker in entry["android_markers"]:
+        for marker in entry.get(key, []):
             library = out_dir / marker["library"]
-            if library.is_file() and marker["text"].encode() not in library.read_bytes():
+            if require_library and not library.is_file():
+                errors.append(f"{marker['library']}: not in {out_dir}")
+            elif library.is_file() and marker["text"].encode() not in library.read_bytes():
                 errors.append(
                     f"{marker['library']}: built without {entry['file']} "
                     f"(no {marker['text']!r})"
                 )
     return errors
+
+
+def android_marker_errors(
+    out_dir: Path, patches_dir: Path = PATCHES_DIR, upstream: Path = UPSTREAM_DIR
+) -> list[str]:
+    return marker_errors("android_markers", out_dir, patches_dir, upstream)
+
+
+def apple_marker_errors(
+    out_dir: Path, patches_dir: Path = PATCHES_DIR, upstream: Path = UPSTREAM_DIR
+) -> list[str]:
+    # Every Apple bundle is the one library, unlike Android's per-backend modules.
+    return marker_errors("apple_markers", out_dir, patches_dir, upstream, require_library=True)
 
 
 def write_patched(
@@ -278,6 +320,9 @@ def main() -> int:
                        help="fail when a patch does not apply instead of skipping it")
     manifest = commands.add_parser("manifest", help="print the carried patches as JSON")
     manifest.add_argument("--upstream", type=Path, default=UPSTREAM_DIR)
+    apple = commands.add_parser("check-apple", help="fail if an Apple bundle lacks a patch marker")
+    apple.add_argument("--upstream", type=Path, default=UPSTREAM_DIR)
+    apple.add_argument("--dir", type=Path, required=True)
     args = parser.parse_args()
     try:
         if args.command == "apply":
@@ -286,6 +331,11 @@ def main() -> int:
             for reason in skipped:
                 print(f"skipped {reason}", file=sys.stderr)
             print(";".join(paths))
+        elif args.command == "check-apple":
+            errors = apple_marker_errors(args.dir, args.patches, args.upstream)
+            for error in errors:
+                print(error, file=sys.stderr)
+            return 1 if errors else 0
         else:
             print(json.dumps(manifest_entries(args.patches, args.upstream)))
     except PatchError as error:

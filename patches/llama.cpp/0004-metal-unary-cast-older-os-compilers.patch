@@ -1,0 +1,21 @@
+diff --git a/ggml/src/ggml-metal/ggml-metal-device.m b/ggml/src/ggml-metal/ggml-metal-device.m
+index 451f65299..91bcc2e66 100644
+--- a/ggml/src/ggml-metal/ggml-metal-device.m
++++ b/ggml/src/ggml-metal/ggml-metal-device.m
+@@ -488,7 +488,13 @@ ggml_metal_library_t ggml_metal_library_init(ggml_metal_device_t dev) {
+         ^NSString * (int kind, NSError ** err) {
+             (void) err;
+-            return [[NSString alloc] initWithBytes:lib_start[kind]
+-                                            length:(lib_end[kind] - lib_start[kind])
+-                                          encoding:NSUTF8StringEncoding];
++            NSString * src = [[NSString alloc] initWithBytes:lib_start[kind]
++                                                      length:(lib_end[kind] - lib_start[kind])
++                                                    encoding:NSUTF8StringEncoding];
++            // The Metal compilers of iOS and macOS before 26 reject a vector
++            // subscript in a constexpr function (upstream #31360).
++            NSString * fixed = [[src stringByReplacingOccurrencesOfString:@"inline constexpr bfloat4 ggml_metal_unary_cast<"
++                                                               withString:@"inline bfloat4 ggml_metal_unary_cast<"] retain];
++            [src release];
++            return fixed;
+         }, "embedded data");
+ 

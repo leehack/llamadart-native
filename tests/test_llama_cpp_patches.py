@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -11,8 +12,10 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
+sys.path.insert(0, str(ROOT / "scripts"))
 
 import llama_cpp_patches as patches  # noqa: E402
+import verify_release_provenance as provenance  # noqa: E402
 
 UPSTREAM = ROOT / "third_party/llama.cpp"
 SOURCE = "src/thing.cpp"
@@ -148,11 +151,107 @@ class ApplyTests(unittest.TestCase):
         del fixture.series[0]["note"]
         del fixture.series[0]["android_markers"]
         fixture.write_series()
-        self.assert_rejected(fixture, '"android_markers" must list at least one')
+        self.assert_rejected(fixture, 'must list at least one')
         fixture.series = [dict(fixture.series[0], upstream_fix=" ",
                                android_markers=[{"library": "libthing.so", "text": "m"}])]
         fixture.write_series()
         self.assert_rejected(fixture, '"upstream_fix" must be source text')
+
+    def test_an_apple_marker_is_looked_for_in_apple_bundles_only(self) -> None:
+        fixture = self.fixture(**{"0001_edit_b": EDIT_B})
+        del fixture.series[0]["android_markers"]
+        fixture.series[0]["apple_markers"] = [{"library": "libthing.dylib", "text": "b2 marker"}]
+        fixture.write_series()
+        bundle = fixture.output
+        bundle.mkdir()
+        (bundle / "libthing.dylib").write_bytes(b"without it")
+        self.assertEqual([], patches.android_marker_errors(bundle, fixture.patches))
+        self.assertEqual(
+            ["libthing.dylib: built without 0001-edit-b.patch (no 'b2 marker')"],
+            patches.apple_marker_errors(bundle, fixture.patches))
+        (bundle / "libthing.dylib").write_bytes(b"b2 marker")
+        self.assertEqual([], patches.apple_marker_errors(bundle, fixture.patches))
+
+    def test_an_upstream_fix_in_another_file_retires_the_patch(self) -> None:
+        fixture = self.fixture(**{"0001_edit_b": EDIT_B})
+        fixture.series[0]["upstream_fix"] = "fixed\n"
+        fixture.series[0]["upstream_fix_path"] = "other.txt"
+        fixture.write_series()
+        self.assertEqual(1, len(patches.required_series(fixture.upstream, fixture.patches)))
+        (fixture.upstream / "other.txt").write_text("fixed\n", encoding="utf-8")
+        self.assertEqual([], patches.required_series(fixture.upstream, fixture.patches))
+
+    def test_an_upstream_fix_path_needs_the_fix_text(self) -> None:
+        fixture = self.fixture(**{"0001_edit_b": EDIT_B})
+        fixture.series[0]["upstream_fix_path"] = "other.txt"
+        fixture.write_series()
+        self.assert_rejected(fixture, '"upstream_fix_path" needs "upstream_fix"')
+
+    def required_text_fixture(self) -> Fixture:
+        fixture = self.fixture(**{"0001_edit_b": EDIT_B})
+        fixture.series[0]["required_text"] = {"path": "other.txt", "text": "edit me"}
+        fixture.series[0]["android_markers"] = [{"library": "libthing.so", "text": "b2 marker"}]
+        fixture.write_series()
+        return fixture
+
+    def test_a_patch_whose_runtime_edit_has_nothing_to_edit_does_not_fit(self) -> None:
+        fixture = self.required_text_fixture()
+        (fixture.upstream / "other.txt").write_text("renamed\n", encoding="utf-8")
+        patched, skipped = patches.apply_available(fixture.upstream, fixture.patches)
+        self.assertEqual({}, patched)
+        self.assertIn("other.txt", skipped[0])
+        self.assert_rejected(fixture, "other.txt")
+        bundle = fixture.output
+        bundle.mkdir()
+        (bundle / "libthing.so").write_bytes(b"without it")
+        self.assertEqual(
+            ["libthing.so: built without 0001-edit-b.patch (no 'b2 marker')"],
+            patches.android_marker_errors(bundle, fixture.patches, fixture.upstream))
+
+    def test_a_missing_file_of_required_text_does_not_fit(self) -> None:
+        self.assert_rejected(self.required_text_fixture(), "other.txt")
+
+    def test_a_patch_whose_runtime_edit_has_its_text_applies(self) -> None:
+        fixture = self.required_text_fixture()
+        (fixture.upstream / "other.txt").write_text("edit me\n", encoding="utf-8")
+        self.assertIn("int b = 20;", fixture.apply()[SOURCE])
+
+    def test_required_text_must_name_a_path_and_a_text(self) -> None:
+        fixture = self.fixture(**{"0001_edit_b": EDIT_B})
+        fixture.series[0]["required_text"] = {"path": "other.txt"}
+        fixture.write_series()
+        self.assert_rejected(fixture, '"required_text" must be {path, text}')
+
+    def check_apple(self, fixture: Fixture) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            [sys.executable, str(ROOT / "tools/llama_cpp_patches.py"),
+             "--patches", str(fixture.patches), "check-apple",
+             "--upstream", str(fixture.upstream), "--dir", str(fixture.output)],
+            capture_output=True, text=True, check=False)
+
+    def test_the_check_apple_command_fails_on_a_bundle_without_the_marker(self) -> None:
+        fixture = self.fixture(**{"0001_edit_b": EDIT_B})
+        del fixture.series[0]["android_markers"]
+        fixture.series[0]["apple_markers"] = [{"library": "libthing.dylib", "text": "b2 marker"}]
+        fixture.write_series()
+        fixture.output.mkdir()
+        (fixture.output / "libthing.dylib").write_bytes(b"without it")
+        result = self.check_apple(fixture)
+        self.assertEqual(1, result.returncode, result.stderr)
+        self.assertIn("built without 0001-edit-b.patch", result.stderr)
+        (fixture.output / "libthing.dylib").write_bytes(b"b2 marker")
+        result = self.check_apple(fixture)
+        self.assertEqual(0, result.returncode, result.stderr)
+
+    def test_the_check_apple_command_fails_on_a_bundle_without_the_library(self) -> None:
+        fixture = self.fixture(**{"0001_edit_b": EDIT_B})
+        del fixture.series[0]["android_markers"]
+        fixture.series[0]["apple_markers"] = [{"library": "libthing.dylib", "text": "b2 marker"}]
+        fixture.write_series()
+        fixture.output.mkdir()
+        result = self.check_apple(fixture)
+        self.assertEqual(1, result.returncode, result.stderr)
+        self.assertIn("libthing.dylib", result.stderr)
 
     def test_an_unchanged_copy_keeps_its_timestamp(self) -> None:
         fixture = self.fixture(**{"0001_edit_b": EDIT_B})
@@ -282,6 +381,44 @@ class CarriedSeriesTests(unittest.TestCase):
         self.assertIn(patch, self.carried_after(unfixed))
         self.assertIn(patch, self.carried_after(None), "a missing source retires nothing")
 
+    METAL_PATCH = "0004-metal-unary-cast-older-os-compilers.patch"
+    UNARY = "ggml/src/ggml-metal/kernels/unary.metal"
+
+    def metal_patch_entry(self) -> dict:
+        return next(entry for entry in patches.load_series()
+                    if entry["file"] == self.METAL_PATCH)
+
+    def test_the_verifier_and_the_tool_agree_on_retiring_the_metal_patch(self) -> None:
+        entry = self.metal_patch_entry()
+        with tempfile.TemporaryDirectory() as directory:
+            upstream = Path(directory)
+            unary = upstream / self.UNARY
+            unary.parent.mkdir(parents=True)
+            for text, retired in (("constexpr specialization\n", False),
+                                  (entry["upstream_fix"], True)):
+                unary.write_text(text, encoding="utf-8")
+                self.assertEqual(retired, provenance.fixed_upstream(
+                    entry, patches.PATCHES_DIR, upstream))
+                carried = [e["file"] for e in patches.manifest_entries(
+                    patches.PATCHES_DIR, upstream)]
+                self.assertEqual(not retired, self.METAL_PATCH in carried)
+
+    def test_the_metal_patch_edits_the_text_it_requires(self) -> None:
+        entry = self.metal_patch_entry()
+        self.assertEqual(self.UNARY, entry["required_text"]["path"])
+        patch = (patches.PATCHES_DIR / self.METAL_PATCH).read_text(encoding="utf-8")
+        edited = re.search(r'@"(inline constexpr [^"]+)"', patch).group(1)
+        self.assertTrue(entry["required_text"]["text"].startswith(edited))
+
+    @unittest.skipUnless((UPSTREAM / "CMakeLists.txt").is_file(),
+                         "third_party/llama.cpp is not checked out")
+    def test_the_required_text_of_each_carried_patch_is_upstream(self) -> None:
+        for entry in patches.required_series(UPSTREAM):
+            required = entry.get("required_text")
+            if required is not None:
+                self.assertIn(required["text"],
+                              (UPSTREAM / required["path"]).read_text(encoding="utf-8"))
+
     def test_the_manifest_command_reads_the_given_upstream_not_the_submodule(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / "src/llama-context.cpp"
@@ -292,7 +429,7 @@ class CarriedSeriesTests(unittest.TestCase):
                 [sys.executable, str(ROOT / "tools/llama_cpp_patches.py"),
                  "manifest", "--upstream", directory], capture_output=True, text=True)
         self.assertEqual(0, result.returncode, result.stderr)
-        self.assertEqual(["0001", "0002", "0003"],
+        self.assertEqual(["0001", "0002", "0003", "0004"],
                          [e["file"][:4] for e in json.loads(result.stdout)])
 
     @unittest.skipUnless((UPSTREAM / "CMakeLists.txt").is_file(),
@@ -303,7 +440,7 @@ class CarriedSeriesTests(unittest.TestCase):
             path = patches.parse_patch(entry["file"], (patches.PATCHES_DIR / entry["file"])
                                        .read_text(encoding="utf-8")).path
             original = (UPSTREAM / path).read_text(encoding="utf-8")
-            for marker in entry["android_markers"]:
+            for marker in entry.get("android_markers", []) + entry.get("apple_markers", []):
                 # A marker tells a patched library from an unpatched one only
                 # if the patch is what introduces it.
                 self.assertNotIn(marker["text"], original, entry["file"])

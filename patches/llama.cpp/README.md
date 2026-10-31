@@ -23,9 +23,11 @@ evidence are documented in [v070_native_contracts.md](../../docs/v070_native_con
   patch `file`, the `tracking` issue, the `upstream` pull request or issue to
   watch (a permalink to the upstream lines when there is none), and
   `android_markers`: a `library` of the Android bundle and a `text` that only
-  the patched source compiles into it. An optional `upstream_fix` is exact
-  text that the upstream repair puts in the patched source; see "Retiring a
-  patch upstream has fixed".
+  the patched source compiles into it. A patch of an Apple-only source has
+  `apple_markers` instead, for the Apple bundles. An optional `upstream_fix`
+  is exact text that the upstream repair puts in the patched source, or in the
+  file named by `upstream_fix_path` when it repairs another one; see "Retiring
+  a patch upstream has fixed".
 - `NNNN-short-name.patch` is a unified diff (`git diff -U2` inside
   `third_party/llama.cpp`) of one existing `.c`, `.cpp`, `.m` or `.mm` file. A
   patch cannot add a file or edit a header: only a source that an upstream
@@ -55,9 +57,18 @@ upstream, or the release, the automatic stable release included. Check then
 whether upstream fixed the defect, and refresh the patch or delete it.
 
 For that reason every patch must have at least one marker, and so must change
-a source that an Android library is built from. A patch fits the same
-upstream source on every platform or on none, so a release whose Android
-bundle has every marker has every patch on its other platforms too.
+a source that an Android library is built from, or an Apple-only source whose
+`apple_markers` `tools/llama_cpp_patches.py check-apple` looks for in every
+Apple bundle. A patch fits the same upstream source on every platform or on
+none, so a release whose Android bundle has every Android marker has those
+patches on its other platforms too.
+
+A patch cannot change a `.metal` kernel: the upstream build embeds those files
+through its own custom commands, which take no replacement source. Patch 0004
+edits the embedded text in `ggml-metal-device.m` as it is loaded instead. Its
+marker is its own literal, so it cannot show that the edit matched anything:
+`required_text` names the text the edit needs, and a patch whose `path` lacks it
+does not fit, which drops the marker and fails `check-apple`.
 
 `python3 tools/llama_cpp_patches.py apply --strict --upstream
 third_party/llama.cpp --output <dir>` fails where the build would skip.

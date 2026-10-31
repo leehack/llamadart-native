@@ -25,7 +25,8 @@ function(llamadart_apply_llama_cpp_patches)
     find_package(Python3 COMPONENTS Interpreter REQUIRED)
     # A patch that does not fit this llama.cpp is skipped: lanes here build
     # other upstream commits than the pinned one. What keeps a release from
-    # losing a patch is tools/validate_android_artifacts.py on the bundle.
+    # losing a patch is tools/validate_android_artifacts.py on an Android bundle
+    # and tools/llama_cpp_patches.py check-apple on an Apple one.
     execute_process(
         COMMAND "${Python3_EXECUTABLE}"
             "${CMAKE_CURRENT_SOURCE_DIR}/tools/llama_cpp_patches.py"

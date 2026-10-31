@@ -81,7 +81,7 @@ class ExceptionRuntimeTests(unittest.TestCase):
             listings.mkdir()
             for name, (defined, imported) in libraries.items():
                 markers = [marker['text'] for entry in patches.load_series()
-                           for marker in entry['android_markers']
+                           for marker in entry.get('android_markers', [])
                            if marker['library'] == name and marker['text'] != omitted_marker]
                 (out_dir / name).write_bytes('\0'.join(markers).encode())
                 (listings / f'{name}.syms').write_text(dynamic_symbols(defined, imported))
