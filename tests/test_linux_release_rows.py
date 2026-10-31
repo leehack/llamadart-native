@@ -13,7 +13,7 @@ RELEASE = "native_release.yml"
 LANE = "validate_linux_release_rows.yml"
 # The lane replaces these: it builds checked-out sources and never saves a cache
 # the release could restore or that would evict the release's.
-RELEASE_ONLY = {"Checkout llama.cpp ref", "Set up ccache", "Upload"}
+RELEASE_ONLY = {"Checkout llama.cpp ref", "Checkout exact release source", "Set up ccache", "Upload"}
 LANE_ONLY = {"Select candidate upstream", "Restore release ccache", "Prime ccache"}
 
 

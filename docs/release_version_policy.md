@@ -148,8 +148,11 @@ publication.
 
 Publication is an immutable, draft-first transaction:
 
-1. The complete build matrix produces one same-run artifact containing release
-   assets, their digest, and the exact provenance commit.
+1. Resolution commits the selected llama.cpp gitlink and uploads its Git bundle.
+   Every build and packaging job imports that same owner commit, so the binary
+   build identity, manifest and release tag name the same source. The complete
+   build matrix then produces one same-run artifact containing release assets,
+   their digest, and that exact provenance commit.
 2. The final job verifies that commit and its `llama.cpp` tree entry, creates an
    annotated tag whose immutable message binds the transaction ID, pushes it
    without force, creates a draft release, and uploads only missing assets.

@@ -1,0 +1,45 @@
+name: Checkout exact native release source
+description: Import the same-run provenance commit before compiling or packaging.
+inputs:
+  native_commit:
+    description: Exact owner commit prepared by resolve-tag
+    required: true
+  llama_cpp_commit:
+    description: Exact upstream commit recorded by the owner tree
+    required: true
+runs:
+  using: composite
+  steps:
+    - uses: actions/download-artifact@v8
+      with:
+        name: release-source-${{ github.run_id }}
+        path: ${{ runner.temp }}/release-source
+    - name: Import and checkout exact release source
+      shell: bash
+      env:
+        EXPECTED_NATIVE_COMMIT: ${{ inputs.native_commit }}
+        EXPECTED_LLAMA_CPP_COMMIT: ${{ inputs.llama_cpp_commit }}
+      run: |
+        set -euo pipefail
+
+        git fetch "$RUNNER_TEMP/release-source/release-provenance.bundle" \
+          refs/heads/release-provenance:refs/remotes/release-source/provenance
+        actual_native="$(git rev-parse refs/remotes/release-source/provenance)"
+        if [ "$actual_native" != "$EXPECTED_NATIVE_COMMIT" ]; then
+          echo "Release source native commit mismatch" >&2
+          exit 1
+        fi
+        tree_commit="$(git ls-tree "$actual_native" third_party/llama.cpp | awk '{print $3}')"
+        actual_upstream="$(git -C third_party/llama.cpp rev-parse HEAD)"
+        if [ "$tree_commit" != "$EXPECTED_LLAMA_CPP_COMMIT" ] || \
+           [ "$actual_upstream" != "$EXPECTED_LLAMA_CPP_COMMIT" ]; then
+          echo "Release source llama.cpp commit mismatch" >&2
+          exit 1
+        fi
+
+        git checkout --detach "$actual_native"
+        if ! git diff --quiet --ignore-submodules=dirty HEAD -- || \
+           ! git -C third_party/llama.cpp diff --quiet HEAD --; then
+          echo "Release source has tracked changes" >&2
+          exit 1
+        fi
