@@ -11,15 +11,10 @@ on:
       - cmake/**
       - patches/llama.cpp/**
       - third_party/llama.cpp
-      - tools/apple/compile_metal_kernels.m
-      - tools/extract_metal_kernels.py
+      - tools/apple/metal_floor_check.m
       - tools/llama_cpp_patches.py
+  # A release checks the native_apple_* artifacts of its build-apple job.
   workflow_call:
-    inputs:
-      artifact:
-        description: Artifact holding the libllamadart.dylib to check.
-        required: true
-        type: string
 
 permissions:
   contents: read
@@ -27,6 +22,14 @@ permissions:
 jobs:
   build:
     if: github.event_name == 'pull_request'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: macos-arm64
+            out_dir: macos/arm64
+          - target: ios-sim-arm64
+            out_dir: ios/arm64-sim
     runs-on: macos-latest
     timeout-minutes: 60
     steps:
@@ -34,16 +37,14 @@ jobs:
         with:
           submodules: recursive
           persist-credentials: false
-      - name: Build the shipped macOS configuration
-        run: python3 tools/build.py apple --target macos-arm64
+      - run: python3 tools/build.py apple --target ${{ matrix.target }}
       - uses: actions/upload-artifact@v7
         with:
-          name: metal_os_floor_dylib
-          path: bin/macos/arm64/libllamadart.dylib
+          name: native_apple_${{ matrix.target }}
+          path: bin/${{ matrix.out_dir }}/*
 
-  compile-macos:
+  macos:
     needs: build
-    # A release passes its own artifact, and build is skipped.
     if: ${{ !cancelled() && (needs.build.result == 'success' || needs.build.result == 'skipped') }}
     strategy:
       fail-fast: false
@@ -58,16 +59,16 @@ jobs:
           persist-credentials: false
       - uses: actions/download-artifact@v8
         with:
-          name: ${{ inputs.artifact || 'metal_os_floor_dylib' }}
+          name: native_apple_macos-arm64
           path: artifact
-      - name: Compile every embedded kernel with this OS's Metal compiler
+      - name: Load the Metal backend with this OS's Metal compiler
         run: |
-          python3 tools/extract_metal_kernels.py artifact/libllamadart.dylib kernels
           clang -fobjc-arc -framework Foundation -framework Metal \
-            tools/apple/compile_metal_kernels.m -o compile_metal_kernels
-          ./compile_metal_kernels kernels
+            tools/apple/metal_floor_check.m -o metal_floor_check
+          ./metal_floor_check "$PWD/artifact/libllamadart.dylib"
+          ./metal_floor_check "$PWD/artifact/libllamadart.dylib" --bf16
 
-  compile-ios-simulator:
+  ios-simulator:
     needs: build
     if: ${{ !cancelled() && (needs.build.result == 'success' || needs.build.result == 'skipped') }}
     strategy:
@@ -88,21 +89,18 @@ jobs:
           persist-credentials: false
       - uses: actions/download-artifact@v8
         with:
-          name: ${{ inputs.artifact || 'metal_os_floor_dylib' }}
+          name: native_apple_ios-sim-arm64
           path: artifact
-      - name: Compile every embedded kernel with this iOS version's Metal compiler
+      - name: Load the Metal backend with this iOS version's Metal compiler
         env:
           RUNTIME: com.apple.CoreSimulator.SimRuntime.${{ matrix.runtime }}
         run: |
-          python3 tools/extract_metal_kernels.py artifact/libllamadart.dylib kernels
           clang -target arm64-apple-ios16.4-simulator \
             -isysroot "$(xcrun --sdk iphonesimulator --show-sdk-path)" \
             -fobjc-arc -framework Foundation -framework Metal \
-            tools/apple/compile_metal_kernels.m -o compile_metal_kernels
-          device_type="$(xcrun simctl list devicetypes -j | python3 -c '
-          import json, sys
-          print(next(d["identifier"] for d in json.load(sys.stdin)["devicetypes"]
-                     if d["name"].startswith("iPhone")))')"
-          simulator="$(xcrun simctl create metal-floor "$device_type" "$RUNTIME")"
+            tools/apple/metal_floor_check.m -o metal_floor_check
+          simulator="$(xcrun simctl create metal-floor com.apple.CoreSimulator.SimDeviceType.iPhone-15 "$RUNTIME")"
+          xcrun simctl boot "$simulator"
           xcrun simctl bootstatus "$simulator" -b > /dev/null
-          xcrun simctl spawn "$simulator" "$PWD/compile_metal_kernels" "$PWD/kernels"
+          xcrun simctl spawn "$simulator" "$PWD/metal_floor_check" "$PWD/artifact/libllamadart.dylib"
+          xcrun simctl spawn "$simulator" "$PWD/metal_floor_check" "$PWD/artifact/libllamadart.dylib" --bf16
