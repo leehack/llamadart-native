@@ -1,0 +1,68 @@
+name: Metal OS Floor
+
+# ggml embeds Metal source and compiles it on the user's device, with that OS's
+# compiler. A build on a current Xcode or runner says nothing about older ones.
+on:
+  pull_request:
+    paths:
+      - .github/workflows/metal_os_floor.yml
+      - CMakeLists.txt
+      - CMakePresets.json
+      - cmake/**
+      - patches/llama.cpp/**
+      - third_party/llama.cpp
+      - tools/apple/compile_metal_kernels.m
+      - tools/extract_metal_kernels.py
+      - tools/llama_cpp_patches.py
+  workflow_call:
+    inputs:
+      artifact:
+        description: Artifact holding the libllamadart.dylib to check.
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    if: github.event_name == 'pull_request'
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+          persist-credentials: false
+      - name: Build the shipped macOS configuration
+        run: python3 tools/build.py apple --target macos-arm64
+      - uses: actions/upload-artifact@v7
+        with:
+          name: metal_os_floor_dylib
+          path: bin/macos/arm64/libllamadart.dylib
+
+  compile:
+    needs: build
+    # A release passes its own artifact, and build is skipped.
+    if: ${{ !cancelled() && (needs.build.result == 'success' || needs.build.result == 'skipped') }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # The macOS floor, the newest macOS before Metal 4, and the current one.
+        runner: [macos-14, macos-15, macos-26]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v8
+        with:
+          name: ${{ inputs.artifact || 'metal_os_floor_dylib' }}
+          path: artifact
+      - name: Compile every embedded kernel with this OS's Metal compiler
+        run: |
+          python3 tools/extract_metal_kernels.py artifact/libllamadart.dylib kernels
+          clang -fobjc-arc -framework Foundation -framework Metal \
+            tools/apple/compile_metal_kernels.m -o compile_metal_kernels
+          ./compile_metal_kernels kernels
