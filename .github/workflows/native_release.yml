@@ -352,6 +352,7 @@ jobs:
           python3 tools/validate_exports.py --format nm --tool nm \
             --forbid-import __cxa_atexit "$OUT_LIB"
           python3 tools/validate_build_identity.py "$OUT_LIB"
+          python3 tools/llama_cpp_patches.py check-apple --dir "bin/${{ matrix.out_dir }}"
       - name: Report ccache stats
         if: always()
         uses: ./.github/actions/ccache-stats
@@ -362,6 +363,10 @@ jobs:
         with:
           name: native_apple_${{ matrix.target }}
           path: bin/${{ matrix.out_dir }}/*
+
+  metal-os-floor:
+    needs: build-apple
+    uses: ./.github/workflows/metal_os_floor.yml
 
   build-linux:
     needs: resolve-tag
@@ -999,7 +1004,7 @@ jobs:
           fi
 
   package-and-release:
-    needs: [resolve-tag, build-android, build-apple, build-linux, build-linux-hip, build-windows, smoke-release-contract]
+    needs: [resolve-tag, build-android, build-apple, metal-os-floor, build-linux, build-linux-hip, build-windows, smoke-release-contract]
     runs-on: macos-latest
     outputs:
       native_commit: ${{ steps.provenance.outputs.native_commit }}

@@ -24,6 +24,16 @@
         {"library": "libllama.so", "text": "llamadart re-reserves embedding mode"}
       ],
       "upstream_fix": "    if (cparams.embeddings != value) {\n        sched_need_reserve = true;\n    }\n"
+    },
+    {
+      "file": "0004-metal-unary-cast-older-os-compilers.patch",
+      "tracking": "https://github.com/leehack/llamadart-native/issues/154",
+      "upstream": "https://github.com/ggml-org/llama.cpp/pull/31360",
+      "apple_markers": [
+        {"library": "libllamadart.dylib", "text": "inline bfloat4 ggml_metal_unary_cast<"}
+      ],
+      "upstream_fix": "inline bfloat4 ggml_metal_unary_cast<bfloat4, float4>(float4 x) {\n",
+      "upstream_fix_path": "ggml/src/ggml-metal/kernels/unary.metal"
     }
   ]
 }
