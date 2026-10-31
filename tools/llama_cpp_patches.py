@@ -21,7 +21,7 @@ PATCH_NAME = re.compile(r"\d{4}-[a-z0-9]+(?:-[a-z0-9]+)*\.patch")
 HUNK_HEADER = re.compile(r"@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@")
 SERIES_KEYS = frozenset({
     "file", "tracking", "upstream", "android_markers", "apple_markers", "upstream_fix",
-    "upstream_fix_path",
+    "upstream_fix_path", "required_text",
 })
 MARKER_KEYS = frozenset({"library", "text"})
 
@@ -100,6 +100,13 @@ def load_series(patches_dir: Path = PATCHES_DIR) -> list[dict]:
             raise PatchError(
                 f"{series_path}: {name}: \"upstream_fix_path\" needs \"upstream_fix\""
             )
+        required = entry.get("required_text")
+        if required is not None and not (
+            isinstance(required, dict)
+            and set(required) == {"path", "text"}
+            and all(isinstance(value, str) and value for value in required.values())
+        ):
+            raise PatchError(f"{series_path}: {name}: \"required_text\" must be {{path, text}}")
         names.append(name)
     if names != sorted(set(names)):
         raise PatchError(f"{series_path}: patches must be unique and in name order")
@@ -203,6 +210,13 @@ def apply_available(
         name = entry["file"]
         patch = parse_patch(name, _read_text(patches_dir / name))
         try:
+            required = entry.get("required_text")
+            if required is not None:
+                target = upstream / required["path"]
+                if not target.is_file() or required["text"] not in _read_text(target):
+                    raise NotApplicable(
+                        f"{name}: {required['path']} does not contain the text it edits"
+                    )
             text = patched.get(patch.path)
             if text is None:
                 source = upstream / patch.path
@@ -246,14 +260,16 @@ def manifest_entries(
 
 
 def marker_errors(
-    key: str, out_dir: Path, patches_dir: Path, upstream: Path
+    key: str, out_dir: Path, patches_dir: Path, upstream: Path, require_library: bool = False
 ) -> list[str]:
     """Names each bundled library that lacks the text a carried patch compiles in."""
     errors: list[str] = []
     for entry in required_series(upstream, patches_dir):
         for marker in entry.get(key, []):
             library = out_dir / marker["library"]
-            if library.is_file() and marker["text"].encode() not in library.read_bytes():
+            if require_library and not library.is_file():
+                errors.append(f"{marker['library']}: not in {out_dir}")
+            elif library.is_file() and marker["text"].encode() not in library.read_bytes():
                 errors.append(
                     f"{marker['library']}: built without {entry['file']} "
                     f"(no {marker['text']!r})"
@@ -270,7 +286,8 @@ def android_marker_errors(
 def apple_marker_errors(
     out_dir: Path, patches_dir: Path = PATCHES_DIR, upstream: Path = UPSTREAM_DIR
 ) -> list[str]:
-    return marker_errors("apple_markers", out_dir, patches_dir, upstream)
+    # Every Apple bundle is the one library, unlike Android's per-backend modules.
+    return marker_errors("apple_markers", out_dir, patches_dir, upstream, require_library=True)
 
 
 def write_patched(

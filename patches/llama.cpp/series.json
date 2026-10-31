@@ -33,7 +33,11 @@
         {"library": "libllamadart.dylib", "text": "inline bfloat4 ggml_metal_unary_cast<"}
       ],
       "upstream_fix": "inline bfloat4 ggml_metal_unary_cast<bfloat4, float4>(float4 x) {\n",
-      "upstream_fix_path": "ggml/src/ggml-metal/kernels/unary.metal"
+      "upstream_fix_path": "ggml/src/ggml-metal/kernels/unary.metal",
+      "required_text": {
+        "path": "ggml/src/ggml-metal/kernels/unary.metal",
+        "text": "inline constexpr bfloat4 ggml_metal_unary_cast<bfloat4, float4>(float4 x) {"
+      }
     }
   ]
 }

@@ -145,6 +145,8 @@ def direct_dispatch_input_expressions(workflow: str) -> tuple[str, ...]:
 
 
 def verify_workflow_contract(errors: list[str]) -> None:
+    errors.extend(metal_floor_contract_errors(
+        WORKFLOW.read_text(), (ROOT / ".github/workflows/metal_os_floor.yml").read_text()))
     workflow = WORKFLOW.read_text()
     wrapper_workflow = WRAPPER_WORKFLOW.read_text()
     auto_workflow = AUTO_WORKFLOW.read_text()
@@ -640,17 +642,63 @@ def verify_documentation_contract(errors: list[str]) -> None:
     )
 
 
+def fixed_upstream(entry: dict, patches_dir: Path, upstream: Path) -> bool:
+    fix = entry.get("upstream_fix")
+    if fix is None:
+        return False
+    relative = entry.get("upstream_fix_path")
+    if relative is None:
+        patch = (patches_dir / entry["file"]).read_text()
+        relative = re.search(r"^\+\+\+ b/(\S+)$", patch, re.MULTILINE).group(1)
+    source = upstream / relative
+    return source.is_file() and fix in source.read_text()
+
+
+def metal_floor_contract_errors(workflow: str, floor: str) -> list[str]:
+    errors: list[str] = []
+    gate = workflow_job(workflow, "metal-os-floor")
+    require(
+        "tools/llama_cpp_patches.py check-apple --dir" in workflow_job(workflow, "build-apple"),
+        "build-apple must run check-apple on every Apple bundle",
+        errors,
+    )
+    require(
+        "uses: ./.github/workflows/metal_os_floor.yml" in gate
+        and "if:" not in gate
+        and "continue-on-error" not in gate,
+        "metal-os-floor must call metal_os_floor.yml unconditionally",
+        errors,
+    )
+    jobs = {name: workflow_job(floor, name) for name in ("macos", "ios-simulator")}
+    for name, job in jobs.items():
+        require(
+            re.search(r"^\s*(\./|xcrun simctl spawn .*)metal_floor_check\S* .*--bf16\s*$",
+                      job, re.MULTILINE) is not None,
+            f"{name} must run --bf16",
+            errors,
+        )
+        require(
+            re.search(r"^\s*if:\s*(\$\{\{\s*)?(false|0)\b", job, re.MULTILINE) is None,
+            f"{name} must not be turned off",
+            errors,
+        )
+    require(
+        "continue-on-error" not in floor and "|| true" not in floor,
+        "metal_os_floor.yml must not use continue-on-error or || true",
+        errors,
+    )
+    require("macos-15" in jobs["macos"], "macos must run on macos-15", errors)
+    require("macos-26" in jobs["macos"], "macos must run on macos-26", errors)
+    require(
+        "runs-on: macos-15\n" in jobs["ios-simulator"],
+        "ios-simulator must run on macos-15",
+        errors,
+    )
+    return errors
+
+
 def verify_manifest_contract(errors: list[str]) -> None:
     patches_dir = ROOT / "patches/llama.cpp"
-
-    def fixed_upstream(entry: dict) -> bool:
-        fix = entry.get("upstream_fix")
-        if fix is None:
-            return False
-        patch = (patches_dir / entry["file"]).read_text()
-        source = ROOT / "third_party/llama.cpp" / re.search(
-            r"^\+\+\+ b/(\S+)$", patch, re.MULTILINE).group(1)
-        return source.is_file() and fix in source.read_text()
 
     carried_patches = [
         {
@@ -659,7 +707,7 @@ def verify_manifest_contract(errors: list[str]) -> None:
             "tracking": entry["tracking"],
         }
         for entry in json.loads((patches_dir / "series.json").read_text())["patches"]
-        if not fixed_upstream(entry)
+        if not fixed_upstream(entry, patches_dir, ROOT / "third_party/llama.cpp")
     ]
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)

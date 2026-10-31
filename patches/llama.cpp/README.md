@@ -65,7 +65,10 @@ patches on its other platforms too.
 
 A patch cannot change a `.metal` kernel: the upstream build embeds those files
 through its own custom commands, which take no replacement source. Patch 0004
-edits the embedded text in `ggml-metal-device.m` as it is loaded instead.
+edits the embedded text in `ggml-metal-device.m` as it is loaded instead. Its
+marker is its own literal, so it cannot show that the edit matched anything:
+`required_text` names the text the edit needs, and a patch whose `path` lacks it
+does not fit, which drops the marker and fails `check-apple`.
 
 `python3 tools/llama_cpp_patches.py apply --strict --upstream
 third_party/llama.cpp --output <dir>` fails where the build would skip.

@@ -49,8 +49,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # The macOS floor, the last macOS before the 26 compilers, and the current one.
-        runner: [macos-14, macos-15, macos-26]
+        # The oldest macOS with a lasting runner, which rejected v0.8.0, and the
+        # first with the 26 compilers. macOS 13 and 14 have none (docs/v080_1_wrapper_rebuild.md).
+        runner: [macos-15, macos-26]
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 20
     steps:
@@ -67,21 +68,17 @@ jobs:
             tools/apple/metal_floor_check.m -o metal_floor_check
           ./metal_floor_check "$PWD/artifact/libllamadart.dylib"
           ./metal_floor_check "$PWD/artifact/libllamadart.dylib" --bf16
+          if GGML_METAL_BF16_DISABLE=1 ./metal_floor_check "$PWD/artifact/libllamadart.dylib" --bf16; then
+            echo "::error::--bf16 passed with bfloat off, so it does not check the BF16 kernels"
+            exit 1
+          fi
 
   ios-simulator:
     needs: build
     if: ${{ !cancelled() && (needs.build.result == 'success' || needs.build.result == 'skipped') }}
-    strategy:
-      fail-fast: false
-      matrix:
-        # The oldest iOS and the newest iOS 18 on these runners; a simulator
-        # runtime brings that iOS version's Metal compiler. No runner has iOS 16.
-        include:
-          - runner: macos-14
-            runtime: iOS-17-0
-          - runner: macos-15
-            runtime: iOS-18-6
-    runs-on: ${{ matrix.runner }}
+    # A simulator runtime brings that iOS version's Metal compiler. macOS 15 has the
+    # oldest lasting iOS runtimes; iOS 16 and 17 have none (docs/v080_1_wrapper_rebuild.md).
+    runs-on: macos-15
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
@@ -92,14 +89,22 @@ jobs:
           name: native_apple_ios-sim-arm64
           path: artifact
       - name: Load the Metal backend with this iOS version's Metal compiler
-        env:
-          RUNTIME: com.apple.CoreSimulator.SimRuntime.${{ matrix.runtime }}
         run: |
           clang -target arm64-apple-ios16.4-simulator \
             -isysroot "$(xcrun --sdk iphonesimulator --show-sdk-path)" \
             -fobjc-arc -framework Foundation -framework Metal \
             tools/apple/metal_floor_check.m -o metal_floor_check
-          simulator="$(xcrun simctl create metal-floor com.apple.CoreSimulator.SimDeviceType.iPhone-15 "$RUNTIME")"
+          read -r runtime device_type < <(xcrun simctl list runtimes -j | python3 -c '
+          import json, sys
+          runtimes = [r for r in json.load(sys.stdin)["runtimes"]
+                      if r["isAvailable"] and r["platform"] == "iOS"]
+          oldest = min(runtimes, key=lambda r: [int(n) for n in r["version"].split(".")])
+          if int(oldest["version"].split(".")[0]) >= 26:
+              sys.exit("no iOS runtime before 26, so this checks no older compiler")
+          iphone = next(d for d in oldest["supportedDeviceTypes"] if d["productFamily"] == "iPhone")
+          print(oldest["identifier"], iphone["identifier"])')
+          test -n "$runtime"
+          simulator="$(xcrun simctl create metal-floor "$device_type" "$runtime")"
           xcrun simctl boot "$simulator"
           xcrun simctl bootstatus "$simulator" -b > /dev/null
           xcrun simctl spawn "$simulator" "$PWD/metal_floor_check" "$PWD/artifact/libllamadart.dylib"
