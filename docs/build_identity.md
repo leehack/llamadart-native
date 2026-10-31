@@ -44,9 +44,12 @@ equality is evidence that their state files are compatible, not proof; see the
 list below.
 
 Release builds are checked to carry a complete identity
-(`tools/validate_build_identity.py`). A `+dirty` marker is allowed there: a
-release whose llama.cpp tag differs from the pinned gitlink changes the owner's
-tracked tree.
+(`tools/validate_build_identity.py`). The release workflow commits the selected
+llama.cpp gitlink before any build and distributes that exact owner commit to
+every build and packaging job. Its `owner` field therefore names the release
+tag commit without a `+dirty` marker, even when the dispatch checkout pinned a
+different llama.cpp commit. Local builds still report tracked changes with
+`+dirty`; the identity generator never hides them.
 
 An empty string means the build could not name its inputs: it was not built
 from git checkouts of llamadart-native and llama.cpp, or git did not run. An

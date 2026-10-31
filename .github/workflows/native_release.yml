@@ -58,6 +58,7 @@ jobs:
       github_prerelease: ${{ steps.contract.outputs.github_prerelease }}
       smoke_policy: ${{ steps.contract.outputs.smoke_policy }}
       correlation_id: ${{ steps.contract.outputs.correlation_id }}
+      native_commit: ${{ steps.provenance.outputs.native_commit }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -122,6 +123,51 @@ jobs:
           expected_commit: ${{ steps.contract.outputs.llama_cpp_commit }}
           github_token: ${{ github.token }}
 
+      - name: Create release provenance commit
+        id: provenance
+        env:
+          LLAMA_CPP_COMMIT: ${{ steps.llama-checkout.outputs.commit }}
+          LLAMA_CPP_REF: ${{ steps.contract.outputs.llama_cpp_ref }}
+        run: |
+          set -euo pipefail
+
+          actual_commit="$(git -C third_party/llama.cpp rev-parse HEAD)"
+          if [ "$actual_commit" != "$LLAMA_CPP_COMMIT" ]; then
+            echo "llama.cpp provenance mismatch: expected $LLAMA_CPP_COMMIT, checked out $actual_commit" >&2
+            exit 1
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add third_party/llama.cpp
+          if ! git diff --cached --quiet; then
+            git commit -m "chore: pin llama.cpp provenance for $LLAMA_CPP_REF"
+          fi
+
+          native_commit="$(git rev-parse HEAD)"
+          tree_commit="$(git ls-tree HEAD third_party/llama.cpp | awk '{print $3}')"
+          if [ "$tree_commit" != "$LLAMA_CPP_COMMIT" ]; then
+            echo "Release commit $native_commit records llama.cpp $tree_commit, expected $LLAMA_CPP_COMMIT" >&2
+            exit 1
+          fi
+
+          echo "native_commit=$native_commit" >> "$GITHUB_OUTPUT"
+          echo "Release provenance commit: $native_commit"
+
+          mkdir -p "$RUNNER_TEMP/release-source"
+          git update-ref refs/heads/release-provenance "$native_commit"
+          trap 'git update-ref -d refs/heads/release-provenance' EXIT
+          git bundle create \
+            "$RUNNER_TEMP/release-source/release-provenance.bundle" \
+            refs/heads/release-provenance
+      - name: Upload exact release source
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-source-${{ github.run_id }}
+          path: ${{ runner.temp }}/release-source
+          if-no-files-found: error
+          retention-days: 7
+
   build-android:
     needs: resolve-tag
     # Pinned: the Vulkan lanes' glslc comes from this image's apt archive, and a
@@ -166,6 +212,11 @@ jobs:
           tag: ${{ needs.resolve-tag.outputs.llama_cpp_ref }}
           expected_commit: ${{ needs.resolve-tag.outputs.llama_cpp_commit }}
           github_token: ${{ github.token }}
+      - name: Checkout exact release source
+        uses: ./.github/actions/checkout-native-source
+        with:
+          native_commit: ${{ needs.resolve-tag.outputs.native_commit }}
+          llama_cpp_commit: ${{ needs.resolve-tag.outputs.llama_cpp_commit }}
       - name: Set up JDK
         uses: actions/setup-java@v5
         with:
@@ -331,6 +382,11 @@ jobs:
           tag: ${{ needs.resolve-tag.outputs.llama_cpp_ref }}
           expected_commit: ${{ needs.resolve-tag.outputs.llama_cpp_commit }}
           github_token: ${{ github.token }}
+      - name: Checkout exact release source
+        uses: ./.github/actions/checkout-native-source
+        with:
+          native_commit: ${{ needs.resolve-tag.outputs.native_commit }}
+          llama_cpp_commit: ${{ needs.resolve-tag.outputs.llama_cpp_commit }}
       - name: Install build deps
         run: |
           brew untap aws/tap 2>/dev/null || true
@@ -428,6 +484,11 @@ jobs:
           tag: ${{ needs.resolve-tag.outputs.llama_cpp_ref }}
           expected_commit: ${{ needs.resolve-tag.outputs.llama_cpp_commit }}
           github_token: ${{ github.token }}
+      - name: Checkout exact release source
+        uses: ./.github/actions/checkout-native-source
+        with:
+          native_commit: ${{ needs.resolve-tag.outputs.native_commit }}
+          llama_cpp_commit: ${{ needs.resolve-tag.outputs.llama_cpp_commit }}
       - name: Install build deps
         run: |
           . tools/apt_retry.sh
@@ -643,6 +704,11 @@ jobs:
           tag: ${{ needs.resolve-tag.outputs.llama_cpp_ref }}
           expected_commit: ${{ needs.resolve-tag.outputs.llama_cpp_commit }}
           github_token: ${{ github.token }}
+      - name: Checkout exact release source
+        uses: ./.github/actions/checkout-native-source
+        with:
+          native_commit: ${{ needs.resolve-tag.outputs.native_commit }}
+          llama_cpp_commit: ${{ needs.resolve-tag.outputs.llama_cpp_commit }}
       - name: Install build deps
         run: |
           . tools/apt_retry.sh
@@ -769,6 +835,11 @@ jobs:
           tag: ${{ needs.resolve-tag.outputs.llama_cpp_ref }}
           expected_commit: ${{ needs.resolve-tag.outputs.llama_cpp_commit }}
           github_token: ${{ github.token }}
+      - name: Checkout exact release source
+        uses: ./.github/actions/checkout-native-source
+        with:
+          native_commit: ${{ needs.resolve-tag.outputs.native_commit }}
+          llama_cpp_commit: ${{ needs.resolve-tag.outputs.llama_cpp_commit }}
       - name: Install Ninja
         if: ${{ matrix.arch == 'x64' }}
         run: choco install ninja -y
@@ -1007,7 +1078,7 @@ jobs:
     needs: [resolve-tag, build-android, build-apple, metal-os-floor, build-linux, build-linux-hip, build-windows, smoke-release-contract]
     runs-on: macos-latest
     outputs:
-      native_commit: ${{ steps.provenance.outputs.native_commit }}
+      native_commit: ${{ needs.resolve-tag.outputs.native_commit }}
       publication_artifact_id: ${{ steps.upload-publication.outputs.artifact-id }}
       publication_artifact_url: ${{ steps.upload-publication.outputs.artifact-url }}
       publication_artifact_digest: ${{ steps.upload-publication.outputs.artifact-digest }}
@@ -1023,36 +1094,11 @@ jobs:
           tag: ${{ needs.resolve-tag.outputs.llama_cpp_ref }}
           expected_commit: ${{ needs.resolve-tag.outputs.llama_cpp_commit }}
           github_token: ${{ github.token }}
-      - name: Create release provenance commit
-        id: provenance
-        env:
-          LLAMA_CPP_COMMIT: ${{ needs.resolve-tag.outputs.llama_cpp_commit }}
-          LLAMA_CPP_REF: ${{ needs.resolve-tag.outputs.llama_cpp_ref }}
-        run: |
-          set -euo pipefail
-
-          actual_commit="$(git -C third_party/llama.cpp rev-parse HEAD)"
-          if [ "$actual_commit" != "$LLAMA_CPP_COMMIT" ]; then
-            echo "llama.cpp provenance mismatch: expected $LLAMA_CPP_COMMIT, checked out $actual_commit" >&2
-            exit 1
-          fi
-
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add third_party/llama.cpp
-          if ! git diff --cached --quiet; then
-            git commit -m "chore: pin llama.cpp provenance for $LLAMA_CPP_REF"
-          fi
-
-          native_commit="$(git rev-parse HEAD)"
-          tree_commit="$(git ls-tree HEAD third_party/llama.cpp | awk '{print $3}')"
-          if [ "$tree_commit" != "$LLAMA_CPP_COMMIT" ]; then
-            echo "Release commit $native_commit records llama.cpp $tree_commit, expected $LLAMA_CPP_COMMIT" >&2
-            exit 1
-          fi
-
-          echo "native_commit=$native_commit" >> "$GITHUB_OUTPUT"
-          echo "Release provenance commit: $native_commit"
+      - name: Checkout exact release source
+        uses: ./.github/actions/checkout-native-source
+        with:
+          native_commit: ${{ needs.resolve-tag.outputs.native_commit }}
+          llama_cpp_commit: ${{ needs.resolve-tag.outputs.llama_cpp_commit }}
       - name: Download artifacts
         uses: actions/download-artifact@v8
         with:
@@ -1172,7 +1218,7 @@ jobs:
         env:
           LLAMADART_LLAMA_CPP_TAG: ${{ needs.resolve-tag.outputs.llama_cpp_ref }}
           LLAMADART_LLAMA_CPP_COMMIT: ${{ needs.resolve-tag.outputs.llama_cpp_commit }}
-          LLAMADART_NATIVE_COMMIT: ${{ steps.provenance.outputs.native_commit }}
+          LLAMADART_NATIVE_COMMIT: ${{ needs.resolve-tag.outputs.native_commit }}
           LLAMADART_CORRELATION_ID: ${{ needs.resolve-tag.outputs.correlation_id }}
           LLAMADART_SMOKE_POLICY: ${{ needs.resolve-tag.outputs.smoke_policy }}
           LLAMADART_SMOKE_CONCLUSION: ${{ needs.smoke-release-contract.outputs.conclusion }}
@@ -1189,7 +1235,7 @@ jobs:
 
       - name: Bundle immutable publication inputs
         env:
-          NATIVE_COMMIT: ${{ steps.provenance.outputs.native_commit }}
+          NATIVE_COMMIT: ${{ needs.resolve-tag.outputs.native_commit }}
         run: |
           set -euo pipefail
 

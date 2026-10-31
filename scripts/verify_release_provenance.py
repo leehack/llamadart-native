@@ -239,28 +239,30 @@ def verify_workflow_contract(errors: list[str]) -> None:
     require(
         "LLAMADART_LLAMA_CPP_COMMIT: ${{ needs.resolve-tag.outputs.llama_cpp_commit }}"
         in workflow
-        and "LLAMADART_NATIVE_COMMIT: ${{ steps.provenance.outputs.native_commit }}"
+        and "LLAMADART_NATIVE_COMMIT: ${{ needs.resolve-tag.outputs.native_commit }}"
         in workflow,
         "manifest generation must record resolved upstream and release provenance commits",
         errors,
     )
+    errors.extend(release_source_contract_errors(workflow))
     package_job = workflow_job(workflow, "package-and-release")
     publish_job = workflow_job(workflow, "publish-release")
     update_job = workflow_job(workflow, "update-llama-submodule")
-    provenance = package_job.find("- name: Create release provenance commit")
+    resolve_job = workflow_job(workflow, "resolve-tag")
+    provenance = resolve_job.find("- name: Create release provenance commit")
     manifest = package_job.find("- name: Generate manifest + checksums")
     bundle = package_job.find("- name: Bundle immutable publication inputs")
     upload = package_job.find("- name: Upload verified publication transaction")
     require(
         -1 not in (provenance, manifest, bundle, upload)
-        and provenance < manifest < bundle < upload,
+        and manifest < bundle < upload,
         "release provenance must be committed, manifested, and bundled before "
         "publication input upload",
         errors,
     )
     require(
         'tree_commit="$(git ls-tree HEAD third_party/llama.cpp | awk \'{print $3}\')"'
-        in package_job
+        in resolve_job
         and "release-provenance.bundle" in package_job
         and 'tree_commit="$(git ls-tree "$EXPECTED_NATIVE_COMMIT" third_party/llama.cpp'
         in publish_job,
@@ -613,6 +615,47 @@ def verify_workflow_contract(errors: list[str]) -> None:
         "nightly and wrapper-only releases must not move the repository's stable submodule pin",
         errors,
     )
+
+
+def release_source_contract_errors(workflow: str) -> list[str]:
+    errors: list[str] = []
+    resolve = workflow_job(workflow, "resolve-tag")
+    create = resolve.find("- name: Create release provenance commit")
+    upload = resolve.find("- name: Upload exact release source")
+    require(
+        0 <= create < upload
+        and "native_commit: ${{ steps.provenance.outputs.native_commit }}" in resolve
+        and "release-source-${{ github.run_id }}" in resolve
+        and "release-provenance.bundle" in resolve,
+        "resolve-tag must commit and upload the exact source before builds",
+        errors,
+    )
+    for name in ("build-android", "build-apple", "build-linux", "build-linux-hip",
+                 "build-windows", "package-and-release"):
+        job = workflow_job(workflow, name)
+        source = job.find("uses: ./.github/actions/checkout-native-source")
+        start = job.rfind("\n      -", 0, source)
+        end = job.find("\n      -", source)
+        source_step = job[start:end if end >= 0 else len(job)]
+        build = job.find("tools/build.py" if name != "package-and-release"
+                         else "- name: Prepare release assets")
+        require(
+            0 <= source < build
+            and "if:" not in source_step and "continue-on-error:" not in source_step
+            and "native_commit: ${{ needs.resolve-tag.outputs.native_commit }}" in job
+            and "llama_cpp_commit: ${{ needs.resolve-tag.outputs.llama_cpp_commit }}" in job,
+            f"{name} must import the resolved source before compiling or packaging",
+            errors,
+        )
+    package = workflow_job(workflow, "package-and-release")
+    require(
+        "- name: Create release provenance commit" not in package
+        and "LLAMADART_NATIVE_COMMIT: ${{ needs.resolve-tag.outputs.native_commit }}" in package
+        and "NATIVE_COMMIT: ${{ needs.resolve-tag.outputs.native_commit }}" in package,
+        "packaging must preserve the commit used by builds",
+        errors,
+    )
+    return errors
 
 
 def verify_documentation_contract(errors: list[str]) -> None:
