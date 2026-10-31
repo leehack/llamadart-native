@@ -412,7 +412,7 @@ def verify_workflow_contract(errors: list[str]) -> None:
         errors,
     )
     require(
-        "needs: [resolve-tag, build-android, build-apple, build-linux, "
+        "needs: [resolve-tag, build-android, build-apple, metal-os-floor, build-linux, "
         "build-linux-hip, build-windows, smoke-release-contract]"
         in package_job
         and "needs: [resolve-tag, smoke-release-contract, package-and-release]" in publish_job
