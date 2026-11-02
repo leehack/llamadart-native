@@ -464,6 +464,8 @@ if (LLAMADART_BUILD_TESTS)
     if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
         target_compile_definitions(llamadart_exit_teardown_test PRIVATE
             LLAMADART_TEST_CPU_BACKEND="$<TARGET_FILE:ggml-cpu>")
+        target_compile_definitions(llamadart_speculative_api_test PRIVATE
+            LLAMADART_TEST_CPU_BACKEND="$<TARGET_FILE:ggml-cpu>")
     endif()
     if (APPLE OR CMAKE_SYSTEM_NAME STREQUAL "Linux")
         add_test(NAME llamadart_exit_teardown_graph
@@ -529,6 +531,10 @@ if (LLAMADART_BUILD_TESTS)
                 PROPERTIES
                 FIXTURES_REQUIRED llamadart_exit_teardown_vocabulary_model)
         endforeach()
+        add_test(NAME llamadart_speculative_target_preservation
+            COMMAND llamadart_speculative_api_test "${exit_teardown_vocabulary_model}")
+        set_tests_properties(llamadart_speculative_target_preservation PROPERTIES
+            FIXTURES_REQUIRED llamadart_exit_teardown_vocabulary_model TIMEOUT 30)
         if (LLAMADART_CONTEXT_HAS_MOE_CACHE)
             set(exit_teardown_mtp_model
                 "${CMAKE_CURRENT_BINARY_DIR}/exit_teardown_test_mtp_model.gguf")
@@ -536,6 +542,12 @@ if (LLAMADART_BUILD_TESTS)
                 COMMAND llamadart_exit_teardown_test make-mtp-model "${exit_teardown_mtp_model}")
             set_tests_properties(llamadart_exit_teardown_make-mtp-model PROPERTIES
                 FIXTURES_SETUP llamadart_exit_teardown_mtp_model)
+            add_test(NAME llamadart_speculative_mtp_rollback
+                COMMAND llamadart_speculative_api_test
+                    "${exit_teardown_vocabulary_model}" "${exit_teardown_mtp_model}")
+            set_tests_properties(llamadart_speculative_mtp_rollback PROPERTIES
+                FIXTURES_REQUIRED "llamadart_exit_teardown_vocabulary_model;llamadart_exit_teardown_mtp_model"
+                TIMEOUT 30)
             foreach(scenario model-speculative-moe-cache model-mtp-moe-cache)
                 add_test(NAME llamadart_exit_teardown_${scenario}
                     COMMAND llamadart_exit_teardown_test ${scenario}

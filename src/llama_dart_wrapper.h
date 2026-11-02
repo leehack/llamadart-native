@@ -987,6 +987,11 @@ LLAMADART_API struct llama_sampler * llama_dart_sampler_init_reasoning_budget(
     const llama_token * prompt_tokens,
     int32_t prompt_token_count);
 
+// MTP requires empty target memory in every sequence. Reset the target before
+// initialization, then ingest the prompt. A populated target is rejected before
+// mutation; MTP rollback-capability probes decode and clear temporary tokens.
+// Both target and draft must support partial removal or recurrent snapshots.
+// Other speculative strategies do not have this empty-memory precondition.
 LLAMADART_API struct llama_dart_speculative * llama_dart_speculative_init(
     struct llama_model * target_model,
     struct llama_model * draft_model,

@@ -8,6 +8,21 @@
 #include <utility>
 #include <vector>
 
+// common_context_can_seq_rm clears memory and decodes dummy tokens. Check
+// every sequence before allowing that probe to run on a caller-owned target.
+inline bool llama_dart_mtp_target_is_empty(llama_context *context) {
+  const auto memory = llama_get_memory(context);
+  if (memory == nullptr) {
+    return false;
+  }
+  for (uint32_t sequence = 0; sequence < llama_n_seq_max(context); ++sequence) {
+    if (llama_memory_seq_pos_max(memory, sequence) >= 0) {
+      return false;
+    }
+  }
+  return true;
+}
+
 // Upstream restricts the expert cache to the target context. Keep draft
 // microbatch sizing independent: it also controls DFlash's attention mask.
 inline void llama_dart_disable_draft_moe_cache(llama_context_params &params) {
