@@ -2281,8 +2281,10 @@ static struct llama_dart_speculative *llama_dart_speculative_init_impl(
 
   llama_context *ctx_dft = speculative->ctx_dft;
   if (has_mtp) {
-    const auto target_rollback = common_context_can_seq_rm(target_context);
-    const auto draft_rollback = common_context_can_seq_rm(ctx_dft);
+    const auto rollback =
+        llama_dart_mtp_probe_rollback(target_context, ctx_dft);
+    const auto target_rollback = rollback.first;
+    const auto draft_rollback = rollback.second;
     const auto can_rollback = [](common_context_seq_rm_type type) {
       return type == COMMON_CONTEXT_SEQ_RM_TYPE_PART ||
              type == COMMON_CONTEXT_SEQ_RM_TYPE_RS;

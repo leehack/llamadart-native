@@ -8,7 +8,7 @@
 #include <utility>
 #include <vector>
 
-// common_context_can_seq_rm clears memory and decodes dummy tokens. Check
+// Rollback probing clears memory and decodes dummy tokens. Check
 // every sequence before allowing that probe to run on a caller-owned target.
 inline bool llama_dart_mtp_target_is_empty(llama_context *context) {
   const auto memory = llama_get_memory(context);
@@ -21,6 +21,61 @@ inline bool llama_dart_mtp_target_is_empty(llama_context *context) {
     }
   }
   return true;
+}
+
+// A shared-KV MTP draft reads the target's cache, so both probe decodes must
+// finish before either cache is rolled back or cleared.
+inline std::pair<common_context_seq_rm_type, common_context_seq_rm_type>
+llama_dart_mtp_probe_rollback(llama_context *target, llama_context *draft) {
+#if LLAMADART_SPECULATIVE_HAS_COMMON_BATCH
+  const auto target_memory = llama_get_memory(target);
+  const auto draft_memory = llama_get_memory(draft);
+  const auto no = COMMON_CONTEXT_SEQ_RM_TYPE_NO;
+  if (!target_memory || !draft_memory) {
+    return {no, no};
+  }
+  struct cleanup {
+    llama_context *target;
+    llama_context *draft;
+    ~cleanup() {
+      llama_synchronize(target);
+      llama_synchronize(draft);
+      llama_memory_clear(llama_get_memory(draft), true);
+      llama_memory_clear(llama_get_memory(target), true);
+    }
+  } clear_on_exit{target, draft};
+
+  const auto decode = [](llama_context *context) {
+    const llama_tokens tokens = {0, 0};
+    common_batch batch = common_batch_get_one(context, tokens);
+    std::vector<float> zeros(llama_model_n_embd_out(llama_get_model(context)),
+                             0.0f);
+    for (int32_t index = 0; index < batch.size(); ++index) {
+      batch.set_embd_state(index, {zeros.data(), 1, zeros.size()});
+    }
+    return llama_process(context, LLAMA_PROCESS_TYPE_DECODE, batch.get()) == 0;
+  };
+  if (!decode(target)) {
+    return {no, no};
+  }
+  if (!decode(draft)) {
+    return {no, no};
+  }
+  const auto rollback = [](llama_context *context) {
+    if (!llama_memory_seq_rm(llama_get_memory(context), 0, 1, -1)) {
+      return COMMON_CONTEXT_SEQ_RM_TYPE_FULL;
+    }
+    return llama_n_rs_seq(context) > 0 ? COMMON_CONTEXT_SEQ_RM_TYPE_RS
+                                     : COMMON_CONTEXT_SEQ_RM_TYPE_PART;
+  };
+  // A shared draft's seq_rm is a no-op; check it while both positions still
+  // exist in the target, then check the target's real rollback.
+  const auto draft_type = rollback(draft);
+  const auto target_type = rollback(target);
+  return {target_type, draft_type};
+#else
+  return {common_context_can_seq_rm(target), common_context_can_seq_rm(draft)};
+#endif
 }
 
 // Upstream restricts the expert cache to the target context. Keep draft

@@ -548,6 +548,21 @@ if (LLAMADART_BUILD_TESTS)
             set_tests_properties(llamadart_speculative_mtp_rollback PROPERTIES
                 FIXTURES_REQUIRED "llamadart_exit_teardown_vocabulary_model;llamadart_exit_teardown_mtp_model"
                 TIMEOUT 30)
+            foreach(component target head)
+                set(shared_mtp_${component}
+                    "${CMAKE_CURRENT_BINARY_DIR}/shared_mtp_${component}.gguf")
+                add_test(NAME llamadart_make-shared-mtp-${component}
+                    COMMAND llamadart_exit_teardown_test
+                        make-shared-mtp-${component} "${shared_mtp_${component}}")
+                set_tests_properties(llamadart_make-shared-mtp-${component}
+                    PROPERTIES FIXTURES_SETUP llamadart_shared_mtp_${component})
+            endforeach()
+            add_test(NAME llamadart_speculative_shared_mtp_generation
+                COMMAND llamadart_speculative_api_test
+                    "${shared_mtp_target}" "${shared_mtp_head}")
+            set_tests_properties(llamadart_speculative_shared_mtp_generation PROPERTIES
+                FIXTURES_REQUIRED "llamadart_shared_mtp_target;llamadart_shared_mtp_head"
+                TIMEOUT 30)
             foreach(scenario model-speculative-moe-cache model-mtp-moe-cache)
                 add_test(NAME llamadart_exit_teardown_${scenario}
                     COMMAND llamadart_exit_teardown_test ${scenario}

@@ -12,12 +12,15 @@ The restriction also applies when MTP is combined with a draftless strategy.
 N-gram and ordinary draft-model initialization retain their existing behavior
 on populated targets.
 
-The upstream `common_context_can_seq_rm` probe clears memory, decodes two dummy
-tokens, attempts partial removal, then clears memory again. A fresh-memory
-precondition makes this safe for a caller-owned target. Checking only sequence
-zero would discard other populated sequences. `llama_memory_can_shift` does
-not establish rollback support, and constructing an unrelated scratch context
-does not establish the supplied target's configuration.
+The rollback probe decodes two dummy target tokens, then two draft tokens
+while the target KV remains available. Shared-KV drafts such as Gemma4Assistant
+read target KV; probing them after clearing the target can abort non-flash
+attention on an all-masked softmax. Only after both decodes does the probe
+attempt partial removal, then synchronize and clear both contexts on every
+return path. A fresh-memory precondition protects caller state. Checking only
+sequence zero would discard other populated sequences. `llama_memory_can_shift`
+does not establish rollback support, and an unrelated scratch context does not
+establish the supplied target's configuration.
 
 Once a fresh target and MTP draft exist, both must report partial removal
 (`PART`) or recurrent snapshots (`RS`). Full-only removal (`FULL`), no memory
@@ -53,10 +56,26 @@ target state after rejected initialization with either sequence zero or only
 sequence one populated, successful n-gram and ordinary draft initialization
 with those populated targets, successful fresh MTP initialization, independent
 target/draft probe-decode failures, and successful initialization after failure.
-An ordinary decoder can also be supplied alone for the preservation checks.
+The shared-MTP CTest generates a small Gemma4 target and Gemma4Assistant head.
+It disables flash attention to expose the empty shared-KV softmax failure and
+compares 16 greedy generated tokens with an independent baseline, including
+real draft/verify/accept/rollback rounds. The independent-head fixture runs the
+same generation comparison. An ordinary decoder can also be supplied alone
+for the preservation checks.
+
+For local recurrent `FULL`/`RS` classification and cleanup, supply a trained
+recurrent target that supports snapshots and the generated independent head:
+
+```sh
+build/mtp-rollback/llamadart_speculative_api_test --rollback-types \
+  /path/to/recurrent-target.gguf build/mtp-rollback/exit_teardown_test_mtp_model.gguf
+```
+
+This checks the actual supplied target with zero and two snapshots. The
+unrelated head isolates probe behavior; it does not qualify that model family
+for MTP generation.
 
 This is component evidence, not MTP generation-quality qualification. A trained
-MTP-family model, greedy baseline-versus-speculative output comparison,
-recurrent `FULL` and bounded-snapshot `RS` coverage, packaged artifacts and
-cross-platform qualification remain separate gates. Core consumer preparation
-and old/new native version-skew checks remain required before ABI retirement.
+MTP-family baseline-versus-speculative output comparison, packaged artifacts
+and cross-platform qualification remain separate gates. Core consumer
+preparation and old/new native version-skew checks remain required before ABI retirement.
