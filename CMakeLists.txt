@@ -192,6 +192,11 @@ unset(LLAMADART_SPECULATIVE_HAS_COMMON_BATCH CACHE)
 llamadart_probe_declaration(LLAMADART_SPECULATIVE_HAS_COMMON_BATCH
     "#include <common.h>
 int main() { return sizeof(common_batch) == 0; }")
+# common_batch predates its separate MTP state-input API (v0.6.0 lacks it).
+unset(LLAMADART_SPECULATIVE_HAS_BATCH_STATE CACHE)
+llamadart_probe_declaration(LLAMADART_SPECULATIVE_HAS_BATCH_STATE
+    "#include <common.h>
+int main() { return sizeof(decltype(&common_batch::set_embd_state)) == 0; }")
 unset(LLAMADART_MTMD_HAS_LFM3A_GEN CACHE)
 llamadart_probe_declaration(LLAMADART_MTMD_HAS_LFM3A_GEN
     "#include <chat.h>
@@ -274,6 +279,7 @@ target_compile_definitions(llamadart_lib PRIVATE
     LLAMADART_MTMD_HAS_LFM3A_GEN=$<BOOL:${LLAMADART_MTMD_HAS_LFM3A_GEN}>
     LLAMADART_MTMD_HAS_SOPRANO=$<BOOL:${LLAMADART_MTMD_HAS_SOPRANO}>
     LLAMADART_SPECULATIVE_HAS_COMMON_BATCH=$<BOOL:${LLAMADART_SPECULATIVE_HAS_COMMON_BATCH}>
+    LLAMADART_SPECULATIVE_HAS_BATCH_STATE=$<BOOL:${LLAMADART_SPECULATIVE_HAS_BATCH_STATE}>
     LLAMADART_MTMD_HELPER_HAS_OPTIONS=$<BOOL:${LLAMADART_MTMD_HELPER_HAS_OPTIONS}>)
 
 if (MINGW)
@@ -311,7 +317,8 @@ if (LLAMADART_BUILD_TESTS)
     target_compile_features(llamadart_speculative_api_test PRIVATE cxx_std_17)
     target_compile_definitions(llamadart_speculative_api_test PRIVATE
         LLAMADART_CONTEXT_HAS_MOE_CACHE=$<BOOL:${LLAMADART_CONTEXT_HAS_MOE_CACHE}>
-        LLAMADART_SPECULATIVE_HAS_COMMON_BATCH=$<BOOL:${LLAMADART_SPECULATIVE_HAS_COMMON_BATCH}>)
+        LLAMADART_SPECULATIVE_HAS_COMMON_BATCH=$<BOOL:${LLAMADART_SPECULATIVE_HAS_COMMON_BATCH}>
+        LLAMADART_SPECULATIVE_HAS_BATCH_STATE=$<BOOL:${LLAMADART_SPECULATIVE_HAS_BATCH_STATE}>)
     target_link_libraries(llamadart_speculative_api_test PRIVATE llamadart_lib)
     target_include_directories(llamadart_speculative_api_test PRIVATE
         third_party/llama.cpp/common

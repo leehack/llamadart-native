@@ -24,6 +24,18 @@ struct has_moe_cache_field<T, std::void_t<decltype(T::moe_cache_size)>>
 static_assert(bool(LLAMADART_CONTEXT_HAS_MOE_CACHE) ==
               has_moe_cache_field<llama_context_params>::value);
 
+#if LLAMADART_SPECULATIVE_HAS_COMMON_BATCH
+template <typename T, typename = void>
+struct has_batch_state : std::false_type {};
+
+template <typename T>
+struct has_batch_state<T, std::void_t<decltype(&T::set_embd_state)>>
+    : std::true_type {};
+
+static_assert(bool(LLAMADART_SPECULATIVE_HAS_BATCH_STATE) ==
+              has_batch_state<common_batch>::value);
+#endif
+
 static void test_draft_moe_cache() {
   auto target = llama_context_default_params();
   target.n_batch = 512;

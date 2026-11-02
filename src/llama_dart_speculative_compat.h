@@ -48,11 +48,13 @@ llama_dart_mtp_probe_rollback(llama_context *target, llama_context *draft) {
   const auto decode = [](llama_context *context) {
     const llama_tokens tokens = {0, 0};
     common_batch batch = common_batch_get_one(context, tokens);
+#if LLAMADART_SPECULATIVE_HAS_BATCH_STATE
     std::vector<float> zeros(llama_model_n_embd_out(llama_get_model(context)),
                              0.0f);
     for (int32_t index = 0; index < batch.size(); ++index) {
       batch.set_embd_state(index, {zeros.data(), 1, zeros.size()});
     }
+#endif
     return llama_process(context, LLAMA_PROCESS_TYPE_DECODE, batch.get()) == 0;
   };
   if (!decode(target)) {
