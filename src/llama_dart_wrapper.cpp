@@ -2652,6 +2652,15 @@ static struct llama_dart_speculative *llama_dart_speculative_init_impl(
     return nullptr;
   }
 
+  const bool has_mtp =
+      llama_dart_type_mask_has(type_mask, COMMON_SPECULATIVE_TYPE_DRAFT_MTP);
+  if (has_mtp && !llama_dart_mtp_target_is_empty(target_context)) {
+    LOG_WRN("%s: MTP initialization requires empty target memory; reset the "
+            "target before initializing MTP and ingest the prompt afterward\n",
+            __func__);
+    return nullptr;
+  }
+
   common_params_speculative params =
       llama_dart_build_speculative_params(params_input, target_context,
                                           nullptr);
@@ -2667,8 +2676,6 @@ static struct llama_dart_speculative *llama_dart_speculative_init_impl(
       new llama_dart_speculative());
 
   if (llama_dart_type_mask_has_draft_context(type_mask)) {
-    const bool has_mtp =
-        llama_dart_type_mask_has(type_mask, COMMON_SPECULATIVE_TYPE_DRAFT_MTP);
     const bool needs_external_draft =
         llama_dart_type_mask_has_non_mtp_draft_context(type_mask);
 
@@ -2703,6 +2710,21 @@ static struct llama_dart_speculative *llama_dart_speculative_init_impl(
   }
 
   llama_context *ctx_dft = speculative->ctx_dft;
+  if (has_mtp) {
+    const auto rollback =
+        llama_dart_mtp_probe_rollback(target_context, ctx_dft);
+    const auto target_rollback = rollback.first;
+    const auto draft_rollback = rollback.second;
+    const auto can_rollback = [](common_context_seq_rm_type type) {
+      return type == COMMON_CONTEXT_SEQ_RM_TYPE_PART ||
+             type == COMMON_CONTEXT_SEQ_RM_TYPE_RS;
+    };
+    if (!can_rollback(target_rollback) || !can_rollback(draft_rollback)) {
+      LOG_WRN("%s: unsupported MTP seq_rm type: target=%d, draft=%d\n",
+              __func__, (int)target_rollback, (int)draft_rollback);
+      return nullptr;
+    }
+  }
   params.draft.ctx_dft = ctx_dft;
   speculative->target_output_layer_ids =
       llama_dart_speculative_target_output_layer_ids(
