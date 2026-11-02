@@ -1133,14 +1133,25 @@ struct llama_dart_exit_creating_call {
         }
         owner = found->second;
       }
-      for (void *used : {dependency, second_dependency, third_dependency}) {
-        if (used == nullptr) continue;
-        const auto found = registry.objects.find(used);
-        const uintptr_t used_owner = found == registry.objects.end()
-                                         ? 0 : found->second.owner;
-        if (!owner && used_owner != 0) owner = registry.owners.at(used_owner);
-        if (owner && used_owner != owner->token) {
-          throw std::invalid_argument("native creator dependency belongs to another owner");
+      const auto dependencies = {dependency, second_dependency, third_dependency};
+      if (!owner) {
+        for (void *used : dependencies) {
+          const auto found = registry.objects.find(used);
+          if (found != registry.objects.end() && found->second.owner != 0) {
+            owner = registry.owners.at(found->second.owner);
+            break;
+          }
+        }
+      }
+      // A later dependency can establish ownership for the entire creator.
+      // Validate earlier inputs too before any native initializer sees them.
+      if (owner) {
+        for (void *used : dependencies) {
+          if (used == nullptr) continue;
+          const auto found = registry.objects.find(used);
+          if (found == registry.objects.end() || found->second.owner != owner->token) {
+            throw std::invalid_argument("native creator dependency belongs to another owner");
+          }
         }
       }
       if (owner) {

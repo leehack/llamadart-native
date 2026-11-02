@@ -10,6 +10,8 @@ therefore need ownership established inside their native creator. Owner-aware
 creation publishes into the existing exit registry, under its existing object
 identity, before returning. Dependent speculative/MTP and TTS creators inherit
 the owner from their tracked inputs, and reject cross-owner dependencies.
+Once any input establishes ownership, every non-null input must belong to that
+owner, regardless of argument order. Fully unowned legacy inputs remain valid.
 
 ## Bootstrap and lifetime
 

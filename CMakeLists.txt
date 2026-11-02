@@ -322,6 +322,11 @@ if (LLAMADART_BUILD_TESTS)
     target_include_directories(llamadart_owner_api_test PRIVATE src
         third_party/llama.cpp/common third_party/llama.cpp/tools/mtmd)
     add_test(NAME llamadart_owner_api_test COMMAND llamadart_owner_api_test)
+    foreach(scenario unowned-first owned-first all-unowned same-owner foreign-owner)
+        add_test(NAME llamadart_owner_dependency_${scenario}
+            COMMAND llamadart_owner_api_test dependency-${scenario})
+        set_tests_properties(llamadart_owner_dependency_${scenario} PROPERTIES TIMEOUT 15)
+    endforeach()
     add_test(NAME llamadart_owner_specialized_process_exit COMMAND llamadart_owner_api_test specialized-process-exit)
     add_test(NAME llamadart_owner_process_exit COMMAND llamadart_owner_api_test process-exit)
     add_test(NAME llamadart_owner_process_exit_race COMMAND llamadart_owner_api_test process-exit-race)

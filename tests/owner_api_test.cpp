@@ -112,6 +112,45 @@ struct gate {
   bool proceed = false;
 };
 static void no_op_free(void *) {}
+static void test_dependency_ownership(const char *scenario) {
+  void *owner = active_owner(), *foreign = active_owner();
+  int context = 1, model = 2;
+  const bool all_unowned = std::strcmp(scenario, "dependency-all-unowned") == 0;
+  const bool unowned_first = std::strcmp(scenario, "dependency-unowned-first") == 0;
+  const bool owned_first = std::strcmp(scenario, "dependency-owned-first") == 0;
+  const bool same_owner = std::strcmp(scenario, "dependency-same-owner") == 0;
+  const bool foreign_owner = std::strcmp(scenario, "dependency-foreign-owner") == 0;
+  assert(all_unowned || unowned_first || owned_first || same_owner || foreign_owner);
+  if (all_unowned || unowned_first) {
+    assert(llama_dart_exit_track(&context, no_op_free, LLAMA_DART_EXIT_STAGE_CONTEXT));
+  } else {
+    assert(llama_dart_owner_track(owner, &context, no_op_free, LLAMA_DART_EXIT_STAGE_CONTEXT));
+  }
+  if (all_unowned || owned_first) {
+    assert(llama_dart_exit_track(&model, no_op_free, LLAMA_DART_EXIT_STAGE_MODEL));
+  } else {
+    assert(llama_dart_owner_track(foreign_owner ? foreign : owner, &model,
+                                  no_op_free, LLAMA_DART_EXIT_STAGE_MODEL));
+  }
+  auto params = llama_context_default_params();
+  llama_dart_speculative_params spec{};
+  // Resolve the ownership boundary without dereferencing these sentinel inputs.
+  spec.type_names = "none";
+  llama_dart_clear_last_error();
+  assert(!llama_dart_speculative_init(reinterpret_cast<llama_model *>(&model),
+      nullptr, reinterpret_cast<llama_context *>(&context), params, &spec));
+  const char *error = llama_dart_last_error();
+  if (unowned_first || owned_first || foreign_owner) {
+    assert(error && std::strstr(error, "dependency belongs to another owner"));
+  } else {
+    assert(error == nullptr);
+  }
+  llama_dart_exit_free(&context);
+  llama_dart_exit_free(&model);
+  llama_dart_owner_release(owner);
+  llama_dart_owner_release(foreign);
+  assert(llama_dart_owner_count() == 0 && llama_dart_exit_tracked_count() == 0);
+}
 static bool block_progress(float, void *data) {
   auto &state = *static_cast<gate *>(data);
   std::unique_lock<std::mutex> lock(state.mutex);
@@ -367,6 +406,10 @@ static void test_process_exit(bool race) {
 }
 
 int main(int argc, char **argv) {
+  if (argc == 2 && std::strncmp(argv[1], "dependency-", 11) == 0) {
+    test_dependency_ownership(argv[1]);
+    return 0;
+  }
   if (argc == 2 && std::strcmp(argv[1], "specialized-process-exit") == 0)
     test_specialized_process_exit();
   if (argc == 2 && std::strcmp(argv[1], "process-exit") == 0)
