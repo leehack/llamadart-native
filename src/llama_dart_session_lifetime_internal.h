@@ -6,7 +6,7 @@
 #include <cstdint>
 
 namespace llama_dart_internal {
-enum class session_kind { tts, speculative, mtp, ngram };
+enum class session_kind { tts, speculative };
 
 // Live allocation identities distinguish a valid untracked legacy handle from
 // a late free of an owner-claimed handle, without retaining pointer tombstones.

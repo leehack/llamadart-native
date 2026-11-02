@@ -3,6 +3,7 @@
 #endif
 
 #include "llama_dart_wrapper.h"
+#include "llama_dart_speculative_internal.h"
 
 #include "ggml-backend-impl.h"
 #include "gguf.h"
@@ -172,9 +173,42 @@ int test_dispose() {
   return 0;
 }
 
+// Registry scenarios need a real draftless backend but no model. Public
+// strategy initialization with a target is covered by the model-backed tests.
+static llama_dart_speculative *make_test_ngram(int32_t size_n, int32_t size_m) {
+  llama_dart_exit_call_begin();
+  llama_dart_clear_last_error();
+  common_params_speculative params;
+  params.types = {COMMON_SPECULATIVE_TYPE_NGRAM_SIMPLE};
+  params.ngram_simple.size_n = size_n;
+  params.ngram_simple.size_m = size_m;
+  auto *session = new llama_dart_speculative();
+  session->spec = common_speculative_init(params, 1);
+  assert(session->spec != nullptr);
+  assert(llama_dart_exit_track(
+      session,
+      [](void *object) {
+        llama_dart_speculative_free(static_cast<llama_dart_speculative *>(object));
+      },
+      LLAMA_DART_EXIT_STAGE_SESSION));
+  llama_dart_exit_call_end();
+  return session;
+}
+
+static llama_dart_speculative *init_test_mtp(
+    llama_model *target_model, llama_model *draft_model, llama_context *target,
+    llama_context_params context_params) {
+  context_params.n_threads = context_params.n_threads_batch = 2;
+  llama_dart_speculative_params params{};
+  params.type_names = "draft-mtp";
+  params.draft_token_max = 4;
+  return llama_dart_speculative_init(target_model, draft_model, target,
+                                      context_params, &params);
+}
+
 int test_order() {
   track_out_of_stage_order();
-  llama_dart_ngram *ngram = llama_dart_ngram_simple_init(4, 8);
+  llama_dart_speculative *ngram = make_test_ngram(4, 8);
   assert(ngram != nullptr);
   assert(llama_dart_exit_tracked_count() ==
          static_cast<int32_t>(kStageOrder.size()) + 1);
@@ -198,10 +232,10 @@ int test_repeat() {
   for (int i = 0; i < 2000; ++i) {
     assert(llama_dart_exit_track(object, free_named,
                                  LLAMA_DART_EXIT_STAGE_CONTEXT));
-    llama_dart_ngram *ngram = llama_dart_ngram_simple_init(4, 8);
+    llama_dart_speculative *ngram = make_test_ngram(4, 8);
     assert(ngram != nullptr);
     assert(llama_dart_exit_tracked_count() == 2);
-    llama_dart_ngram_free(ngram);
+    llama_dart_speculative_free(ngram);
     llama_dart_exit_free(object);
     assert(llama_dart_exit_tracked_count() == 0);
   }
@@ -266,10 +300,10 @@ int test_nested() {
     llama_dart_exit_call_begin();
     assert(llama_dart_exit_track(inner, free_named,
                                  LLAMA_DART_EXIT_STAGE_SESSION));
-    llama_dart_ngram *ngram = llama_dart_ngram_simple_init(4, 8);
+    llama_dart_speculative *ngram = make_test_ngram(4, 8);
     assert(ngram != nullptr);
-    assert(llama_dart_ngram_begin(ngram, 0, nullptr, 0));
-    llama_dart_ngram_free(ngram);
+    assert(llama_dart_speculative_begin(ngram, 0, nullptr, 0));
+    llama_dart_speculative_free(ngram);
     llama_dart_exit_free(kSessionLate);
     llama_dart_exit_call_end();
     record("call-finished");
@@ -377,7 +411,7 @@ int test_blocked() {
   char *object = name("object");
   assert(
       llama_dart_exit_track(object, free_named, LLAMA_DART_EXIT_STAGE_MODEL));
-  llama_dart_ngram *ngram = llama_dart_ngram_simple_init(4, 8);
+  llama_dart_speculative *ngram = make_test_ngram(4, 8);
   assert(ngram != nullptr);
   llama_dart_exit_teardown();
   assert(recorded() == std::vector<std::string>({"object"}));
@@ -402,15 +436,15 @@ int test_blocked() {
       },
       object);
   late([](void *) { llama_dart_exit_call_begin(); }, nullptr);
-  late([](void *) { llama_dart_ngram_simple_init(4, 8); }, nullptr);
+  late([](void *) { make_test_ngram(4, 8); }, nullptr);
   late(
       [](void *argument) {
-        llama_dart_ngram_free(static_cast<llama_dart_ngram *>(argument));
+        llama_dart_speculative_free(static_cast<llama_dart_speculative *>(argument));
       },
       ngram);
   late(
       [](void *argument) {
-        llama_dart_ngram_begin(static_cast<llama_dart_ngram *>(argument), 0,
+        llama_dart_speculative_begin(static_cast<llama_dart_speculative *>(argument), 0,
                                nullptr, 0);
       },
       ngram);
@@ -602,13 +636,13 @@ int test_exit_in_flight() {
 }
 
 char kLateObject[] = "late-object";
-llama_dart_ngram *g_created_at_exit = nullptr;
+llama_dart_speculative *g_created_at_exit = nullptr;
 
 // An earlier host callback still owns normal wrapper cleanup. No Dart VM
 // is active here, and no wrapper teardown has begun.
 void make_late_calls() {
   assert(llama_dart_exit_tracked_count() == 1);
-  g_created_at_exit = llama_dart_ngram_simple_init(4, 8);
+  g_created_at_exit = make_test_ngram(4, 8);
   assert(g_created_at_exit != nullptr);
   assert(llama_dart_last_error() == nullptr);
   assert(llama_dart_exit_tracked_count() == 2);
@@ -1273,15 +1307,14 @@ int test_model_draft_moe_cache(const char *path, const char *mtp_path) {
     model_params.load_mtp = true;
     auto *draft_model = llama_dart_model_load_from_file(mtp_path, model_params);
     assert(draft_model != nullptr);
-    auto *mtp = llama_dart_mtp_init_with_draft_model(
-        draft_model, fixture.context, params, 4, 0, 0.0f, false);
+    auto *mtp = init_test_mtp(fixture.model, draft_model, fixture.context, params);
     assert(mtp != nullptr);
-    auto *draft = llama_dart_mtp_get_draft_context(mtp);
+    auto *draft = llama_dart_speculative_get_draft_context(mtp);
     assert(draft != nullptr);
     assert(llama_n_batch(draft) == params.n_batch);
     assert(llama_n_ubatch(draft) == params.n_ubatch);
     assert(!log.contains("MoE cache requires a GPU backend"));
-    llama_dart_mtp_free(mtp);
+    llama_dart_speculative_free(mtp);
     llama_dart_exit_free(draft_model);
   } else {
     llama_dart_speculative_params spec_params{};
@@ -1392,7 +1425,7 @@ int test_model_session(const char *path) {
 }
 
 struct freed_objects {
-  llama_dart_ngram *ngram = nullptr;
+  llama_dart_speculative *ngram = nullptr;
   llama_dart_speculative *speculative = nullptr;
   llama_context *context = nullptr;
   mtmd_context *mtmd = nullptr;
@@ -1442,7 +1475,7 @@ int test_model_freed(const char *path, const char *mmproj_path) {
   g_freed.speculative = init_ngram_speculative(fixture);
   assert(g_freed.speculative != nullptr);
   track(after_ngram, free_and_check_ngram, LLAMA_DART_EXIT_STAGE_SESSION);
-  g_freed.ngram = llama_dart_ngram_simple_init(4, 8);
+  g_freed.ngram = make_test_ngram(4, 8);
   assert(g_freed.ngram != nullptr);
   track(after_speculative, free_and_check_speculative,
         LLAMA_DART_EXIT_STAGE_SCHEDULER);
@@ -2196,16 +2229,14 @@ int test_model_mtp(const char *path, const char *draft_path) {
       llama_dart_model_load_from_file(draft_path, llama_model_default_params());
   assert(draft != nullptr);
   assert(llama_dart_exit_tracked_count() == 3);
-  llama_dart_mtp *mtp = llama_dart_mtp_init_with_draft_model(
-      draft, fixture.context, llama_context_default_params(), 4, 0, 0.0f,
-      false);
+  auto *mtp = init_test_mtp(fixture.model, draft, fixture.context,
+                            llama_context_default_params());
   assert(mtp != nullptr);
   assert(llama_dart_exit_tracked_count() == 4);
-  llama_dart_mtp_free(mtp);
+  llama_dart_speculative_free(mtp);
   assert(llama_dart_exit_tracked_count() == 3);
-  assert(llama_dart_mtp_init_with_draft_model(draft, fixture.context,
-                                              llama_context_default_params(), 4,
-                                              0, 0.0f, false) != nullptr);
+  assert(init_test_mtp(fixture.model, draft, fixture.context,
+                       llama_context_default_params()) != nullptr);
   return 0;
 }
 
@@ -2358,48 +2389,14 @@ void test_barrier_clears_stale_error() {
   assert(!llama_dart_speculative_process_batch(nullptr, batch));
   assert(cleared());
   stale();
+  assert(!llama_dart_speculative_process_batch(nullptr, batch));
+  assert(cleared());
+  stale();
   assert(llama_dart_speculative_draft(nullptr, 0, 0, 0, nullptr, 0, 1, &token,
                                       1) == -1);
   assert(cleared());
   stale();
   llama_dart_speculative_accept(nullptr, 0, 0);
-  assert(cleared());
-
-  stale();
-  assert(llama_dart_mtp_init(nullptr, nullptr, llama_context_default_params(),
-                             1, 0, 0.0f, false) == nullptr);
-  assert(cleared());
-  stale();
-  assert(llama_dart_mtp_init_with_draft_model(nullptr, nullptr,
-                                              llama_context_default_params(),
-                                              1, 0, 0.0f, false) == nullptr);
-  assert(cleared());
-  stale();
-  assert(!llama_dart_mtp_begin(nullptr, 0, nullptr, 0));
-  assert(cleared());
-  stale();
-  assert(!llama_dart_mtp_process_batch(nullptr, batch));
-  assert(cleared());
-  stale();
-  assert(llama_dart_mtp_draft(nullptr, 0, 0, 0, nullptr, 0, 1, &token, 1) ==
-         -1);
-  assert(cleared());
-  stale();
-  llama_dart_mtp_accept(nullptr, 0, 0);
-  assert(cleared());
-
-  stale();
-  assert(!llama_dart_ngram_begin(nullptr, 0, nullptr, 0));
-  assert(cleared());
-  stale();
-  assert(!llama_dart_ngram_process_batch(nullptr, batch));
-  assert(cleared());
-  stale();
-  assert(llama_dart_ngram_draft(nullptr, 0, 0, 0, nullptr, 0, 1, &token, 1) ==
-         -1);
-  assert(cleared());
-  stale();
-  llama_dart_ngram_accept(nullptr, 0, 0);
   assert(cleared());
 
   stale();

@@ -2,7 +2,7 @@
 #error "Wrapper contract tests require active assertions in every configuration"
 #endif
 
-#include "llama_dart_mtp_internal.h"
+#include "llama_dart_speculative_internal.h"
 #include "llama_dart_speculative_compat.h"
 #include "llama_dart_wrapper.h"
 
@@ -63,6 +63,24 @@ static void expect_requirements(common_speculative_type type, bool need_embd,
   assert(requirements.need_embd_nextn == need_embd_nextn);
 }
 
+static void test_legacy_query_exports() {
+  for (const auto types : {
+           std::vector<common_speculative_type>{COMMON_SPECULATIVE_TYPE_DRAFT_SIMPLE},
+           std::vector<common_speculative_type>{COMMON_SPECULATIVE_TYPE_NGRAM_SIMPLE},
+           std::vector<common_speculative_type>{COMMON_SPECULATIVE_TYPE_DRAFT_MTP},
+           std::vector<common_speculative_type>{COMMON_SPECULATIVE_TYPE_DRAFT_MTP,
+                                                COMMON_SPECULATIVE_TYPE_NGRAM_MOD},
+       }) {
+    auto *session = new llama_dart_speculative();
+    session->embedding_requirements =
+        llama_dart_speculative_embedding_requirements_for(types);
+    assert(!llama_dart_speculative_need_embd(session));
+    assert(llama_dart_speculative_need_embd_nextn(session) ==
+           session->embedding_requirements.need_embd_nextn);
+    llama_dart_speculative_free(session);
+  }
+}
+
 static void expect_draft_output_limits(
     std::vector<common_speculative_type> types, int32_t draft_token_max,
     bool backend_sampling, uint32_t expected_total,
@@ -78,7 +96,7 @@ static void expect_draft_output_limits(
   assert(params.n_outputs_max_per_seq == expected_per_sequence);
 }
 
-static llama_dart_mtp *make_mtp_contract_backend(common_speculative_type type) {
+static llama_dart_speculative *make_generic_contract_backend(common_speculative_type type) {
   common_params_speculative params;
   params.types = {type};
   params.ngram_simple.size_n = 1;
@@ -87,7 +105,7 @@ static llama_dart_mtp *make_mtp_contract_backend(common_speculative_type type) {
   params.ngram_map_k.size_m = 4;
   params.ngram_map_k.min_hits = 1;
 
-  auto *mtp = new llama_dart_mtp();
+  auto *mtp = new llama_dart_speculative();
   mtp->spec = common_speculative_init(params, 1);
   assert(mtp->spec != nullptr);
   return mtp;
@@ -98,7 +116,7 @@ static const std::vector<llama_token> kDraftPrompt = {
 };
 
 #if LLAMADART_SPECULATIVE_HAS_COMMON_BATCH
-static void test_legacy_process_batch() {
+static void test_generic_process_batch() {
   auto batch = llama_batch_init(2, 0, 1);
   batch.n_tokens = 2;
   for (int32_t i = 0; i < 2; ++i) {
@@ -141,17 +159,14 @@ static void test_legacy_process_batch() {
   assert(!llama_dart_copy_process_batch(batch, 0, 1, converted));
   batch.seq_id[0][0] = 0;
 
-  // Exercise the actual exported MTP process path with a model-free n-gram
-  // backend; malformed input must be rejected before reaching upstream.
-  auto *mtp = make_mtp_contract_backend(COMMON_SPECULATIVE_TYPE_NGRAM_SIMPLE);
-  assert(llama_dart_mtp_process_batch(mtp, batch));
-  assert(!llama_dart_mtp_process_batch(mtp, missing));
-  llama_dart_mtp_free(mtp);
-  auto *ngram = llama_dart_ngram_simple_init(1, 4);
-  assert(ngram != nullptr);
-  assert(llama_dart_ngram_process_batch(ngram, batch));
-  assert(!llama_dart_ngram_process_batch(ngram, missing));
-  llama_dart_ngram_free(ngram);
+  // Both draftless backends use the exported generic batch conversion path.
+  for (auto type : {COMMON_SPECULATIVE_TYPE_NGRAM_MAP_K,
+                    COMMON_SPECULATIVE_TYPE_NGRAM_SIMPLE}) {
+    auto *session = make_generic_contract_backend(type);
+    assert(llama_dart_speculative_process_batch(session, batch));
+    assert(!llama_dart_speculative_process_batch(session, missing));
+    llama_dart_speculative_free(session);
+  }
   llama_batch_free(batch);
 
   float embeddings[] = {1, 2, 3, 4, 5, 6};
@@ -188,94 +203,92 @@ static void test_legacy_process_batch() {
 }
 #endif
 
-static int32_t mtp_contract_draft(llama_dart_mtp *mtp, int32_t draft_token_max,
+static int32_t generic_contract_draft(llama_dart_speculative *mtp, int32_t draft_token_max,
                                   llama_token *out_tokens,
                                   int32_t out_capacity) {
-  return llama_dart_mtp_draft(
+  return llama_dart_speculative_draft(
       mtp, 0, static_cast<llama_pos>(kDraftPrompt.size()), 42,
       kDraftPrompt.data(), static_cast<int32_t>(kDraftPrompt.size()),
       draft_token_max, out_tokens, out_capacity);
 }
 
-static void test_mtp_accept_requires_draft() {
-  auto *mtp = make_mtp_contract_backend(COMMON_SPECULATIVE_TYPE_NGRAM_MAP_K);
-  llama_dart_mtp_accept(mtp, 0, 1);
-  llama_dart_mtp_free(mtp);
+static void test_generic_accept_requires_draft() {
+  auto *mtp = make_generic_contract_backend(COMMON_SPECULATIVE_TYPE_NGRAM_MAP_K);
+  llama_dart_speculative_accept(mtp, 0, 1);
+  llama_dart_speculative_free(mtp);
 
-  mtp = make_mtp_contract_backend(COMMON_SPECULATIVE_TYPE_NGRAM_SIMPLE);
+  mtp = make_generic_contract_backend(COMMON_SPECULATIVE_TYPE_NGRAM_SIMPLE);
   const std::vector<llama_token> no_match = {1, 2, 3, 4, 5, 6, 7, 8};
   llama_token output[4] = {};
-  assert(llama_dart_mtp_draft(mtp, 0, static_cast<llama_pos>(no_match.size()),
+  assert(llama_dart_speculative_draft(mtp, 0, static_cast<llama_pos>(no_match.size()),
                               99, no_match.data(),
                               static_cast<int32_t>(no_match.size()), 4, output,
                               4) == 0);
-  llama_dart_mtp_accept(mtp, 0, 1);
-  llama_dart_mtp_free(mtp);
+  llama_dart_speculative_accept(mtp, 0, 1);
+  llama_dart_speculative_free(mtp);
 }
 
-static void test_mtp_draft_clamps_and_failed_draft() {
-  assert(llama_dart_mtp_draft_count(8, 2, 6) == 2);
-  assert(llama_dart_mtp_draft_count(8, 6, 3) == 3);
-
-  auto *mtp = make_mtp_contract_backend(COMMON_SPECULATIVE_TYPE_NGRAM_MAP_K);
-  assert(llama_dart_mtp_begin(mtp, 0, kDraftPrompt.data(),
+static void test_generic_draft_clamps_and_failed_draft() {
+  auto *mtp = make_generic_contract_backend(COMMON_SPECULATIVE_TYPE_NGRAM_MAP_K);
+  assert(llama_dart_speculative_begin(mtp, 0, kDraftPrompt.data(),
                               static_cast<int32_t>(kDraftPrompt.size())));
   llama_token output[6] = {};
-  assert(mtp_contract_draft(mtp, 6, output, 2) == 2);
-  llama_dart_mtp_free(mtp);
+  assert(generic_contract_draft(mtp, 6, output, 2) == 2);
+  llama_dart_speculative_free(mtp);
 
-  mtp = make_mtp_contract_backend(COMMON_SPECULATIVE_TYPE_NGRAM_MAP_K);
-  assert(llama_dart_mtp_begin(mtp, 0, kDraftPrompt.data(),
-                              static_cast<int32_t>(kDraftPrompt.size())));
-  assert(mtp_contract_draft(mtp, 2, output, 6) == 2);
-  llama_dart_mtp_free(mtp);
+  mtp = make_generic_contract_backend(COMMON_SPECULATIVE_TYPE_NGRAM_MAP_K);
+  assert(llama_dart_speculative_begin(mtp, 0, kDraftPrompt.data(),
+                                      static_cast<int32_t>(kDraftPrompt.size())));
+  assert(generic_contract_draft(mtp, 6, output, 3) == 3);
+  llama_dart_speculative_free(mtp);
 
-  mtp = make_mtp_contract_backend(COMMON_SPECULATIVE_TYPE_NGRAM_MAP_K);
-  assert(llama_dart_mtp_begin(mtp, 0, kDraftPrompt.data(),
+  mtp = make_generic_contract_backend(COMMON_SPECULATIVE_TYPE_NGRAM_MAP_K);
+  assert(llama_dart_speculative_begin(mtp, 0, kDraftPrompt.data(),
                               static_cast<int32_t>(kDraftPrompt.size())));
-  assert(mtp_contract_draft(mtp, 4, output, 6) == 4);
+  assert(generic_contract_draft(mtp, 2, output, 6) == 2);
+  llama_dart_speculative_free(mtp);
+
+  mtp = make_generic_contract_backend(COMMON_SPECULATIVE_TYPE_NGRAM_MAP_K);
+  assert(llama_dart_speculative_begin(mtp, 0, kDraftPrompt.data(),
+                              static_cast<int32_t>(kDraftPrompt.size())));
+  assert(generic_contract_draft(mtp, 4, output, 6) == 4);
   assert(mtp->has_last_draft);
-  assert(mtp_contract_draft(mtp, 4, nullptr, 6) == -1);
+  assert(generic_contract_draft(mtp, 4, nullptr, 6) == -1);
   assert(!mtp->has_last_draft);
-  llama_dart_mtp_accept(mtp, 0, 0);
+  llama_dart_speculative_accept(mtp, 0, 0);
   assert(!mtp->has_last_draft);
-  llama_dart_mtp_free(mtp);
+  llama_dart_speculative_free(mtp);
 }
 
-static void test_mtp_repeated_accept_and_sequence_validation() {
-  llama_dart_mtp lifecycle;
-  lifecycle.has_last_draft = true;
-  assert(llama_dart_mtp_take_last_draft(&lifecycle));
-  assert(!llama_dart_mtp_take_last_draft(&lifecycle));
-
-  auto *mtp = make_mtp_contract_backend(COMMON_SPECULATIVE_TYPE_NGRAM_MAP_K);
-  assert(!llama_dart_mtp_begin(mtp, -1, kDraftPrompt.data(),
+static void test_generic_repeated_accept_and_sequence_validation() {
+  auto *mtp = make_generic_contract_backend(COMMON_SPECULATIVE_TYPE_NGRAM_MAP_K);
+  assert(!llama_dart_speculative_begin(mtp, -1, kDraftPrompt.data(),
                                static_cast<int32_t>(kDraftPrompt.size())));
-  assert(!llama_dart_mtp_begin(mtp, 1, kDraftPrompt.data(),
+  assert(!llama_dart_speculative_begin(mtp, 1, kDraftPrompt.data(),
                                static_cast<int32_t>(kDraftPrompt.size())));
-  assert(llama_dart_mtp_begin(mtp, 0, kDraftPrompt.data(),
+  assert(llama_dart_speculative_begin(mtp, 0, kDraftPrompt.data(),
                               static_cast<int32_t>(kDraftPrompt.size())));
 
   llama_token output[4] = {};
-  assert(llama_dart_mtp_draft(
+  assert(llama_dart_speculative_draft(
              mtp, -1, static_cast<llama_pos>(kDraftPrompt.size()), 42,
              kDraftPrompt.data(), static_cast<int32_t>(kDraftPrompt.size()), 4,
              output, 4) == -1);
-  assert(llama_dart_mtp_draft(
+  assert(llama_dart_speculative_draft(
              mtp, 1, static_cast<llama_pos>(kDraftPrompt.size()), 42,
              kDraftPrompt.data(), static_cast<int32_t>(kDraftPrompt.size()), 4,
              output, 4) == -1);
 
-  assert(mtp_contract_draft(mtp, 4, output, 4) == 4);
+  assert(generic_contract_draft(mtp, 4, output, 4) == 4);
   assert(mtp->has_last_draft);
-  llama_dart_mtp_accept(mtp, -1, 0);
-  llama_dart_mtp_accept(mtp, 1, 0);
+  llama_dart_speculative_accept(mtp, -1, 0);
+  llama_dart_speculative_accept(mtp, 1, 0);
   assert(mtp->has_last_draft);
-  llama_dart_mtp_accept(mtp, 0, 1);
+  llama_dart_speculative_accept(mtp, 0, 1);
   assert(!mtp->has_last_draft);
-  llama_dart_mtp_accept(mtp, 0, 0);
+  llama_dart_speculative_accept(mtp, 0, 0);
   assert(!mtp->has_last_draft);
-  llama_dart_mtp_free(mtp);
+  llama_dart_speculative_free(mtp);
 }
 
 // Optional model-backed guard qualification: a small ordinary decoder is
@@ -562,6 +575,7 @@ int main(int argc, char **argv) {
     assert(argc == 1);
   }
   test_draft_moe_cache();
+  test_legacy_query_exports();
   assert(!llama_dart_speculative_need_embd(nullptr));
   assert(!llama_dart_speculative_need_embd_nextn(nullptr));
 
@@ -587,11 +601,11 @@ int main(int argc, char **argv) {
   expect_draft_output_limits(
       {COMMON_SPECULATIVE_TYPE_NGRAM_MOD, COMMON_SPECULATIVE_TYPE_DRAFT_DSPARK},
       3, true, 4, 4);
-  test_mtp_accept_requires_draft();
-  test_mtp_draft_clamps_and_failed_draft();
-  test_mtp_repeated_accept_and_sequence_validation();
+  test_generic_accept_requires_draft();
+  test_generic_draft_clamps_and_failed_draft();
+  test_generic_repeated_accept_and_sequence_validation();
 #if LLAMADART_SPECULATIVE_HAS_COMMON_BATCH
-  test_legacy_process_batch();
+  test_generic_process_batch();
 #endif
   return 0;
 }

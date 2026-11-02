@@ -51,7 +51,7 @@ Owner entries use the process registry's stage and reverse-creation ordering.
 The owner waits for admitted creators and ordinary frees. Once closing starts,
 later ordinary frees cannot steal a model while an earlier context callback is
 in flight. Each entry is erased exactly once under the registry mutex; cleanup
-callbacks run outside it. Wrapper-owned TTS, speculative, MTP and n-gram
+callbacks run outside it. Wrapper-owned TTS and generic speculative
 sessions also register a live allocation identity at construction. Claiming
 cleanup retains that identity until destruction, so a late specialized free
 cannot fall back to a second raw free after the tracked entry is removed. A
@@ -107,7 +107,7 @@ foreign dependencies, ordinary/duplicate/reentrant frees, stage ordering,
 creation failure, actual model/context/session creation, admitted-creator
 closure, ordinary free during owner drain, and process teardown races. Gated
 callbacks exercise specialized frees during both owner and ordinary cleanup
-for all four session types, callback delegation, duplicate frees, valid
+for both surviving session allocation types, callback delegation, duplicate frees, valid
 untracked frees and deterministic address reuse. The model-backed owner test
 also races the real generic speculative session against owner closure.
 The test-only `llamadart_owner_creation_gate` library pauses after calling the

@@ -1,7 +1,6 @@
 #ifdef NDEBUG
 #error "Owner tests require active assertions"
 #endif
-#include "llama_dart_mtp_internal.h"
 #include "llama_dart_speculative_internal.h"
 #include "llama_dart_tts_internal.h"
 #include "llama_dart_wrapper.h"
@@ -159,6 +158,59 @@ static bool block_progress(float, void *data) {
   state.changed.wait(lock, [&] { return state.proceed; });
   return true;
 }
+#if LLAMADART_CONTEXT_HAS_MOE_CACHE
+// MTP and n-gram now share the generic lifetime. The model-free callback
+// races above cover that allocation family; this case verifies real MTP
+// construction inherits the owner and drains its actual draft context.
+static void test_mtp_model(const char *path, const char *draft_path) {
+#if defined(LLAMADART_TEST_CPU_BACKEND)
+  assert(ggml_backend_load(LLAMADART_TEST_CPU_BACKEND) != nullptr);
+#endif
+  llama_backend_init();
+  void *owner = active_owner();
+  auto model_params = llama_model_default_params();
+  ggml_backend_dev_t devices[] = {nullptr};
+  model_params.devices = devices;
+  model_params.n_gpu_layers = 0;
+  auto *model = llama_dart_owner_model_load_from_file(owner, path, model_params);
+  model_params.load_mtp = true;
+  auto *draft_model = llama_dart_owner_model_load_from_file(
+      owner, draft_path, model_params);
+  assert(model != nullptr && draft_model != nullptr);
+  auto params = llama_context_default_params();
+  params.n_ctx = 256;
+  params.n_batch = params.n_ubatch = 32;
+  params.n_threads = params.n_threads_batch = 2;
+  auto *context = llama_dart_owner_init_from_model(owner, model, params);
+  assert(context != nullptr);
+  llama_dart_speculative_params spec_params{};
+  spec_params.type_names = "draft-mtp";
+  spec_params.draft_token_max = 4;
+  auto *session = llama_dart_speculative_init(
+      model, draft_model, context, params, &spec_params);
+  assert(session != nullptr);
+  assert(llama_dart_speculative_get_draft_context(session) != nullptr);
+  assert(!llama_dart_speculative_need_embd(session));
+  assert(llama_dart_speculative_need_embd_nextn(session));
+  assert(llama_dart_exit_tracked_count() == 4);
+  llama_dart_speculative_free(session);
+  assert(llama_dart_exit_tracked_count() == 3);
+  session = llama_dart_speculative_init(
+      model, draft_model, context, params, &spec_params);
+  assert(session != nullptr && llama_dart_exit_tracked_count() == 4);
+  std::thread closer([&] { llama_dart_owner_release(owner); });
+  while (llama_dart_exit_tracked_count() == 4)
+    std::this_thread::yield();
+  llama_dart_speculative_free(session);
+  closer.join();
+  assert(llama_dart_owner_count() == 0);
+  assert(llama_dart_exit_tracked_count() == 0);
+  assert(llama_dart_internal::live_session_count() == 0);
+  llama_backend_free();
+}
+
+#endif
+
 static void test_model(const char *path) {
 #if defined(LLAMADART_TEST_CPU_BACKEND)
   assert(ggml_backend_load(LLAMADART_TEST_CPU_BACKEND) != nullptr);
@@ -356,14 +408,10 @@ template <typename Session, void (*Free)(Session *)> struct session_case {
 using tts_case = session_case<llama_dart_tts, llama_dart_tts_free>;
 using speculative_case =
     session_case<llama_dart_speculative, llama_dart_speculative_free>;
-using mtp_case = session_case<llama_dart_mtp, llama_dart_mtp_free>;
-using ngram_case = session_case<llama_dart_ngram, llama_dart_ngram_free>;
 static void test_specialized_frees() {
   for (bool owner_drain : {false, true}) {
     tts_case::run(owner_drain);
     speculative_case::run(owner_drain);
-    mtp_case::run(owner_drain);
-    ngram_case::run(owner_drain);
   }
 }
 static void test_specialized_process_exit() {
@@ -372,15 +420,10 @@ static void test_specialized_process_exit() {
                                 tts_case::delegated_free, 0) == 1);
   assert(llama_dart_owner_track(owner, new llama_dart_speculative(),
                                 speculative_case::delegated_free, 0) == 1);
-  assert(llama_dart_owner_track(owner, new llama_dart_mtp(),
-                                mtp_case::delegated_free, 0) == 1);
-  assert(llama_dart_owner_track(owner, new llama_dart_ngram(),
-                                ngram_case::delegated_free, 0) == 1);
   llama_dart_exit_teardown();
   assert(llama_dart_internal::live_session_count() == 0);
   assert(tts_case::callback_count == 1 &&
          speculative_case::callback_count == 1);
-  assert(mtp_case::callback_count == 1 && ngram_case::callback_count == 1);
   std::_Exit(0);
 }
 
@@ -406,6 +449,12 @@ static void test_process_exit(bool race) {
 }
 
 int main(int argc, char **argv) {
+#if LLAMADART_CONTEXT_HAS_MOE_CACHE
+  if (argc == 4 && std::strcmp(argv[1], "mtp-model") == 0) {
+    test_mtp_model(argv[2], argv[3]);
+    return 0;
+  }
+#endif
   if (argc == 2 && std::strncmp(argv[1], "dependency-", 11) == 0) {
     test_dependency_ownership(argv[1]);
     return 0;

@@ -43,6 +43,33 @@ READELF_IMPORT = (
 
 
 class ValidateExportsTests(unittest.TestCase):
+    def test_speculative_retirement_inventory_retains_both_legacy_queries(self):
+        retiring = {
+            'llama_dart_mtp_' + suffix for suffix in (
+                'init', 'init_with_draft_model', 'free', 'get_draft_context',
+                'begin', 'process_batch', 'draft', 'accept')
+        } | {
+            'llama_dart_ngram_' + suffix for suffix in (
+                'simple_init', 'free', 'begin', 'process_batch', 'draft', 'accept')
+        }
+        self.assertEqual(len(retiring), 14)
+        required = set(validate_exports.DEFAULT_REQUIRED_SYMBOLS)
+        self.assertFalse(required & retiring)
+        self.assertTrue({
+            'llama_dart_speculative_need_embd',
+            'llama_dart_speculative_need_embd_nextn',
+        } <= required)
+        self.assertEqual(set(validate_exports.RETIRED_SPECULATIVE_SYMBOLS), retiring)
+
+    @unittest.skipIf(sys.platform == 'win32', 'the stand-in nm is a shell script')
+    def test_retired_speculative_export_is_rejected(self):
+        for symbol in ('llama_dart_mtp_init', 'llama_dart_ngram_accept'):
+            with self.subTest(symbol=symbol):
+                result = self.run_tool(NM_OUTPUT + f'0000000000005000 T _{symbol}\n')
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertIn('Retired speculative exports', result.stderr)
+                self.assertIn(symbol, result.stderr)
+
     def test_readelf_inspects_only_the_dynamic_symbol_table(self):
         with tempfile.TemporaryDirectory() as temp:
             library = Path(temp) / 'libllamadart.so'
