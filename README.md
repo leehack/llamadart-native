@@ -265,6 +265,10 @@ This build produces the shipped runtime libraries only; upstream tools such as
 [Parity Tool Builds](docs/parity_tools.md) for building them from a released
 tag's pinned `llama.cpp` commit in a separate clone.
 
+Generic MTP initialization requires empty target memory and checks rollback
+support before accepting the session. See [the MTP rollback contract and local
+component checks](docs/speculative_mtp_rollback.md).
+
 ## Exit Teardown
 
 ggml-metal aborts in its static destructor

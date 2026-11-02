@@ -192,6 +192,11 @@ unset(LLAMADART_SPECULATIVE_HAS_COMMON_BATCH CACHE)
 llamadart_probe_declaration(LLAMADART_SPECULATIVE_HAS_COMMON_BATCH
     "#include <common.h>
 int main() { return sizeof(common_batch) == 0; }")
+# common_batch predates its separate MTP state-input API (v0.6.0 lacks it).
+unset(LLAMADART_SPECULATIVE_HAS_BATCH_STATE CACHE)
+llamadart_probe_declaration(LLAMADART_SPECULATIVE_HAS_BATCH_STATE
+    "#include <common.h>
+int main() { return sizeof(decltype(&common_batch::set_embd_state)) == 0; }")
 unset(LLAMADART_MTMD_HAS_LFM3A_GEN CACHE)
 llamadart_probe_declaration(LLAMADART_MTMD_HAS_LFM3A_GEN
     "#include <chat.h>
@@ -274,6 +279,7 @@ target_compile_definitions(llamadart_lib PRIVATE
     LLAMADART_MTMD_HAS_LFM3A_GEN=$<BOOL:${LLAMADART_MTMD_HAS_LFM3A_GEN}>
     LLAMADART_MTMD_HAS_SOPRANO=$<BOOL:${LLAMADART_MTMD_HAS_SOPRANO}>
     LLAMADART_SPECULATIVE_HAS_COMMON_BATCH=$<BOOL:${LLAMADART_SPECULATIVE_HAS_COMMON_BATCH}>
+    LLAMADART_SPECULATIVE_HAS_BATCH_STATE=$<BOOL:${LLAMADART_SPECULATIVE_HAS_BATCH_STATE}>
     LLAMADART_MTMD_HELPER_HAS_OPTIONS=$<BOOL:${LLAMADART_MTMD_HELPER_HAS_OPTIONS}>)
 
 if (MINGW)
@@ -311,7 +317,8 @@ if (LLAMADART_BUILD_TESTS)
     target_compile_features(llamadart_speculative_api_test PRIVATE cxx_std_17)
     target_compile_definitions(llamadart_speculative_api_test PRIVATE
         LLAMADART_CONTEXT_HAS_MOE_CACHE=$<BOOL:${LLAMADART_CONTEXT_HAS_MOE_CACHE}>
-        LLAMADART_SPECULATIVE_HAS_COMMON_BATCH=$<BOOL:${LLAMADART_SPECULATIVE_HAS_COMMON_BATCH}>)
+        LLAMADART_SPECULATIVE_HAS_COMMON_BATCH=$<BOOL:${LLAMADART_SPECULATIVE_HAS_COMMON_BATCH}>
+        LLAMADART_SPECULATIVE_HAS_BATCH_STATE=$<BOOL:${LLAMADART_SPECULATIVE_HAS_BATCH_STATE}>)
     target_link_libraries(llamadart_speculative_api_test PRIVATE llamadart_lib)
     target_include_directories(llamadart_speculative_api_test PRIVATE
         third_party/llama.cpp/common
@@ -464,6 +471,8 @@ if (LLAMADART_BUILD_TESTS)
     if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
         target_compile_definitions(llamadart_exit_teardown_test PRIVATE
             LLAMADART_TEST_CPU_BACKEND="$<TARGET_FILE:ggml-cpu>")
+        target_compile_definitions(llamadart_speculative_api_test PRIVATE
+            LLAMADART_TEST_CPU_BACKEND="$<TARGET_FILE:ggml-cpu>")
     endif()
     if (APPLE OR CMAKE_SYSTEM_NAME STREQUAL "Linux")
         add_test(NAME llamadart_exit_teardown_graph
@@ -529,6 +538,10 @@ if (LLAMADART_BUILD_TESTS)
                 PROPERTIES
                 FIXTURES_REQUIRED llamadart_exit_teardown_vocabulary_model)
         endforeach()
+        add_test(NAME llamadart_speculative_target_preservation
+            COMMAND llamadart_speculative_api_test "${exit_teardown_vocabulary_model}")
+        set_tests_properties(llamadart_speculative_target_preservation PROPERTIES
+            FIXTURES_REQUIRED llamadart_exit_teardown_vocabulary_model TIMEOUT 30)
         if (LLAMADART_CONTEXT_HAS_MOE_CACHE)
             set(exit_teardown_mtp_model
                 "${CMAKE_CURRENT_BINARY_DIR}/exit_teardown_test_mtp_model.gguf")
@@ -536,6 +549,27 @@ if (LLAMADART_BUILD_TESTS)
                 COMMAND llamadart_exit_teardown_test make-mtp-model "${exit_teardown_mtp_model}")
             set_tests_properties(llamadart_exit_teardown_make-mtp-model PROPERTIES
                 FIXTURES_SETUP llamadart_exit_teardown_mtp_model)
+            add_test(NAME llamadart_speculative_mtp_rollback
+                COMMAND llamadart_speculative_api_test
+                    "${exit_teardown_vocabulary_model}" "${exit_teardown_mtp_model}")
+            set_tests_properties(llamadart_speculative_mtp_rollback PROPERTIES
+                FIXTURES_REQUIRED "llamadart_exit_teardown_vocabulary_model;llamadart_exit_teardown_mtp_model"
+                TIMEOUT 30)
+            foreach(component target head)
+                set(shared_mtp_${component}
+                    "${CMAKE_CURRENT_BINARY_DIR}/shared_mtp_${component}.gguf")
+                add_test(NAME llamadart_make-shared-mtp-${component}
+                    COMMAND llamadart_exit_teardown_test
+                        make-shared-mtp-${component} "${shared_mtp_${component}}")
+                set_tests_properties(llamadart_make-shared-mtp-${component}
+                    PROPERTIES FIXTURES_SETUP llamadart_shared_mtp_${component})
+            endforeach()
+            add_test(NAME llamadart_speculative_shared_mtp_generation
+                COMMAND llamadart_speculative_api_test
+                    "${shared_mtp_target}" "${shared_mtp_head}")
+            set_tests_properties(llamadart_speculative_shared_mtp_generation PROPERTIES
+                FIXTURES_REQUIRED "llamadart_shared_mtp_target;llamadart_shared_mtp_head"
+                TIMEOUT 30)
             foreach(scenario model-speculative-moe-cache model-mtp-moe-cache)
                 add_test(NAME llamadart_exit_teardown_${scenario}
                     COMMAND llamadart_exit_teardown_test ${scenario}

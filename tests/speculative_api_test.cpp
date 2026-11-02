@@ -7,6 +7,8 @@
 #include "llama_dart_wrapper.h"
 
 #include <cassert>
+#include <cstdio>
+#include <cstring>
 #include <type_traits>
 #include <vector>
 
@@ -21,6 +23,18 @@ struct has_moe_cache_field<T, std::void_t<decltype(T::moe_cache_size)>>
 // when these headers actually contain the cache budget.
 static_assert(bool(LLAMADART_CONTEXT_HAS_MOE_CACHE) ==
               has_moe_cache_field<llama_context_params>::value);
+
+#if LLAMADART_SPECULATIVE_HAS_COMMON_BATCH
+template <typename T, typename = void>
+struct has_batch_state : std::false_type {};
+
+template <typename T>
+struct has_batch_state<T, std::void_t<decltype(&T::set_embd_state)>>
+    : std::true_type {};
+
+static_assert(bool(LLAMADART_SPECULATIVE_HAS_BATCH_STATE) ==
+              has_batch_state<common_batch>::value);
+#endif
 
 static void test_draft_moe_cache() {
   auto target = llama_context_default_params();
@@ -264,7 +278,289 @@ static void test_mtp_repeated_accept_and_sequence_validation() {
   llama_dart_mtp_free(mtp);
 }
 
-int main() {
+// Optional model-backed guard qualification: a small ordinary decoder is
+// enough to check caller-state preservation, but does not qualify MTP output.
+static void test_mtp_fresh_target_contract(const char *model_path,
+                                          const char *mtp_path) {
+  llama_backend_init();
+  auto model_params = llama_model_default_params();
+  ggml_backend_dev_t devices[] = {nullptr};
+  model_params.devices = devices;
+  model_params.n_gpu_layers = 0;
+  auto *model = llama_model_load_from_file(model_path, model_params);
+  assert(model != nullptr);
+  llama_model *draft_model = nullptr;
+  if (mtp_path != nullptr) {
+    model_params.load_mtp = true;
+    draft_model = llama_model_load_from_file(mtp_path, model_params);
+    assert(draft_model != nullptr);
+  }
+  auto params = llama_context_default_params();
+  params.n_ctx = 256;
+  params.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_DISABLED;
+  params.n_batch = 32;
+  params.n_ubatch = 32;
+  params.n_seq_max = 2;
+  params.n_threads = 2;
+  params.n_threads_batch = 2;
+  auto *target = llama_init_from_model(model, params);
+  assert(target != nullptr);
+  const auto memory = llama_get_memory(target);
+  assert(llama_dart_mtp_target_is_empty(target));
+
+  auto batch = llama_batch_init(2, 0, 1);
+  batch.n_tokens = 2;
+  for (int32_t i = 0; i < 2; ++i) {
+    batch.token[i] = 1;
+    batch.pos[i] = i;
+    batch.n_seq_id[i] = 1;
+    batch.logits[i] = i == 1;
+  }
+  for (llama_seq_id sequence = 0; sequence < 2; ++sequence) {
+    for (int32_t i = 0; i < 2; ++i) {
+      batch.seq_id[i][0] = sequence;
+    }
+    assert(llama_decode(target, batch) == 0);
+    assert(!llama_dart_mtp_target_is_empty(target));
+    const size_t state_size = llama_state_get_size(target);
+    std::vector<uint8_t> before(state_size), after(state_size);
+    assert(llama_state_get_data(target, before.data(), before.size()) ==
+           state_size);
+    llama_dart_speculative_params speculative_params{};
+    speculative_params.type_names = "draft-mtp";
+    auto *speculative = llama_dart_speculative_init(
+        model, draft_model, target, params, &speculative_params);
+    assert(speculative == nullptr);
+    assert(llama_state_get_size(target) == state_size);
+    assert(llama_state_get_data(target, after.data(), after.size()) ==
+           state_size);
+    assert(before == after);
+    assert(llama_memory_seq_pos_max(memory, sequence) == 1);
+
+    // These strategies already support populated targets. The MTP probe must
+    // not erase their prompt or impose its initialization precondition.
+    for (const auto *type : {"ngram-simple", "draft-simple"}) {
+      speculative_params.type_names = type;
+      speculative = llama_dart_speculative_init(model, model, target, params,
+                                                &speculative_params);
+      assert(speculative != nullptr);
+      assert(llama_memory_seq_pos_max(memory, sequence) == 1);
+      llama_dart_speculative_free(speculative);
+      assert(llama_memory_seq_pos_max(memory, sequence) == 1);
+    }
+    llama_memory_clear(memory, true);
+    assert(llama_dart_mtp_target_is_empty(target));
+  }
+  llama_batch_free(batch);
+  llama_free(target);
+  if (draft_model != nullptr) {
+    llama_model_free(draft_model);
+  }
+  llama_model_free(model);
+  llama_backend_free();
+  std::puts("MTP fresh-target rejection and non-MTP preservation passed (not "
+            "MTP model qualification)");
+}
+
+static void test_mtp_generation(llama_model *model, llama_context *target,
+                                llama_context_params params,
+                                llama_dart_speculative *speculative) {
+  constexpr int32_t output_count = 16;
+  const auto greedy = [](llama_context *context, int32_t index) {
+    const float *logits = llama_get_logits_ith(context, index);
+    assert(logits != nullptr);
+    const auto vocabulary = llama_model_get_vocab(llama_get_model(context));
+    const int32_t count = llama_vocab_n_tokens(vocabulary);
+    return static_cast<llama_token>(
+        std::max_element(logits, logits + count) - logits);
+  };
+  const auto decode = [](llama_context *context,
+                         const std::vector<llama_token> &tokens,
+                         llama_pos position,
+                         llama_dart_speculative *spec) {
+    auto batch = llama_batch_init(static_cast<int32_t>(tokens.size()), 0, 1);
+    batch.n_tokens = static_cast<int32_t>(tokens.size());
+    for (int32_t i = 0; i < batch.n_tokens; ++i) {
+      batch.token[i] = tokens[i];
+      batch.pos[i] = position + i;
+      batch.n_seq_id[i] = 1;
+      batch.seq_id[i][0] = 0;
+      batch.logits[i] = true;
+    }
+    assert(llama_decode(context, batch) == 0);
+    if (spec) {
+      assert(llama_dart_speculative_process_batch(spec, batch));
+    }
+    llama_batch_free(batch);
+  };
+
+  std::vector<llama_token> prompt = {1, 3, 4, 5};
+  auto *baseline = llama_init_from_model(model, params);
+  assert(baseline != nullptr);
+  decode(baseline, prompt, 0, nullptr);
+  std::vector<llama_token> expected;
+  auto next = greedy(baseline, -1);
+  for (int32_t i = 0; i < output_count; ++i) {
+    expected.push_back(next);
+    decode(baseline, {next}, static_cast<llama_pos>(prompt.size()) + i,
+           nullptr);
+    next = greedy(baseline, -1);
+  }
+  llama_free(baseline);
+
+  assert(llama_dart_mtp_target_is_empty(target));
+  decode(target, prompt, 0, speculative);
+  assert(llama_dart_speculative_begin(speculative, 0, prompt.data(),
+                                      static_cast<int32_t>(prompt.size())));
+  next = greedy(target, -1);
+  auto past = static_cast<llama_pos>(prompt.size());
+  std::vector<llama_token> actual;
+  int32_t drafted = 0;
+  while (actual.size() < expected.size()) {
+    llama_token candidate = LLAMA_TOKEN_NULL;
+    assert(llama_dart_speculative_draft(
+               speculative, 0, past, next, prompt.data(),
+               static_cast<int32_t>(prompt.size()), 1, &candidate, 1) == 1);
+    ++drafted;
+    assert(llama_memory_seq_rm(
+        llama_get_memory(llama_dart_speculative_get_draft_context(speculative)),
+        0, past, -1));
+    decode(target, {next, candidate}, past, speculative);
+    const auto verified = greedy(target, 0);
+    const bool accepted = candidate == verified;
+    actual.push_back(next);
+    prompt.push_back(next);
+    if (accepted) {
+      if (actual.size() < expected.size()) actual.push_back(candidate);
+      prompt.push_back(candidate);
+    }
+    next = accepted ? greedy(target, 1) : verified;
+    llama_dart_speculative_accept(speculative, 0, accepted ? 1 : 0);
+    past += accepted ? 2 : 1;
+    assert(llama_memory_seq_rm(llama_get_memory(target), 0, past, -1));
+    assert(llama_memory_seq_rm(
+        llama_get_memory(llama_dart_speculative_get_draft_context(speculative)),
+        0, past, -1));
+  }
+  assert(drafted > 0);
+  assert(actual == expected);
+  std::puts("MTP greedy generation matches baseline after rollback probing");
+}
+
+static void test_mtp_rollback_probe(const char *model_path,
+                                    const char *mtp_path) {
+  llama_backend_init();
+  auto model_params = llama_model_default_params();
+  ggml_backend_dev_t devices[] = {nullptr};
+  model_params.devices = devices;
+  model_params.n_gpu_layers = 0;
+  auto *model = llama_model_load_from_file(model_path, model_params);
+  model_params.load_mtp = true;
+  auto *draft_model = llama_model_load_from_file(mtp_path, model_params);
+  assert(model != nullptr && draft_model != nullptr);
+  auto params = llama_context_default_params();
+  params.n_ctx = 256;
+  params.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_DISABLED;
+  params.n_batch = 32;
+  params.n_ubatch = 32;
+  params.n_threads = params.n_threads_batch = 2;
+  auto *target = llama_init_from_model(model, params);
+  assert(target != nullptr);
+  llama_dart_speculative_params speculative_params{};
+  speculative_params.type_names = "draft-mtp";
+  auto *speculative = llama_dart_speculative_init(model, draft_model, target,
+                                                  params, &speculative_params);
+  assert(speculative != nullptr);
+  assert(llama_dart_speculative_get_draft_context(speculative) != nullptr);
+  llama_dart_speculative_free(speculative);
+  assert(llama_dart_mtp_target_is_empty(target));
+
+  // A failed real decode rejects the pair. Abort each context in turn to
+  // check cleanup and recovery, including shared target memory.
+  const ggml_abort_callback abort = [](void *) { return true; };
+  for (const bool abort_target : {true, false}) {
+    llama_set_abort_callback(target, abort_target ? abort : nullptr, nullptr);
+    params.abort_callback = abort_target ? nullptr : abort;
+    speculative = llama_dart_speculative_init(model, draft_model, target,
+                                              params, &speculative_params);
+    assert(speculative == nullptr);
+    assert(llama_dart_mtp_target_is_empty(target));
+  }
+  llama_set_abort_callback(target, nullptr, nullptr);
+  params.abort_callback = nullptr;
+  // Failure must not poison the target or prevent a later valid MTP init.
+  speculative = llama_dart_speculative_init(model, draft_model, target, params,
+                                            &speculative_params);
+  assert(speculative != nullptr);
+  test_mtp_generation(model, target, params, speculative);
+  llama_dart_speculative_free(speculative);
+  llama_free(target);
+  llama_model_free(draft_model);
+  llama_model_free(model);
+  llama_backend_free();
+  std::puts("MTP component rollback acceptance, per-context rejection, and "
+            "recovery passed");
+}
+
+// Optional trained recurrent target coverage. The independent generated head
+// isolates rollback classification from model-family/dimension compatibility.
+static void test_mtp_recurrent_rollback_types(const char *target_path,
+                                             const char *draft_path) {
+  llama_backend_init();
+  auto model_params = llama_model_default_params();
+  ggml_backend_dev_t devices[] = {nullptr};
+  model_params.devices = devices;
+  model_params.n_gpu_layers = 0;
+  auto *model = llama_model_load_from_file(target_path, model_params);
+  model_params.load_mtp = true;
+  auto *draft_model = llama_model_load_from_file(draft_path, model_params);
+  assert(model != nullptr && draft_model != nullptr);
+  for (const uint32_t snapshots : {0u, 2u}) {
+    auto params = llama_context_default_params();
+    params.n_ctx = 128;
+    params.n_batch = params.n_ubatch = 8;
+    params.n_threads = params.n_threads_batch = 2;
+    params.n_rs_seq = snapshots;
+    auto *target = llama_init_from_model(model, params);
+    assert(target != nullptr);
+    assert(llama_n_rs_seq(target) == snapshots);
+    params.ctx_type = LLAMA_CONTEXT_TYPE_MTP;
+    params.ctx_other = target;
+    params.n_rs_seq = 0;
+    auto *draft = llama_init_from_model(draft_model, params);
+    assert(draft != nullptr);
+    const auto types = llama_dart_mtp_probe_rollback(target, draft);
+    assert(types.first == (snapshots == 0 ? COMMON_CONTEXT_SEQ_RM_TYPE_FULL
+                                        : COMMON_CONTEXT_SEQ_RM_TYPE_RS));
+    assert(types.second == COMMON_CONTEXT_SEQ_RM_TYPE_PART);
+    assert(llama_dart_mtp_target_is_empty(target));
+    assert(llama_dart_mtp_target_is_empty(draft));
+    llama_free(draft);
+    llama_free(target);
+  }
+  llama_model_free(draft_model);
+  llama_model_free(model);
+  llama_backend_free();
+  std::puts("Recurrent FULL/RS probe classification and cleanup passed (not "
+            "MTP-family qualification)");
+}
+
+int main(int argc, char **argv) {
+  if (argc == 4 && std::strcmp(argv[1], "--rollback-types") == 0) {
+    test_mtp_recurrent_rollback_types(argv[2], argv[3]);
+    return 0;
+  }
+  if (argc == 2 || argc == 3) {
+#if defined(LLAMADART_TEST_CPU_BACKEND)
+    assert(ggml_backend_load(LLAMADART_TEST_CPU_BACKEND) != nullptr);
+#endif
+    test_mtp_fresh_target_contract(argv[1], argc == 3 ? argv[2] : nullptr);
+    if (argc == 3) {
+      test_mtp_rollback_probe(argv[1], argv[2]);
+    }
+  } else {
+    assert(argc == 1);
+  }
   test_draft_moe_cache();
   assert(!llama_dart_speculative_need_embd(nullptr));
   assert(!llama_dart_speculative_need_embd_nextn(nullptr));

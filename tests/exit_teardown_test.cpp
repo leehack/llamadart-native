@@ -747,14 +747,18 @@ const llama_token kNewlineToken = 6;
 // encoder for llama_encode, which a decoder cannot run. It is large enough to
 // load, offload and evaluate, and needs no download. It has no tokenizer
 // unless with_vocabulary asks for one, which a grammar sampler needs.
+// shared_mtp selects a Gemma4/assistant pair whose draft reads target KV.
 int make_model(const char *path, bool is_encoder,
-               bool with_vocabulary = false, bool mtp_head = false) {
+               bool with_vocabulary = false, bool mtp_head = false,
+               bool shared_mtp = false) {
   const uint32_t vocab_size = 256;
   const uint32_t context_length = 512;
-  const uint32_t embedding_length = 128;
+  const uint32_t embedding_length = shared_mtp && mtp_head ? 64 : 128;
   const uint32_t feed_forward_length = 256;
-  const uint32_t block_count = mtp_head ? 1 : 2;
-  const std::string arch = mtp_head ? "qwen35" : is_encoder ? "bert" : "llama";
+  const uint32_t block_count = shared_mtp ? 2 : mtp_head ? 1 : 2;
+  const std::string arch = shared_mtp
+                               ? mtp_head ? "gemma4-assistant" : "gemma4"
+                               : mtp_head ? "qwen35" : is_encoder ? "bert" : "llama";
 
   gguf_context *gguf = gguf_init_empty();
   const auto set_u32 = [&](const char *key, uint32_t value) {
@@ -768,7 +772,23 @@ int make_model(const char *path, bool is_encoder,
   set_u32("feed_forward_length", feed_forward_length);
   set_u32("attention.head_count", 4);
   set_u32("vocab_size", vocab_size);
-  if (mtp_head) {
+  if (shared_mtp) {
+    set_u32("attention.head_count_kv", 4);
+    set_u32("attention.key_length", 32);
+    set_u32("attention.value_length", 32);
+    set_u32("attention.key_length_swa", 32);
+    set_u32("attention.value_length_swa", 32);
+    set_u32("attention.sliding_window", 256);
+    const bool pattern[] = {true, false};
+    gguf_set_arr_data(gguf, (arch + ".attention.sliding_window_pattern").c_str(),
+                      GGUF_TYPE_BOOL, pattern, 2);
+    if (mtp_head) {
+      set_u32("embedding_length_out", 128);
+      set_u32("nextn_predict_layers", 2);
+    } else {
+      set_u32("embedding_length_per_layer_input", 0);
+    }
+  } else if (mtp_head) {
     // A component fixture with one dense MTP block and no recurrent trunk.
     set_u32("nextn_predict_layers", 1);
     set_u32("ssm.conv_kernel", 4);
@@ -829,40 +849,70 @@ int make_model(const char *path, bool is_encoder,
     add(name, embedding_length, 0);
     add_tensor(gguf, ggml, name + ".bias", embedding_length, 0, false);
   };
-  add("token_embd", embedding_length, vocab_size);
-  if (is_encoder) {
-    add("position_embd", embedding_length, context_length);
-    add_norm("token_embd_norm");
-  }
-  for (uint32_t block = 0; block < block_count; ++block) {
-    const std::string prefix = "blk." + std::to_string(block) + ".";
-    add(prefix + "attn_q", embedding_length,
-        embedding_length * (mtp_head ? 2 : 1));
-    add(prefix + "attn_k", embedding_length, embedding_length);
-    add(prefix + "attn_v", embedding_length, embedding_length);
-    add(prefix + "attn_output", embedding_length, embedding_length);
-    add(prefix + "ffn_up", embedding_length, feed_forward_length);
-    add(prefix + "ffn_down", feed_forward_length, embedding_length);
-    if (is_encoder) {
-      add_norm(prefix + "attn_output_norm");
-      add_norm(prefix + "layer_output_norm");
-    } else {
+  if (shared_mtp) {
+    add("token_embd", embedding_length, vocab_size);
+    add("output_norm", embedding_length, 0);
+    add("rope_freqs", 16, 0);
+    if (mtp_head) {
+      add("nextn.post_projection", embedding_length, 128);
+      add("nextn.pre_projection", 256, embedding_length);
+    }
+    for (uint32_t block = 0; block < block_count; ++block) {
+      const std::string prefix = "blk." + std::to_string(block) + ".";
       add(prefix + "attn_norm", embedding_length, 0);
-      add(prefix + (mtp_head ? "post_attention_norm" : "ffn_norm"),
-          embedding_length, 0);
-      add(prefix + "ffn_gate", embedding_length, feed_forward_length);
-      if (mtp_head) {
-        add(prefix + "attn_q_norm", 32, 0);
+      add(prefix + "attn_q", embedding_length, 128);
+      add(prefix + "attn_output", 128, embedding_length);
+      add(prefix + "attn_q_norm", 32, 0);
+      add(prefix + "post_attention_norm", embedding_length, 0);
+      if (!mtp_head) {
+        add(prefix + "attn_k", embedding_length, 128);
+        add(prefix + "attn_v", embedding_length, 128);
         add(prefix + "attn_k_norm", 32, 0);
-        add(prefix + "nextn.eh_proj", 2 * embedding_length, embedding_length);
-        add(prefix + "nextn.enorm", embedding_length, 0);
-        add(prefix + "nextn.hnorm", embedding_length, 0);
+      } else {
+        add(prefix + "layer_output_scale", 1, 0);
+      }
+      add(prefix + "ffn_norm", embedding_length, 0);
+      add(prefix + "post_ffw_norm", embedding_length, 0);
+      add(prefix + "ffn_up", embedding_length, feed_forward_length);
+      add(prefix + "ffn_gate", embedding_length, feed_forward_length);
+      add(prefix + "ffn_down", feed_forward_length, embedding_length);
+    }
+  } else {
+    add("token_embd", embedding_length, vocab_size);
+    if (is_encoder) {
+      add("position_embd", embedding_length, context_length);
+      add_norm("token_embd_norm");
+    }
+    for (uint32_t block = 0; block < block_count; ++block) {
+      const std::string prefix = "blk." + std::to_string(block) + ".";
+      add(prefix + "attn_q", embedding_length,
+          embedding_length * (mtp_head ? 2 : 1));
+      add(prefix + "attn_k", embedding_length, embedding_length);
+      add(prefix + "attn_v", embedding_length, embedding_length);
+      add(prefix + "attn_output", embedding_length, embedding_length);
+      add(prefix + "ffn_up", embedding_length, feed_forward_length);
+      add(prefix + "ffn_down", feed_forward_length, embedding_length);
+      if (is_encoder) {
+        add_norm(prefix + "attn_output_norm");
+        add_norm(prefix + "layer_output_norm");
+      } else {
+        add(prefix + "attn_norm", embedding_length, 0);
+        add(prefix + (mtp_head ? "post_attention_norm" : "ffn_norm"),
+            embedding_length, 0);
+        add(prefix + "ffn_gate", embedding_length, feed_forward_length);
+        if (mtp_head) {
+          add(prefix + "attn_q_norm", 32, 0);
+          add(prefix + "attn_k_norm", 32, 0);
+          add(prefix + "nextn.eh_proj", 2 * embedding_length, embedding_length);
+          add(prefix + "nextn.enorm", embedding_length, 0);
+          add(prefix + "nextn.hnorm", embedding_length, 0);
+        }
       }
     }
-  }
-  if (!is_encoder) {
-    add("output_norm", embedding_length, 0);
-    add("output", embedding_length, vocab_size);
+    if (!is_encoder) {
+      add("output_norm", embedding_length, 0);
+      add("output", embedding_length, vocab_size);
+    }
   }
 
   const bool written = gguf_write_to_file(gguf, path, false);
@@ -2969,6 +3019,12 @@ int main(int argc, char **argv) {
     }
     if (scenario == "make-vocabulary-model") {
       return make_model(first, false, true);
+    }
+    if (scenario == "make-shared-mtp-target") {
+      return make_model(first, false, true, false, true);
+    }
+    if (scenario == "make-shared-mtp-head") {
+      return make_model(first, false, true, true, true);
     }
     if (scenario == "make-mtp-model") {
       return make_model(first, false, true, true);
