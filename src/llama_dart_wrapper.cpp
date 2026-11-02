@@ -698,8 +698,35 @@ struct llama_dart_owner_state {
 
 static thread_local std::shared_ptr<llama_dart_owner_state>
     llama_dart_creating_owner;
-static thread_local uintptr_t llama_dart_draining_owner = 0;
-static thread_local uintptr_t llama_dart_freeing_owner = 0;
+
+// Callbacks can enter another owner and then request an ancestor's closure.
+// Keep the whole same-thread ancestry without allocating during cleanup.
+struct llama_dart_owner_scope {
+  uintptr_t token;
+  llama_dart_owner_scope *previous;
+  bool active = true;
+  static thread_local llama_dart_owner_scope *current;
+
+  llama_dart_owner_scope(uintptr_t token = 0) noexcept
+      : token(token), previous(current) {
+    current = this;
+  }
+  ~llama_dart_owner_scope() { reset(); }
+  void reset() noexcept {
+    if (!active) return;
+    current = previous;
+    active = false;
+  }
+  static bool contains(uintptr_t token = 0) noexcept {
+    for (auto *scope = current; scope; scope = scope->previous) {
+      if (scope->token != 0 && (token == 0 || scope->token == token)) return true;
+    }
+    return false;
+  }
+  llama_dart_owner_scope(const llama_dart_owner_scope &) = delete;
+  llama_dart_owner_scope &operator=(const llama_dart_owner_scope &) = delete;
+};
+thread_local llama_dart_owner_scope *llama_dart_owner_scope::current = nullptr;
 static void llama_dart_owner_release_impl(void *token, bool pending_only);
 
 struct llama_dart_exit_entry {
@@ -1002,11 +1029,13 @@ static void llama_dart_exit_release(void *object,
       const auto owned = registry.owners.find(found->second.owner);
       if (owned != registry.owners.end()) {
         owner = owned->second;
-        if (owner->closing && llama_dart_creating_owner != owner &&
-            llama_dart_freeing_owner != owner->token &&
-            llama_dart_draining_owner != owner->token) {
+        if (owner->closing) {
           // The closer owns stage ordering once it starts. A later ordinary
           // free cannot take a model while its context callback is in flight.
+          // A callback must not wait on an ancestor or another callback that
+          // can itself be waiting for this owner. Its closer retains the entry
+          // and the original stage order; external frees still wait below.
+          if (llama_dart_owner_scope::contains()) return;
           registry.idle.wait(lock, [&] { return owner->closed; });
           llama_dart_exit_admit(registry, lock);
           return;
@@ -1030,7 +1059,7 @@ static void llama_dart_exit_release(void *object,
   struct freeing_call {
     llama_dart_exit_registry &registry;
     std::shared_ptr<llama_dart_owner_state> owner;
-    uintptr_t previous;
+    llama_dart_owner_scope scope;
     ~freeing_call() {
       {
         std::lock_guard<std::mutex> lock(registry.mutex);
@@ -1038,13 +1067,12 @@ static void llama_dart_exit_release(void *object,
         if (owner) --owner->freeing;
         registry.idle.notify_all();
       }
-      llama_dart_freeing_owner = previous;
+      scope.reset();
       llama_dart_exit_call_end();
       if (owner && owner->closing)
         llama_dart_owner_release_impl(reinterpret_cast<void *>(owner->token), false);
     }
-  } freeing{registry, owner, llama_dart_freeing_owner};
-  if (owner) llama_dart_freeing_owner = owner->token;
+  } freeing{registry, owner, {owner ? owner->token : 0}};
   llama_dart_session_callback callback(object, session_identity);
   free_fn(object);
 }
@@ -1084,6 +1112,7 @@ struct llama_dart_exit_call {
 struct llama_dart_exit_creating_call {
   std::shared_ptr<llama_dart_owner_state> owner;
   std::shared_ptr<llama_dart_owner_state> previous;
+  llama_dart_owner_scope scope;
 
   explicit llama_dart_exit_creating_call(void *token = nullptr,
                                         void *dependency = nullptr,
@@ -1121,6 +1150,7 @@ struct llama_dart_exit_creating_call {
         ++owner->creating;
       }
       llama_dart_creating_owner = owner;
+      scope.token = owner ? owner->token : 0;
     } catch (...) {
       {
         auto &registry = llama_dart_exit_state();
@@ -1140,6 +1170,7 @@ struct llama_dart_exit_creating_call {
       --registry.creating_calls;
       registry.idle.notify_all();
     }
+    scope.reset();
     llama_dart_exit_call_end();
     if (owner && owner->closing) {
       llama_dart_owner_release_impl(reinterpret_cast<void *>(owner->token), false);
@@ -1215,9 +1246,13 @@ static void llama_dart_owner_release_impl(void *token, bool pending_only) {
     owner->closing = true;
     // A progress callback may request closure from its own admitted creator.
     // The outermost creator finishes the drain after leaving its scope.
-    if (llama_dart_creating_owner == owner ||
-        llama_dart_draining_owner == owner->token ||
-        llama_dart_freeing_owner == owner->token) return;
+    if (llama_dart_owner_scope::contains(owner->token)) return;
+    // Reentrant requests never wait for another live owner scope: two threads
+    // can callback-close each other's owners. A current drainer completes the
+    // request, or the last admitted creator/free starts the pending drain.
+    // A top-level release has no owner scope and retains synchronous waiting.
+    if (llama_dart_owner_scope::contains() &&
+        (owner->draining || owner->creating != 0 || owner->freeing != 0)) return;
     if (owner->draining) {
       registry.idle.wait(lock, [&] { return owner->closed; });
       return;
@@ -1227,8 +1262,7 @@ static void llama_dart_owner_release_impl(void *token, bool pending_only) {
       return owner->creating == 0 && owner->freeing == 0;
     });
   }
-  const uintptr_t previous = llama_dart_draining_owner;
-  llama_dart_draining_owner = owner->token;
+  llama_dart_owner_scope scope(owner->token);
   for (;;) {
     void *object = nullptr;
     llama_dart_exit_entry entry;
@@ -1267,7 +1301,6 @@ static void llama_dart_owner_release_impl(void *token, bool pending_only) {
       registry.idle.notify_all();
     }
   }
-  llama_dart_draining_owner = previous;
 }
 
 extern "C" {

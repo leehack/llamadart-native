@@ -328,6 +328,16 @@ if (LLAMADART_BUILD_TESTS)
     set_tests_properties(llamadart_owner_api_test llamadart_owner_process_exit
         llamadart_owner_process_exit_race llamadart_owner_specialized_process_exit PROPERTIES TIMEOUT 30)
 
+    add_executable(llamadart_owner_reentrancy_test tests/owner_reentrancy_test.cpp)
+    target_compile_features(llamadart_owner_reentrancy_test PRIVATE cxx_std_17)
+    target_link_libraries(llamadart_owner_reentrancy_test PRIVATE llamadart_lib Threads::Threads)
+    target_include_directories(llamadart_owner_reentrancy_test PRIVATE src)
+    foreach(scenario nested ordinary concurrent-drain concurrent-free ancestor-free ancestor-ordinary-free)
+        add_test(NAME llamadart_owner_reentrant_${scenario}
+            COMMAND llamadart_owner_reentrancy_test ${scenario})
+        set_tests_properties(llamadart_owner_reentrant_${scenario} PROPERTIES TIMEOUT 15)
+    endforeach()
+
     add_executable(llamadart_speculative_api_test tests/speculative_api_test.cpp)
     target_compile_features(llamadart_speculative_api_test PRIVATE cxx_std_17)
     target_compile_definitions(llamadart_speculative_api_test PRIVATE
@@ -474,6 +484,12 @@ if (LLAMADART_BUILD_TESTS)
             COMMAND llamadart_owner_api_test "${exit_teardown_vocabulary_model}")
         set_tests_properties(llamadart_owner_model_test PROPERTIES
             FIXTURES_REQUIRED llamadart_exit_teardown_vocabulary_model TIMEOUT 30)
+        foreach(scenario creator-ancestor creator-pending)
+            add_test(NAME llamadart_owner_reentrant_${scenario}
+                COMMAND llamadart_owner_reentrancy_test ${scenario} "${exit_teardown_vocabulary_model}")
+            set_tests_properties(llamadart_owner_reentrant_${scenario} PROPERTIES
+                FIXTURES_REQUIRED llamadart_exit_teardown_vocabulary_model TIMEOUT 30)
+        endforeach()
     endif()
     add_test(NAME llamadart_exit_teardown_barrier-grammar
         COMMAND llamadart_exit_teardown_test barrier-grammar
@@ -492,6 +508,8 @@ if (LLAMADART_BUILD_TESTS)
         target_compile_definitions(llamadart_exit_teardown_test PRIVATE
             LLAMADART_TEST_CPU_BACKEND="$<TARGET_FILE:ggml-cpu>")
         target_compile_definitions(llamadart_owner_api_test PRIVATE
+            LLAMADART_TEST_CPU_BACKEND="$<TARGET_FILE:ggml-cpu>")
+        target_compile_definitions(llamadart_owner_reentrancy_test PRIVATE
             LLAMADART_TEST_CPU_BACKEND="$<TARGET_FILE:ggml-cpu>")
     endif()
     if (APPLE OR CMAKE_SYSTEM_NAME STREQUAL "Linux")
@@ -622,7 +640,7 @@ if (LLAMADART_BUILD_TESTS)
     endif()
 
     # Contract assertions must execute against optimized Release libraries too.
-    foreach(test_target llamadart_owner_api_test llamadart_speculative_api_test llamadart_tts_api_test
+    foreach(test_target llamadart_owner_api_test llamadart_owner_reentrancy_test llamadart_speculative_api_test llamadart_tts_api_test
             llamadart_tts_types_test
             llamadart_build_identity_test llamadart_cancel_flag_test
             llamadart_tts_eval_test llamadart_tts_seed_test llamadart_exit_teardown_test

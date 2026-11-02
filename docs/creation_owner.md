@@ -58,8 +58,20 @@ other callers cannot take over its claim. Destruction removes the identity,
 and a new allocation at the same address receives a fresh one. Valid legacy
 untracked sessions still use their normal specialized free.
 
-Reentrant close from a creator/free callback requests
-closure without waiting on itself. The outermost scope completes the drain.
+Reentrant close from a creator/free callback requests closure without waiting
+on any same-thread ancestor scope. The registry retains the full creation,
+free and drain ancestry, including callbacks that enter a different owner and
+then close an ancestor. A reentrant request also does not wait on another
+owner's active drainer, creator or free: concurrent callbacks could otherwise
+wait for each other. The current drainer, or the last admitted creator/free
+when no drainer exists, completes that pending closure. Top-level release from
+outside these scopes still waits for closure before returning.
+
+Reentrant ordinary frees of objects still tracked by a closing owner defer to
+that owner's closer, preserving stage order. External ordinary frees wait for
+closure. This does not defer a registered callback's specialized destruction
+of its own already-untracked session; its allocation-generation claim still
+grants that callback exactly one destruction.
 A process teardown racing an owner drain waits for its guarded call; reentrant
 owner release from process teardown leaves the process snapshot in charge.
 
