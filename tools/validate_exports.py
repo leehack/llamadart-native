@@ -104,6 +104,13 @@ DEFAULT_REQUIRED_SYMBOLS = [
     "llama_dart_speculative_process_batch",
     "llama_dart_speculative_draft",
     "llama_dart_speculative_accept",
+    "llama_dart_sampler_sample_and_accept_n",
+]
+
+
+# Obsolete families must not survive a partial consolidation. Both generic
+# embedding queries remain required for older Dart consumers.
+RETIRED_SPECULATIVE_SYMBOLS = [
     "llama_dart_mtp_init",
     "llama_dart_mtp_init_with_draft_model",
     "llama_dart_mtp_free",
@@ -118,7 +125,6 @@ DEFAULT_REQUIRED_SYMBOLS = [
     "llama_dart_ngram_process_batch",
     "llama_dart_ngram_draft",
     "llama_dart_ngram_accept",
-    "llama_dart_sampler_sample_and_accept_n",
 ]
 
 
@@ -296,6 +302,15 @@ def main() -> int:
     if missing:
         print(f"Missing exports in {args.library}:", file=sys.stderr)
         for symbol in missing:
+            print(f"  - {symbol}", file=sys.stderr)
+        return 1
+
+    retired = [] if args.imports_only else [
+        symbol for symbol in RETIRED_SPECULATIVE_SYMBOLS if symbol in exported
+    ]
+    if retired:
+        print(f"Retired speculative exports in {args.library}:", file=sys.stderr)
+        for symbol in retired:
             print(f"  - {symbol}", file=sys.stderr)
         return 1
 

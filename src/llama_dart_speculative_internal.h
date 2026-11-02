@@ -8,15 +8,6 @@
 #include <cstdint>
 #include <vector>
 
-struct llama_dart_ngram {
-  llama_dart_internal::session_lifetime lifetime{
-      this, llama_dart_internal::session_kind::ngram};
-  common_speculative *spec = nullptr;
-  std::vector<llama_token> prompt;
-  std::vector<llama_token> draft;
-  bool has_last_draft = false;
-};
-
 struct llama_dart_speculative {
   llama_dart_internal::session_lifetime lifetime{
       this, llama_dart_internal::session_kind::speculative};

@@ -16,14 +16,8 @@ extern "C" {
 #  define LLAMADART_API __attribute__((visibility("default")))
 #endif
 
-// Opaque MTP speculative decoding state owned by libllamadart.
-struct llama_dart_mtp;
-
 // Opaque extended batch (also declared by newer upstream headers).
 struct llama_batch_ext;
-
-// Opaque n-gram speculative decoding state owned by libllamadart.
-struct llama_dart_ngram;
 
 // Opaque upstream speculative decoding state owned by libllamadart.
 struct llama_dart_speculative;
@@ -246,7 +240,7 @@ LLAMADART_API void llama_dart_set_log_level(int level);
 // Read it from the same thread before anything else runs there.
 //
 // The functions that free an object (llama_dart_exit_free and the
-// llama_dart_tts, speculative, mtp and ngram free functions) are the
+// llama_dart_tts and speculative free functions) are the
 // exception: they set the last error when they catch an exception and do not
 // clear it otherwise, because a Dart finalizer may run one on a thread
 // between a call that failed there and the read of its error. Call
@@ -402,7 +396,7 @@ LLAMADART_API int32_t llama_dart_vulkan_get_device_info(
 // Objects are tracked, before the creating call returns, by
 // llama_dart_model_load_from_file, llama_dart_init_from_model,
 // llama_dart_mtmd_init_from_file and the llama_dart_tts,
-// llama_dart_speculative, llama_dart_mtp and llama_dart_ngram init functions,
+// llama_dart_speculative init function,
 // and by llama_dart_exit_track.
 //
 // Teardown waits a bounded time for the calls in flight and then frees the
@@ -1067,94 +1061,6 @@ LLAMADART_API int32_t llama_dart_speculative_draft(
 
 LLAMADART_API void llama_dart_speculative_accept(
     struct llama_dart_speculative * speculative,
-    llama_seq_id seq_id,
-    uint16_t accepted_count);
-
-// Creates a llama.cpp draft-mtp speculative decoding state against the target
-// model. The draft context is owned by the returned handle and is freed with
-// llama_dart_mtp_free.
-LLAMADART_API struct llama_dart_mtp * llama_dart_mtp_init(
-    struct llama_model * model,
-    struct llama_context * ctx_tgt,
-    struct llama_context_params ctx_params,
-    int32_t draft_token_max,
-    int32_t draft_token_min,
-    float min_probability,
-    bool backend_sampling);
-
-// Creates a llama.cpp draft-mtp speculative decoding state against a separately
-// loaded draft model, equivalent to llama.cpp's --model-draft path.
-LLAMADART_API struct llama_dart_mtp * llama_dart_mtp_init_with_draft_model(
-    struct llama_model * draft_model,
-    struct llama_context * ctx_tgt,
-    struct llama_context_params ctx_params,
-    int32_t draft_token_max,
-    int32_t draft_token_min,
-    float min_probability,
-    bool backend_sampling);
-
-LLAMADART_API void llama_dart_mtp_free(struct llama_dart_mtp * mtp);
-
-LLAMADART_API struct llama_context * llama_dart_mtp_get_draft_context(
-    struct llama_dart_mtp * mtp);
-
-LLAMADART_API bool llama_dart_mtp_begin(
-    struct llama_dart_mtp * mtp,
-    llama_seq_id seq_id,
-    const llama_token * prompt,
-    int32_t prompt_count);
-
-LLAMADART_API bool llama_dart_mtp_process_batch(
-    struct llama_dart_mtp * mtp,
-    struct llama_batch batch);
-
-LLAMADART_API int32_t llama_dart_mtp_draft(
-    struct llama_dart_mtp * mtp,
-    llama_seq_id seq_id,
-    llama_pos n_past,
-    llama_token id_last,
-    const llama_token * prompt,
-    int32_t prompt_count,
-    int32_t draft_token_max,
-    llama_token * out_tokens,
-    int32_t out_capacity);
-
-LLAMADART_API void llama_dart_mtp_accept(
-    struct llama_dart_mtp * mtp,
-    llama_seq_id seq_id,
-    uint16_t accepted_count);
-
-// Creates a llama.cpp ngram-simple speculative decoding state. The returned
-// handle uses token history only; it does not allocate a draft model/context.
-LLAMADART_API struct llama_dart_ngram * llama_dart_ngram_simple_init(
-    int32_t ngram_size,
-    int32_t draft_token_max);
-
-LLAMADART_API void llama_dart_ngram_free(struct llama_dart_ngram * ngram);
-
-LLAMADART_API bool llama_dart_ngram_begin(
-    struct llama_dart_ngram * ngram,
-    llama_seq_id seq_id,
-    const llama_token * prompt,
-    int32_t prompt_count);
-
-LLAMADART_API bool llama_dart_ngram_process_batch(
-    struct llama_dart_ngram * ngram,
-    struct llama_batch batch);
-
-LLAMADART_API int32_t llama_dart_ngram_draft(
-    struct llama_dart_ngram * ngram,
-    llama_seq_id seq_id,
-    llama_pos n_past,
-    llama_token id_last,
-    const llama_token * prompt,
-    int32_t prompt_count,
-    int32_t draft_token_max,
-    llama_token * out_tokens,
-    int32_t out_capacity);
-
-LLAMADART_API void llama_dart_ngram_accept(
-    struct llama_dart_ngram * ngram,
     llama_seq_id seq_id,
     uint16_t accepted_count);
 

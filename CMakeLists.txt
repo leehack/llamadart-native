@@ -323,6 +323,8 @@ if (LLAMADART_BUILD_TESTS)
     add_dependencies(llamadart_owner_api_test llamadart_owner_creation_gate)
     target_compile_features(llamadart_owner_api_test PRIVATE cxx_std_17)
     target_compile_definitions(llamadart_owner_api_test PRIVATE
+        LLAMADART_CONTEXT_HAS_MOE_CACHE=$<BOOL:${LLAMADART_CONTEXT_HAS_MOE_CACHE}>
+        LLAMADART_SPECULATIVE_HAS_BATCH_STATE=$<BOOL:${LLAMADART_SPECULATIVE_HAS_BATCH_STATE}>
         LLAMADART_SPECULATIVE_HAS_COMMON_BATCH=$<BOOL:${LLAMADART_SPECULATIVE_HAS_COMMON_BATCH}>)
     target_link_libraries(llamadart_owner_api_test PRIVATE llamadart_lib Threads::Threads)
     target_include_directories(llamadart_owner_api_test PRIVATE src
@@ -468,6 +470,8 @@ if (LLAMADART_BUILD_TESTS)
     target_compile_features(llamadart_exit_teardown_test PRIVATE cxx_std_17)
     target_compile_definitions(llamadart_exit_teardown_test PRIVATE
         LLAMADART_HAS_BATCH_EXT=$<BOOL:${LLAMADART_HAS_BATCH_EXT}>
+        LLAMADART_SPECULATIVE_HAS_COMMON_BATCH=$<BOOL:${LLAMADART_SPECULATIVE_HAS_COMMON_BATCH}>
+        LLAMADART_SPECULATIVE_HAS_BATCH_STATE=$<BOOL:${LLAMADART_SPECULATIVE_HAS_BATCH_STATE}>
         LLAMADART_CONTEXT_HAS_MOE_CACHE=$<BOOL:${LLAMADART_CONTEXT_HAS_MOE_CACHE}>)
     target_link_libraries(llamadart_exit_teardown_test PRIVATE
         llamadart_lib Threads::Threads)
@@ -601,6 +605,12 @@ if (LLAMADART_BUILD_TESTS)
                 COMMAND llamadart_exit_teardown_test make-mtp-model "${exit_teardown_mtp_model}")
             set_tests_properties(llamadart_exit_teardown_make-mtp-model PROPERTIES
                 FIXTURES_SETUP llamadart_exit_teardown_mtp_model)
+            add_test(NAME llamadart_owner_mtp_model_test
+                COMMAND llamadart_owner_api_test mtp-model
+                    "${exit_teardown_vocabulary_model}" "${exit_teardown_mtp_model}")
+            set_tests_properties(llamadart_owner_mtp_model_test PROPERTIES
+                FIXTURES_REQUIRED "llamadart_exit_teardown_vocabulary_model;llamadart_exit_teardown_mtp_model"
+                TIMEOUT 30)
             add_test(NAME llamadart_speculative_mtp_rollback
                 COMMAND llamadart_speculative_api_test
                     "${exit_teardown_vocabulary_model}" "${exit_teardown_mtp_model}")

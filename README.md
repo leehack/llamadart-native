@@ -269,6 +269,10 @@ The additive [creation-time owner API](docs/creation_owner.md) prepares worker
 reclamation when a kill arrives during model, context or projector creation.
 It shares the exit registry and retains the existing ABI.
 
+The [generic speculative API](docs/speculative_api_consolidation.md) replaces
+the fourteen MTP/n-gram family exports while retaining both embedding query
+shims for older Dart consumers.
+
 Generic MTP initialization requires empty target memory and checks rollback
 support before accepting the session. See [the MTP rollback contract and local
 component checks](docs/speculative_mtp_rollback.md).
