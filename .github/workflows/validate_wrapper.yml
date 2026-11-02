@@ -479,6 +479,7 @@ jobs:
       - name: Build wrapper contract tests and smoke tool
         run: >-
           cmake --build build/wrapper-contract --target
+          llamadart_owner_api_test llamadart_owner_reentrancy_test
           llamadart_speculative_api_test
           llamadart_build_identity_test
           llamadart_cancel_flag_test
@@ -603,6 +604,7 @@ jobs:
         run: >-
           cmake --build --preset windows-x64-full --target
           llamadart_barrier_test
+          llamadart_owner_api_test llamadart_owner_reentrancy_test
           llamadart_build_identity_test
           llamadart_cancel_flag_test
           llamadart_exit_teardown_test
@@ -616,7 +618,7 @@ jobs:
           $wrapperDir = (Resolve-Path build/wx64).Path
           $upstreamDir = (Resolve-Path build/wx64/bin).Path
           $env:PATH = "$wrapperDir;$upstreamDir;$env:PATH"
-          ctest --test-dir build/wx64 -R "barrier|build_identity|cancel_flag|vocabulary|vulkan_device_info|tts_api|tts_types|image_token_limit" --timeout 120 --output-on-failure
+          ctest --test-dir build/wx64 -R "owner_api|owner_reentrant|barrier|build_identity|cancel_flag|vocabulary|vulkan_device_info|tts_api|tts_types|image_token_limit" --timeout 120 --output-on-failure
       - name: Validate wrapper exports
         shell: pwsh
         run: |
@@ -674,7 +676,7 @@ jobs:
       - name: Build the exit teardown test
         run: >-
           cmake --build ${{ matrix.build_dir }} --target
-          llamadart_exit_teardown_test llamadart_image_token_limit_test
+          llamadart_owner_api_test llamadart_owner_reentrancy_test llamadart_exit_teardown_test llamadart_image_token_limit_test
           llamadart_build_identity_test llamadart_cancel_flag_test
       - name: Validate wrapper exports and the static destructor binding
         run: >-
@@ -686,7 +688,7 @@ jobs:
       # the Metal library, which takes most of a minute.
       - name: Run the exit teardown scenarios
         run: >-
-          ctest --test-dir ${{ matrix.build_dir }} -R "exit_teardown|image_token_limit|build_identity|cancel_flag"
+          ctest --test-dir ${{ matrix.build_dir }} -R "owner_|exit_teardown|image_token_limit|build_identity|cancel_flag"
           --timeout 300 --output-on-failure
       # A model that nothing tracks aborts at exit when Metal residency sets
       # are live. Whether a runner has them is outside this repository's

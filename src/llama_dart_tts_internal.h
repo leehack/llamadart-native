@@ -1,5 +1,7 @@
 #pragma once
 
+#include "llama_dart_session_lifetime_internal.h"
+
 #include "llama_dart_barrier_internal.h"
 #include "llama_dart_wrapper.h"
 
@@ -12,6 +14,8 @@
 #include <vector>
 
 struct llama_dart_tts {
+  llama_dart_internal::session_lifetime lifetime{
+      this, llama_dart_internal::session_kind::tts};
   llama_context *llama = nullptr;
   mtmd_context *mtmd = nullptr;
   mtmd_helper_gen_audio *generator = nullptr;

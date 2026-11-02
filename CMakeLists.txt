@@ -313,6 +313,42 @@ target_include_directories(llamadart_lib PRIVATE
 
 if (LLAMADART_BUILD_TESTS)
     enable_testing()
+    add_library(llamadart_owner_creation_gate SHARED tests/owner_creation_gate.cpp)
+    target_compile_features(llamadart_owner_creation_gate PRIVATE cxx_std_17)
+    target_include_directories(llamadart_owner_creation_gate PRIVATE
+        src third_party/llama.cpp/include third_party/llama.cpp/ggml/include)
+    target_link_libraries(llamadart_owner_creation_gate PRIVATE Threads::Threads)
+
+    add_executable(llamadart_owner_api_test tests/owner_api_test.cpp)
+    add_dependencies(llamadart_owner_api_test llamadart_owner_creation_gate)
+    target_compile_features(llamadart_owner_api_test PRIVATE cxx_std_17)
+    target_compile_definitions(llamadart_owner_api_test PRIVATE
+        LLAMADART_SPECULATIVE_HAS_COMMON_BATCH=$<BOOL:${LLAMADART_SPECULATIVE_HAS_COMMON_BATCH}>)
+    target_link_libraries(llamadart_owner_api_test PRIVATE llamadart_lib Threads::Threads)
+    target_include_directories(llamadart_owner_api_test PRIVATE src
+        third_party/llama.cpp/common third_party/llama.cpp/tools/mtmd)
+    add_test(NAME llamadart_owner_api_test COMMAND llamadart_owner_api_test)
+    foreach(scenario unowned-first owned-first all-unowned same-owner foreign-owner)
+        add_test(NAME llamadart_owner_dependency_${scenario}
+            COMMAND llamadart_owner_api_test dependency-${scenario})
+        set_tests_properties(llamadart_owner_dependency_${scenario} PROPERTIES TIMEOUT 15)
+    endforeach()
+    add_test(NAME llamadart_owner_specialized_process_exit COMMAND llamadart_owner_api_test specialized-process-exit)
+    add_test(NAME llamadart_owner_process_exit COMMAND llamadart_owner_api_test process-exit)
+    add_test(NAME llamadart_owner_process_exit_race COMMAND llamadart_owner_api_test process-exit-race)
+    set_tests_properties(llamadart_owner_api_test llamadart_owner_process_exit
+        llamadart_owner_process_exit_race llamadart_owner_specialized_process_exit PROPERTIES TIMEOUT 30)
+
+    add_executable(llamadart_owner_reentrancy_test tests/owner_reentrancy_test.cpp)
+    target_compile_features(llamadart_owner_reentrancy_test PRIVATE cxx_std_17)
+    target_link_libraries(llamadart_owner_reentrancy_test PRIVATE llamadart_lib Threads::Threads)
+    target_include_directories(llamadart_owner_reentrancy_test PRIVATE src)
+    foreach(scenario nested ordinary concurrent-drain concurrent-free ancestor-free ancestor-ordinary-free)
+        add_test(NAME llamadart_owner_reentrant_${scenario}
+            COMMAND llamadart_owner_reentrancy_test ${scenario})
+        set_tests_properties(llamadart_owner_reentrant_${scenario} PROPERTIES TIMEOUT 15)
+    endforeach()
+
     add_executable(llamadart_speculative_api_test tests/speculative_api_test.cpp)
     target_compile_features(llamadart_speculative_api_test PRIVATE cxx_std_17)
     target_compile_definitions(llamadart_speculative_api_test PRIVATE
@@ -455,6 +491,18 @@ if (LLAMADART_BUILD_TESTS)
             "${exit_teardown_vocabulary_model}")
     set_tests_properties(llamadart_exit_teardown_make-vocabulary-model
         PROPERTIES FIXTURES_SETUP llamadart_exit_teardown_vocabulary_model)
+    if (APPLE OR CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        add_test(NAME llamadart_owner_model_test
+            COMMAND llamadart_owner_api_test "${exit_teardown_vocabulary_model}")
+        set_tests_properties(llamadart_owner_model_test PROPERTIES
+            FIXTURES_REQUIRED llamadart_exit_teardown_vocabulary_model TIMEOUT 30)
+        foreach(scenario creator-ancestor creator-pending)
+            add_test(NAME llamadart_owner_reentrant_${scenario}
+                COMMAND llamadart_owner_reentrancy_test ${scenario} "${exit_teardown_vocabulary_model}")
+            set_tests_properties(llamadart_owner_reentrant_${scenario} PROPERTIES
+                FIXTURES_REQUIRED llamadart_exit_teardown_vocabulary_model TIMEOUT 30)
+        endforeach()
+    endif()
     add_test(NAME llamadart_exit_teardown_barrier-grammar
         COMMAND llamadart_exit_teardown_test barrier-grammar
             "${exit_teardown_vocabulary_model}")
@@ -470,6 +518,10 @@ if (LLAMADART_BUILD_TESTS)
         "GGUF multimodal projector of that model for the mtmd exit teardown tests")
     if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
         target_compile_definitions(llamadart_exit_teardown_test PRIVATE
+            LLAMADART_TEST_CPU_BACKEND="$<TARGET_FILE:ggml-cpu>")
+        target_compile_definitions(llamadart_owner_api_test PRIVATE
+            LLAMADART_TEST_CPU_BACKEND="$<TARGET_FILE:ggml-cpu>")
+        target_compile_definitions(llamadart_owner_reentrancy_test PRIVATE
             LLAMADART_TEST_CPU_BACKEND="$<TARGET_FILE:ggml-cpu>")
         target_compile_definitions(llamadart_speculative_api_test PRIVATE
             LLAMADART_TEST_CPU_BACKEND="$<TARGET_FILE:ggml-cpu>")
@@ -627,7 +679,7 @@ if (LLAMADART_BUILD_TESTS)
     endif()
 
     # Contract assertions must execute against optimized Release libraries too.
-    foreach(test_target llamadart_speculative_api_test llamadart_tts_api_test
+    foreach(test_target llamadart_owner_api_test llamadart_owner_reentrancy_test llamadart_speculative_api_test llamadart_tts_api_test
             llamadart_tts_types_test
             llamadart_build_identity_test llamadart_cancel_flag_test
             llamadart_tts_eval_test llamadart_tts_seed_test llamadart_exit_teardown_test

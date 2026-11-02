@@ -1,5 +1,7 @@
 #pragma once
 
+#include "llama_dart_session_lifetime_internal.h"
+
 #include "llama.h"
 #include "speculative.h"
 
@@ -8,6 +10,8 @@
 #include <vector>
 
 struct llama_dart_mtp {
+  llama_dart_internal::session_lifetime lifetime{
+      this, llama_dart_internal::session_kind::mtp};
   llama_context *ctx_tgt = nullptr;
   llama_context *ctx_dft = nullptr;
   common_speculative *spec = nullptr;

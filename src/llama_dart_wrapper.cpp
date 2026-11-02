@@ -6,6 +6,7 @@
 #include "llama_dart_mtmd_compat.h"
 #include "llama_dart_mtp_internal.h"
 #include "llama_dart_speculative_compat.h"
+#include "llama_dart_speculative_internal.h"
 #include "llama_dart_tts_eval_internal.h"
 #include "llama_dart_tts_internal.h"
 #include "llama_dart_tts_seed_internal.h"
@@ -73,26 +74,6 @@ static int llama_dart_common_log_verbosity(int level) {
     return LOG_LEVEL_ERROR;
   }
 }
-
-struct llama_dart_ngram {
-  common_speculative *spec = nullptr;
-  std::vector<llama_token> prompt;
-  std::vector<llama_token> draft;
-  bool has_last_draft = false;
-};
-
-struct llama_dart_speculative {
-  llama_context *ctx_tgt = nullptr;
-  llama_context *ctx_dft = nullptr;
-  common_speculative *spec = nullptr;
-  std::vector<uint32_t> target_output_layer_ids;
-  std::vector<llama_token> prompt;
-  std::vector<llama_token> draft;
-  std::vector<int8_t> process_output_mask;
-  llama_dart_speculative_embedding_requirements embedding_requirements;
-  bool caps_draft_process_outputs = false;
-  bool has_last_draft = false;
-};
 
 static bool llama_dart_tts_cancelled(llama_dart_tts *tts) {
   return llama_dart_tts_cancel_observed(&tts->cancel_requested,
@@ -703,10 +684,56 @@ llama_dart_reasoning_budget_clone(const struct llama_sampler *sampler) {
   return result;
 }
 
+// Tokens are never-reused integer identities, not addresses of owner storage.
+// Late duplicate finalizers therefore cannot touch a recycled control record.
+struct llama_dart_owner_state {
+  uintptr_t token = 0;
+  bool active = false;
+  std::atomic<bool> closing{false};
+  bool draining = false;
+  bool closed = false;
+  int32_t creating = 0;
+  int32_t freeing = 0;
+};
+
+static thread_local std::shared_ptr<llama_dart_owner_state>
+    llama_dart_creating_owner;
+
+// Callbacks can enter another owner and then request an ancestor's closure.
+// Keep the whole same-thread ancestry without allocating during cleanup.
+struct llama_dart_owner_scope {
+  uintptr_t token;
+  llama_dart_owner_scope *previous;
+  bool active = true;
+  static thread_local llama_dart_owner_scope *current;
+
+  llama_dart_owner_scope(uintptr_t token = 0) noexcept
+      : token(token), previous(current) {
+    current = this;
+  }
+  ~llama_dart_owner_scope() { reset(); }
+  void reset() noexcept {
+    if (!active) return;
+    current = previous;
+    active = false;
+  }
+  static bool contains(uintptr_t token = 0) noexcept {
+    for (auto *scope = current; scope; scope = scope->previous) {
+      if (scope->token != 0 && (token == 0 || scope->token == token)) return true;
+    }
+    return false;
+  }
+  llama_dart_owner_scope(const llama_dart_owner_scope &) = delete;
+  llama_dart_owner_scope &operator=(const llama_dart_owner_scope &) = delete;
+};
+thread_local llama_dart_owner_scope *llama_dart_owner_scope::current = nullptr;
+static void llama_dart_owner_release_impl(void *token, bool pending_only);
+
 struct llama_dart_exit_entry {
   void (*free_fn)(void *) = nullptr;
   int32_t stage = 0;
   uint64_t order = 0;
+  uintptr_t owner = 0;
   // Objects the entry uses without owning them. Teardown frees the entry only
   // while they are tracked: a caller that creates them with upstream functions
   // may be using them in calls teardown cannot see.
@@ -718,10 +745,21 @@ struct llama_dart_exit_entry {
 // flight blocks it. Teardown gives it this long to get there.
 static const std::chrono::milliseconds llama_dart_exit_settle_time{250};
 
+struct llama_dart_session_state {
+  uint64_t identity;
+  llama_dart_internal::session_kind kind;
+  bool callback_claimed = false;
+  bool destroy_started = false;
+};
+
 struct llama_dart_exit_registry {
   std::mutex mutex;
   std::condition_variable idle;
   std::unordered_map<void *, llama_dart_exit_entry> objects;
+  std::unordered_map<uintptr_t, std::shared_ptr<llama_dart_owner_state>> owners;
+  std::unordered_map<void *, llama_dart_session_state> sessions;
+  uint64_t next_session = 1;
+  uintptr_t next_owner = 1;
   std::chrono::steady_clock::time_point last_call_end{};
   uint64_t next_order = 0;
   int32_t calls = 0;
@@ -738,6 +776,89 @@ static llama_dart_exit_registry &llama_dart_exit_state() {
   // Never destroyed: other threads still reach it after static destructors.
   static auto *registry = new llama_dart_exit_registry();
   return *registry;
+}
+
+namespace llama_dart_internal {
+uint64_t session_born(void *object, session_kind kind) {
+  auto &registry = llama_dart_exit_state();
+  std::lock_guard<std::mutex> lock(registry.mutex);
+  if (registry.next_session == std::numeric_limits<uint64_t>::max())
+    throw std::overflow_error("native session identities exhausted");
+  const auto identity = registry.next_session++;
+  if (!registry.sessions
+           .emplace(object, llama_dart_session_state{identity, kind})
+           .second)
+    throw std::logic_error("native session address already live");
+  return identity;
+}
+
+void session_died(void *object, uint64_t identity) noexcept {
+  auto &registry = llama_dart_exit_state();
+  std::lock_guard<std::mutex> lock(registry.mutex);
+  const auto found = registry.sessions.find(object);
+  if (found != registry.sessions.end() && found->second.identity == identity)
+    registry.sessions.erase(found);
+}
+
+size_t live_session_count() {
+  auto &registry = llama_dart_exit_state();
+  std::lock_guard<std::mutex> lock(registry.mutex);
+  return registry.sessions.size();
+}
+} // namespace llama_dart_internal
+
+// Callback authority is thread-local and generation-bound: a custom registered
+// callback may delegate to the specialized free, but a concurrent caller may
+// not.
+struct llama_dart_session_callback {
+  void *object;
+  uint64_t identity;
+  llama_dart_session_callback *previous;
+  static thread_local llama_dart_session_callback *current;
+  llama_dart_session_callback(void *object, uint64_t identity)
+      : object(object), identity(identity), previous(current) {
+    current = this;
+  }
+  ~llama_dart_session_callback() { current = previous; }
+};
+thread_local llama_dart_session_callback *llama_dart_session_callback::current =
+    nullptr;
+
+// Called under the registry lock before removing the tracked cleanup identity.
+static uint64_t llama_dart_session_claim(llama_dart_exit_registry &registry,
+                                         void *object) {
+  const auto found = registry.sessions.find(object);
+  if (found == registry.sessions.end())
+    return 0;
+  found->second.callback_claimed = true;
+  return found->second.identity;
+}
+
+static bool llama_dart_session_callback_matches(void *object,
+                                                uint64_t identity) {
+  for (auto *callback = llama_dart_session_callback::current;
+       callback != nullptr; callback = callback->previous) {
+    if (callback->object == object && callback->identity == identity)
+      return true;
+  }
+  return false;
+}
+
+static bool llama_dart_session_destroy(void *object,
+                                       llama_dart_internal::session_kind kind) {
+  auto &registry = llama_dart_exit_state();
+  std::lock_guard<std::mutex> lock(registry.mutex);
+  const auto found = registry.sessions.find(object);
+  if (found == registry.sessions.end() || found->second.kind != kind ||
+      found->second.destroy_started)
+    return false;
+  auto &session = found->second;
+  if (session.callback_claimed) {
+    if (!llama_dart_session_callback_matches(object, session.identity))
+      return false;
+  }
+  session.callback_claimed = session.destroy_started = true;
+  return true;
 }
 
 static thread_local bool llama_dart_exit_teardown_thread = false;
@@ -854,8 +975,14 @@ static bool llama_dart_exit_insert(void *object, void (*free_fn)(void *),
     if (!llama_dart_exit_admit(registry, lock)) {
       return false;
     }
+    const auto existing = registry.objects.find(object);
+    if (existing != registry.objects.end() && existing->second.owner != 0) {
+      return false;
+    }
     registry.objects[object] = {
-        free_fn, stage, registry.next_order++, {uses_first, uses_second}};
+        free_fn, stage, registry.next_order++,
+        llama_dart_creating_owner ? llama_dart_creating_owner->token : 0,
+        {uses_first, uses_second}};
   }
   llama_dart_exit_arm();
   return true;
@@ -881,14 +1008,41 @@ static void llama_dart_exit_release(void *object,
   }
   auto &registry = llama_dart_exit_state();
   void (*free_fn)(void *) = untracked_free;
+  uint64_t session_identity = 0;
+  std::shared_ptr<llama_dart_owner_state> owner;
   {
     std::unique_lock<std::mutex> lock(registry.mutex);
-    if (!llama_dart_exit_admit(registry, lock)) {
+    const auto session = registry.sessions.find(object);
+    // Process teardown may call a custom callback that delegates its own
+    // specialized destruction. This grants no access to other torn-down
+    // objects.
+    const bool delegated_teardown =
+        llama_dart_exit_teardown_thread && untracked_free != nullptr &&
+        session != registry.sessions.end() &&
+        llama_dart_session_callback_matches(object, session->second.identity);
+    if (!delegated_teardown && !llama_dart_exit_admit(registry, lock)) {
       return;
     }
     const auto found = registry.objects.find(object);
     if (found != registry.objects.end()) {
       free_fn = found->second.free_fn;
+      const auto owned = registry.owners.find(found->second.owner);
+      if (owned != registry.owners.end()) {
+        owner = owned->second;
+        if (owner->closing) {
+          // The closer owns stage ordering once it starts. A later ordinary
+          // free cannot take a model while its context callback is in flight.
+          // A callback must not wait on an ancestor or another callback that
+          // can itself be waiting for this owner. Its closer retains the entry
+          // and the original stage order; external frees still wait below.
+          if (llama_dart_owner_scope::contains()) return;
+          registry.idle.wait(lock, [&] { return owner->closed; });
+          llama_dart_exit_admit(registry, lock);
+          return;
+        }
+        ++owner->freeing;
+      }
+      session_identity = llama_dart_session_claim(registry, object);
       registry.objects.erase(found);
     }
     if (free_fn == nullptr) {
@@ -904,14 +1058,22 @@ static void llama_dart_exit_release(void *object,
   // Ends the free also when free_fn throws.
   struct freeing_call {
     llama_dart_exit_registry &registry;
+    std::shared_ptr<llama_dart_owner_state> owner;
+    llama_dart_owner_scope scope;
     ~freeing_call() {
       {
         std::lock_guard<std::mutex> lock(registry.mutex);
         --registry.freeing_calls;
+        if (owner) --owner->freeing;
+        registry.idle.notify_all();
       }
+      scope.reset();
       llama_dart_exit_call_end();
+      if (owner && owner->closing)
+        llama_dart_owner_release_impl(reinterpret_cast<void *>(owner->token), false);
     }
-  } freeing{registry};
+  } freeing{registry, owner, {owner ? owner->token : 0}};
+  llama_dart_session_callback callback(object, session_identity);
   free_fn(object);
 }
 
@@ -948,21 +1110,85 @@ struct llama_dart_exit_call {
 // A call in flight that tracks what it creates. Teardown waits for it even
 // when nothing is tracked yet.
 struct llama_dart_exit_creating_call {
-  llama_dart_exit_creating_call() {
+  std::shared_ptr<llama_dart_owner_state> owner;
+  std::shared_ptr<llama_dart_owner_state> previous;
+  llama_dart_owner_scope scope;
+
+  explicit llama_dart_exit_creating_call(void *token = nullptr,
+                                        void *dependency = nullptr,
+                                        void *second_dependency = nullptr,
+                                        void *third_dependency = nullptr) {
     llama_dart_exit_begin_call(true);
+    try {
+      auto &registry = llama_dart_exit_state();
+      std::lock_guard<std::mutex> lock(registry.mutex);
+      if (registry.torn_down && llama_dart_exit_teardown_thread)
+        throw std::logic_error("native creation during process teardown");
+      previous = llama_dart_creating_owner;
+      owner = previous;
+      if (token != nullptr) {
+        const auto found = registry.owners.find(reinterpret_cast<uintptr_t>(token));
+        if (found == registry.owners.end()) {
+          throw std::invalid_argument("unknown native owner");
+        }
+        owner = found->second;
+      }
+      const auto dependencies = {dependency, second_dependency, third_dependency};
+      if (!owner) {
+        for (void *used : dependencies) {
+          const auto found = registry.objects.find(used);
+          if (found != registry.objects.end() && found->second.owner != 0) {
+            owner = registry.owners.at(found->second.owner);
+            break;
+          }
+        }
+      }
+      // A later dependency can establish ownership for the entire creator.
+      // Validate earlier inputs too before any native initializer sees them.
+      if (owner) {
+        for (void *used : dependencies) {
+          if (used == nullptr) continue;
+          const auto found = registry.objects.find(used);
+          if (found == registry.objects.end() || found->second.owner != owner->token) {
+            throw std::invalid_argument("native creator dependency belongs to another owner");
+          }
+        }
+      }
+      if (owner) {
+        if (!owner->active || (owner->closing && previous != owner)) {
+          throw std::invalid_argument("native owner is not active");
+        }
+        ++owner->creating;
+      }
+      llama_dart_creating_owner = owner;
+      scope.token = owner ? owner->token : 0;
+    } catch (...) {
+      {
+        auto &registry = llama_dart_exit_state();
+        std::lock_guard<std::mutex> lock(registry.mutex);
+        --registry.creating_calls;
+      }
+      llama_dart_exit_call_end();
+      throw;
+    }
   }
   ~llama_dart_exit_creating_call() {
     {
       auto &registry = llama_dart_exit_state();
       std::lock_guard<std::mutex> lock(registry.mutex);
+      if (owner) --owner->creating;
+      llama_dart_creating_owner = previous;
       --registry.creating_calls;
+      registry.idle.notify_all();
     }
+    scope.reset();
     llama_dart_exit_call_end();
+    if (owner && owner->closing) {
+      llama_dart_owner_release_impl(reinterpret_cast<void *>(owner->token), false);
+    }
   }
-  llama_dart_exit_creating_call(const llama_dart_exit_creating_call &) =
-      delete;
-  llama_dart_exit_creating_call &
-  operator=(const llama_dart_exit_creating_call &) = delete;
+  llama_dart_exit_creating_call(const llama_dart_exit_creating_call &) = delete;
+  llama_dart_exit_creating_call &operator=(const llama_dart_exit_creating_call &) = delete;
 };
 
 // Use the same guard/barrier/wait contract for legacy and extended batches.
@@ -979,9 +1205,14 @@ static Object *llama_dart_exit_track_created(Object *object,
                                              int32_t stage,
                                              void *uses_first = nullptr,
                                              void *uses_second = nullptr) {
-  return llama_dart_track_or_free(object, free_fn, [=] {
+  object = llama_dart_track_or_free(object, free_fn, [=] {
     llama_dart_exit_insert(object, free_fn, stage, uses_first, uses_second);
   });
+  if (llama_dart_creating_owner && llama_dart_creating_owner->closing) {
+    llama_dart_exit_release(object, nullptr);
+    return nullptr;
+  }
+  return object;
 }
 
 struct llama_dart_exit_load_progress {
@@ -1010,6 +1241,195 @@ static void llama_dart_exit_free_context(void *object) {
 
 static void llama_dart_exit_free_mtmd(void *object) {
   mtmd_free(static_cast<mtmd_context *>(object));
+}
+
+static void llama_dart_owner_release_impl(void *token, bool pending_only) {
+  llama_dart_exit_call call;
+  auto &registry = llama_dart_exit_state();
+  std::shared_ptr<llama_dart_owner_state> owner;
+  {
+    std::unique_lock<std::mutex> lock(registry.mutex);
+    if (registry.torn_down && llama_dart_exit_teardown_thread) return;
+    const auto found = registry.owners.find(reinterpret_cast<uintptr_t>(token));
+    if (found == registry.owners.end()) return;
+    owner = found->second;
+    if (pending_only && owner->active) return;
+    owner->closing = true;
+    // A progress callback may request closure from its own admitted creator.
+    // The outermost creator finishes the drain after leaving its scope.
+    if (llama_dart_owner_scope::contains(owner->token)) return;
+    // Reentrant requests never wait for another live owner scope: two threads
+    // can callback-close each other's owners. A current drainer completes the
+    // request, or the last admitted creator/free starts the pending drain.
+    // A top-level release has no owner scope and retains synchronous waiting.
+    if (llama_dart_owner_scope::contains() &&
+        (owner->draining || owner->creating != 0 || owner->freeing != 0)) return;
+    if (owner->draining) {
+      registry.idle.wait(lock, [&] { return owner->closed; });
+      return;
+    }
+    owner->draining = true;
+    registry.idle.wait(lock, [&] {
+      return owner->creating == 0 && owner->freeing == 0;
+    });
+  }
+  llama_dart_owner_scope scope(owner->token);
+  for (;;) {
+    void *object = nullptr;
+    llama_dart_exit_entry entry;
+    uint64_t session_identity = 0;
+    {
+      std::lock_guard<std::mutex> lock(registry.mutex);
+      auto selected = registry.objects.end();
+      for (auto it = registry.objects.begin(); it != registry.objects.end(); ++it) {
+        if (it->second.owner != owner->token) continue;
+        if (selected == registry.objects.end() ||
+            it->second.stage < selected->second.stage ||
+            (it->second.stage == selected->second.stage &&
+             it->second.order > selected->second.order)) selected = it;
+      }
+      if (selected == registry.objects.end()) {
+        owner->closed = true;
+        registry.owners.erase(owner->token);
+        registry.idle.notify_all();
+        break;
+      }
+      object = selected->first;
+      entry = selected->second;
+      session_identity = llama_dart_session_claim(registry, object);
+      registry.objects.erase(selected);
+      ++registry.freeing_calls;
+    }
+    try {
+      llama_dart_session_callback callback(object, session_identity);
+      entry.free_fn(object);
+    } catch (...) {
+      // Finalizer and process-exit cleanup cannot propagate native exceptions.
+    }
+    {
+      std::lock_guard<std::mutex> lock(registry.mutex);
+      --registry.freeing_calls;
+      registry.idle.notify_all();
+    }
+  }
+}
+
+extern "C" {
+LLAMADART_API uint32_t llama_dart_owner_api_version(void) { return 1; }
+
+LLAMADART_API void *llama_dart_owner_create(void) {
+  return llama_dart_barrier<void *>(nullptr, [] {
+    llama_dart_exit_call call;
+    auto &registry = llama_dart_exit_state();
+    auto owner = std::make_shared<llama_dart_owner_state>();
+    std::lock_guard<std::mutex> lock(registry.mutex);
+    if (registry.torn_down && llama_dart_exit_teardown_thread) return static_cast<void *>(nullptr);
+    if (registry.next_owner == static_cast<uintptr_t>(std::numeric_limits<intptr_t>::max()))
+      throw std::overflow_error("native owner identities exhausted");
+    owner->token = registry.next_owner++;
+    registry.owners.emplace(owner->token, owner);
+    return reinterpret_cast<void *>(owner->token);
+  });
+}
+
+LLAMADART_API bool llama_dart_owner_activate(void *token) {
+  return llama_dart_barrier(false, [=] {
+    llama_dart_exit_call call;
+    auto &registry = llama_dart_exit_state();
+    std::lock_guard<std::mutex> lock(registry.mutex);
+    const auto found = registry.owners.find(reinterpret_cast<uintptr_t>(token));
+    if (registry.torn_down || found == registry.owners.end() || found->second->closing ||
+        found->second->active) return false;
+    found->second->active = true;
+    return true;
+  });
+}
+
+LLAMADART_API void llama_dart_owner_abandon(void *token) {
+  llama_dart_free_barrier([=] { llama_dart_owner_release_impl(token, true); });
+}
+
+LLAMADART_API void llama_dart_owner_release(void *token) {
+  llama_dart_free_barrier([=] { llama_dart_owner_release_impl(token, false); });
+}
+
+LLAMADART_API int32_t llama_dart_owner_count(void) {
+  auto &registry = llama_dart_exit_state();
+  std::lock_guard<std::mutex> lock(registry.mutex);
+  return static_cast<int32_t>(registry.owners.size());
+}
+
+LLAMADART_API int32_t llama_dart_owner_track(
+    void *token, void *object, void (*free_fn)(void *), int32_t stage) {
+  return llama_dart_barrier<int32_t>(0, [=] {
+    if (object == nullptr || free_fn == nullptr ||
+        stage < LLAMA_DART_EXIT_STAGE_SESSION || stage > LLAMA_DART_EXIT_STAGE_MODEL)
+      return 0;
+    llama_dart_exit_call call;
+    auto &registry = llama_dart_exit_state();
+    {
+      std::lock_guard<std::mutex> lock(registry.mutex);
+      const auto owner = registry.owners.find(reinterpret_cast<uintptr_t>(token));
+      if (registry.torn_down || owner == registry.owners.end() || !owner->second->active ||
+          owner->second->closing) return 0;
+      const auto found = registry.objects.find(object);
+      if (found != registry.objects.end()) {
+        if (found->second.owner != 0 && found->second.owner != owner->first)
+          return 0;
+        for (void *used : found->second.uses) {
+          if (used == nullptr) continue;
+          const auto dependency = registry.objects.find(used);
+          if (dependency == registry.objects.end() || dependency->second.owner != owner->first)
+            return 0;
+        }
+        found->second.owner = owner->first;
+        return 2;
+      }
+      registry.objects.emplace(object, llama_dart_exit_entry{
+          free_fn, stage, registry.next_order++, owner->first, {nullptr, nullptr}});
+    }
+    llama_dart_exit_arm();
+    return 1;
+  });
+}
+
+LLAMADART_API bool llama_dart_owner_untrack(void *token, void *object) {
+  return llama_dart_barrier(false, [=] {
+    llama_dart_exit_call call;
+    auto &registry = llama_dart_exit_state();
+    std::lock_guard<std::mutex> lock(registry.mutex);
+    const auto found = registry.objects.find(object);
+    if (registry.torn_down || found == registry.objects.end() ||
+        found->second.owner != reinterpret_cast<uintptr_t>(token)) return false;
+    registry.objects.erase(found);
+    return true;
+  });
+}
+
+LLAMADART_API llama_model *llama_dart_owner_model_load_from_file(
+    void *owner, const char *path, llama_model_params params) {
+  return llama_dart_barrier<llama_model *>(nullptr, [&] {
+    llama_dart_exit_creating_call call(owner);
+    return llama_dart_model_load_from_file(path, params);
+  });
+}
+
+LLAMADART_API llama_context *llama_dart_owner_init_from_model(
+    void *owner, llama_model *model, llama_context_params params) {
+  return llama_dart_barrier<llama_context *>(nullptr, [&] {
+    llama_dart_exit_creating_call call(owner, model);
+    return llama_dart_init_from_model(model, params);
+  });
+}
+
+LLAMADART_API mtmd_context *llama_dart_owner_mtmd_init_from_file(
+    void *owner, const char *path, const llama_model *model,
+    const mtmd_context_params *params) {
+  return llama_dart_barrier<mtmd_context *>(nullptr, [&] {
+    llama_dart_exit_creating_call call(owner, const_cast<llama_model *>(model));
+    return llama_dart_mtmd_init_from_file(path, model, params);
+  });
+}
 }
 
 extern "C" {
@@ -1055,7 +1475,10 @@ LLAMADART_API bool llama_dart_exit_untrack(void *object) {
   if (!llama_dart_exit_admit(registry, lock)) {
     return false;
   }
-  return registry.objects.erase(object) != 0;
+  const auto found = registry.objects.find(object);
+  if (found == registry.objects.end() || found->second.owner != 0) return false;
+  registry.objects.erase(found);
+  return true;
 }
 
 LLAMADART_API void llama_dart_exit_free(void *object) {
@@ -1131,13 +1554,16 @@ LLAMADART_API void llama_dart_exit_teardown(void) {
                : a.second.order > b.second.order;
   });
   for (const auto &[object, entry] : objects) {
+    uint64_t session_identity = 0;
     {
       std::lock_guard<std::mutex> lock(registry.mutex);
+      session_identity = llama_dart_session_claim(registry, object);
       registry.objects.erase(object);
     }
     // An exception here would end the process in std::terminate, the abort
     // at exit that teardown exists to prevent.
     try {
+      llama_dart_session_callback callback(object, session_identity);
       entry.free_fn(object);
     } catch (...) {
     }
@@ -1163,7 +1589,7 @@ LLAMADART_API struct llama_context *
 llama_dart_init_from_model(struct llama_model *model,
                            struct llama_context_params params) {
   return llama_dart_barrier<llama_context *>(nullptr, [model, &params] {
-    llama_dart_exit_creating_call call;
+    llama_dart_exit_creating_call call(nullptr, model);
     return llama_dart_exit_track_created(
         llama_init_from_model(model, params), llama_dart_exit_free_context,
         LLAMA_DART_EXIT_STAGE_CONTEXT);
@@ -1189,7 +1615,7 @@ LLAMADART_API struct mtmd_context *llama_dart_mtmd_init_from_file(
         if (ctx_params == nullptr) {
           return nullptr;
         }
-        llama_dart_exit_creating_call call;
+        llama_dart_exit_creating_call call(nullptr, const_cast<llama_model *>(text_model));
         return llama_dart_exit_track_created(
             mtmd_init_from_file(mmproj_fname, text_model, *ctx_params),
             llama_dart_exit_free_mtmd, LLAMA_DART_EXIT_STAGE_MODEL_USER);
@@ -1650,7 +2076,7 @@ LLAMADART_API enum llama_dart_tts_status llama_dart_tts_get_info(
 static struct llama_dart_tts *llama_dart_tts_init_impl(
     struct llama_context *llama, struct mtmd_context *mtmd,
     uint32_t accepted_model_types, enum llama_dart_tts_status *out_status) {
-  llama_dart_exit_creating_call call;
+  llama_dart_exit_creating_call call(nullptr, llama, mtmd);
   if (out_status != nullptr) {
     *out_status = LLAMA_DART_TTS_STATUS_INVALID_ARGUMENT;
   }
@@ -1690,10 +2116,11 @@ static struct llama_dart_tts *llama_dart_tts_init_impl(
   tts->generator = generator;
   tts->model_type = model_type;
   tts->capabilities = llama_dart_tts_capabilities(mtmd, model_type);
-  llama_dart_exit_track_created(tts, llama_dart_tts_free_object,
-                                LLAMA_DART_EXIT_STAGE_SESSION, llama, mtmd);
+  tts = llama_dart_exit_track_created(tts, llama_dart_tts_free_object,
+                                    LLAMA_DART_EXIT_STAGE_SESSION, llama, mtmd);
   if (out_status != nullptr) {
-    *out_status = LLAMA_DART_TTS_STATUS_OK;
+    *out_status = tts == nullptr ? LLAMA_DART_TTS_STATUS_UPSTREAM_ERROR
+                                : LLAMA_DART_TTS_STATUS_OK;
   }
   return tts;
 }
@@ -1717,6 +2144,9 @@ LLAMADART_API void llama_dart_tts_free(struct llama_dart_tts *tts) {
 }
 
 static void llama_dart_tts_free_object(void *object) {
+  if (!llama_dart_session_destroy(object,
+                                  llama_dart_internal::session_kind::tts))
+    return;
   auto *tts = static_cast<llama_dart_tts *>(object);
   llama_dart_tts_release_task_resources(tts);
   mtmd_helper_gen_audio_free(tts->generator);
@@ -2191,7 +2621,7 @@ static struct llama_dart_speculative *llama_dart_speculative_init_impl(
     struct llama_context *target_context,
     struct llama_context_params context_params,
     const struct llama_dart_speculative_params *dart_params) {
-  llama_dart_exit_creating_call call;
+  llama_dart_exit_creating_call call(nullptr, target_context, draft_model, target_model);
   if (target_context == nullptr) {
     return nullptr;
   }
@@ -2342,6 +2772,9 @@ llama_dart_speculative_free(struct llama_dart_speculative *speculative) {
 }
 
 static void llama_dart_speculative_free_object(void *object) {
+  if (!llama_dart_session_destroy(
+          object, llama_dart_internal::session_kind::speculative))
+    return;
   auto *speculative = static_cast<llama_dart_speculative *>(object);
   if (speculative->spec != nullptr) {
     common_speculative_free(speculative->spec);
@@ -2510,7 +2943,7 @@ static struct llama_dart_mtp *llama_dart_mtp_init_impl(
     struct llama_model *draft_model, struct llama_context *ctx_tgt,
     struct llama_context_params ctx_params, int32_t draft_token_max,
     int32_t draft_token_min, float min_probability, bool backend_sampling) {
-  llama_dart_exit_creating_call call;
+  llama_dart_exit_creating_call call(nullptr, ctx_tgt, draft_model);
   if (draft_model == nullptr || ctx_tgt == nullptr) {
     if (draft_model != nullptr || ctx_tgt != nullptr) {
       LOG_WRN("%s: missing draft model or target context\n", __func__);
@@ -2615,6 +3048,9 @@ LLAMADART_API void llama_dart_mtp_free(struct llama_dart_mtp *mtp) {
 }
 
 static void llama_dart_mtp_free_object(void *object) {
+  if (!llama_dart_session_destroy(object,
+                                  llama_dart_internal::session_kind::mtp))
+    return;
   auto *mtp = static_cast<llama_dart_mtp *>(object);
   if (mtp->spec != nullptr) {
     common_speculative_free(mtp->spec);
@@ -2797,6 +3233,9 @@ LLAMADART_API void llama_dart_ngram_free(struct llama_dart_ngram *ngram) {
 }
 
 static void llama_dart_ngram_free_object(void *object) {
+  if (!llama_dart_session_destroy(object,
+                                  llama_dart_internal::session_kind::ngram))
+    return;
   auto *ngram = static_cast<llama_dart_ngram *>(object);
   if (ngram->spec != nullptr) {
     common_speculative_free(ngram->spec);
