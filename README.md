@@ -265,6 +265,10 @@ This build produces the shipped runtime libraries only; upstream tools such as
 [Parity Tool Builds](docs/parity_tools.md) for building them from a released
 tag's pinned `llama.cpp` commit in a separate clone.
 
+The additive [creation-time owner API](docs/creation_owner.md) prepares worker
+reclamation when a kill arrives during model, context or projector creation.
+It shares the exit registry and retains the existing ABI.
+
 ## Exit Teardown
 
 ggml-metal aborts in its static destructor

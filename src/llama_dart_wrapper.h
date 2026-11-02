@@ -446,6 +446,35 @@ LLAMADART_API int32_t llama_dart_vulkan_get_device_info(
 // Tracks object so that exit teardown frees it with free_fn. Tracking an
 // address again replaces its entry. Returns false for a null argument or an
 // unknown stage. Blocks after teardown.
+// Creation-time owner API v1. The parent creates a pending token before
+// spawning a killable worker. Attach a stable worker finalizer using release,
+// then activate before creating payloads. Abandon closes pending tokens only;
+// an active token is released after the worker stops or cooperatively disposes.
+// Tokens are opaque never-reused identities; never dereference them. Duplicate
+// release is harmless. Release waits for admitted creators/ordinary frees and
+// drains registered objects in exit-stage order outside the registry mutex.
+// It must not race ordinary inference on the owner; stop the worker first.
+LLAMADART_API uint32_t llama_dart_owner_api_version(void);
+LLAMADART_API void * llama_dart_owner_create(void);
+LLAMADART_API bool llama_dart_owner_activate(void * owner);
+LLAMADART_API void llama_dart_owner_abandon(void * owner);
+LLAMADART_API void llama_dart_owner_release(void * owner);
+LLAMADART_API int32_t llama_dart_owner_count(void);
+// Adopts an existing entry without replacing its cleanup identity, or tracks a
+// raw object. Returns 2 for existing tracking, 1 for new tracking, 0 on failure.
+// Adoption does not close an allocation-to-adoption gap; use owned creators.
+LLAMADART_API int32_t llama_dart_owner_track(
+    void * owner, void * object, void (*free_fn)(void *), int32_t stage);
+// For adopted raw objects only, immediately before their ordinary raw free.
+LLAMADART_API bool llama_dart_owner_untrack(void * owner, void * object);
+LLAMADART_API struct llama_model * llama_dart_owner_model_load_from_file(
+    void * owner, const char * path, struct llama_model_params params);
+LLAMADART_API struct llama_context * llama_dart_owner_init_from_model(
+    void * owner, struct llama_model * model, struct llama_context_params params);
+LLAMADART_API struct mtmd_context * llama_dart_owner_mtmd_init_from_file(
+    void * owner, const char * path, const struct llama_model * model,
+    const struct mtmd_context_params * params);
+
 LLAMADART_API bool llama_dart_exit_track(
     void * object,
     void (*free_fn)(void *),
