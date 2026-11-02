@@ -1,6 +1,9 @@
 #ifdef NDEBUG
 #error "Owner tests require active assertions"
 #endif
+#include "llama_dart_mtp_internal.h"
+#include "llama_dart_speculative_internal.h"
+#include "llama_dart_tts_internal.h"
 #include "llama_dart_wrapper.h"
 
 #include <atomic>
@@ -10,6 +13,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
+#include <new>
 #include <thread>
 #include <vector>
 
@@ -161,7 +165,11 @@ static void test_model(const char *path) {
                                               context_params, &spec_params);
   assert(session != nullptr);
   assert(llama_dart_exit_tracked_count() == 3);
-  llama_dart_owner_release(owner);
+  std::thread owner_closer([&] { llama_dart_owner_release(owner); });
+  while (llama_dart_exit_tracked_count() == 3)
+    std::this_thread::yield();
+  llama_dart_speculative_free(session);
+  owner_closer.join();
   assert(llama_dart_exit_tracked_count() == 0);
   llama_dart_owner_release(foreign);
 
@@ -228,6 +236,115 @@ static void test_free_during_owner_drain() {
   assert(llama_dart_exit_tracked_count() == 0);
 }
 
+// A registered callback may delegate to its public specialized free. A late
+// caller on another thread must not steal that callback's destruction
+// authority.
+template <typename Session, void (*Free)(Session *)> struct session_case {
+  inline static gate *callback_gate = nullptr;
+  inline static int callback_count = 0;
+  static void delegated_free(void *pointer) {
+    ++callback_count;
+    if (callback_gate != nullptr) {
+      auto &state = *callback_gate;
+      std::unique_lock<std::mutex> lock(state.mutex);
+      state.entered = true;
+      state.changed.notify_all();
+      state.changed.wait(lock, [&] { return state.proceed; });
+    }
+    Free(static_cast<Session *>(pointer));
+    Free(static_cast<Session *>(pointer));
+  }
+  static void destructor_only(void *pointer) {
+    static_cast<Session *>(pointer)->~Session();
+  }
+  static void run(bool owner_drain) {
+    const auto baseline = llama_dart_internal::live_session_count();
+    auto *legacy = new Session();
+    Free(legacy);
+    Free(legacy);
+    assert(llama_dart_internal::live_session_count() == baseline);
+
+    legacy = new Session();
+    assert(llama_dart_exit_track(legacy, delegated_free, 0));
+    assert(llama_dart_exit_untrack(legacy));
+    Free(legacy);
+    assert(llama_dart_internal::live_session_count() == baseline);
+
+    void *owner = active_owner();
+    auto *session = new Session();
+    assert(llama_dart_owner_track(owner, session, delegated_free, 0) == 1);
+    gate state;
+    callback_gate = &state;
+    callback_count = 0;
+    std::thread closer([&] {
+      if (owner_drain)
+        llama_dart_owner_release(owner);
+      else
+        llama_dart_exit_free(session);
+    });
+    {
+      std::unique_lock<std::mutex> lock(state.mutex);
+      assert(state.changed.wait_for(lock, std::chrono::seconds(10),
+                                    [&] { return state.entered; }));
+    }
+    assert(llama_dart_exit_tracked_count() == 0);
+    Free(session);
+    assert(llama_dart_internal::live_session_count() == baseline + 1);
+    {
+      std::lock_guard<std::mutex> lock(state.mutex);
+      state.proceed = true;
+      state.changed.notify_all();
+    }
+    closer.join();
+    callback_gate = nullptr;
+    assert(callback_count == 1);
+    assert(llama_dart_internal::live_session_count() == baseline);
+    Free(session);
+    llama_dart_owner_release(owner);
+
+    // A fresh valid allocation at the identical address must not inherit a
+    // retired pointer's claim. Retain the storage to make reuse deterministic.
+    void *storage = ::operator new(sizeof(Session));
+    auto *first = new (storage) Session();
+    owner = active_owner();
+    assert(llama_dart_owner_track(owner, first, destructor_only, 0) == 1);
+    llama_dart_owner_release(owner);
+    auto *second = new (storage) Session();
+    Free(second);
+    assert(llama_dart_internal::live_session_count() == baseline);
+  }
+};
+using tts_case = session_case<llama_dart_tts, llama_dart_tts_free>;
+using speculative_case =
+    session_case<llama_dart_speculative, llama_dart_speculative_free>;
+using mtp_case = session_case<llama_dart_mtp, llama_dart_mtp_free>;
+using ngram_case = session_case<llama_dart_ngram, llama_dart_ngram_free>;
+static void test_specialized_frees() {
+  for (bool owner_drain : {false, true}) {
+    tts_case::run(owner_drain);
+    speculative_case::run(owner_drain);
+    mtp_case::run(owner_drain);
+    ngram_case::run(owner_drain);
+  }
+}
+static void test_specialized_process_exit() {
+  void *owner = active_owner();
+  assert(llama_dart_owner_track(owner, new llama_dart_tts(),
+                                tts_case::delegated_free, 0) == 1);
+  assert(llama_dart_owner_track(owner, new llama_dart_speculative(),
+                                speculative_case::delegated_free, 0) == 1);
+  assert(llama_dart_owner_track(owner, new llama_dart_mtp(),
+                                mtp_case::delegated_free, 0) == 1);
+  assert(llama_dart_owner_track(owner, new llama_dart_ngram(),
+                                ngram_case::delegated_free, 0) == 1);
+  llama_dart_exit_teardown();
+  assert(llama_dart_internal::live_session_count() == 0);
+  assert(tts_case::callback_count == 1 &&
+         speculative_case::callback_count == 1);
+  assert(mtp_case::callback_count == 1 && ngram_case::callback_count == 1);
+  std::_Exit(0);
+}
+
 static void test_process_exit(bool race) {
   void *owner = active_owner();
   auto *first = new resource{0, owner, true};
@@ -250,10 +367,13 @@ static void test_process_exit(bool race) {
 }
 
 int main(int argc, char **argv) {
+  if (argc == 2 && std::strcmp(argv[1], "specialized-process-exit") == 0)
+    test_specialized_process_exit();
   if (argc == 2 && std::strcmp(argv[1], "process-exit") == 0)
     test_process_exit(false);
   if (argc == 2 && std::strcmp(argv[1], "process-exit-race") == 0)
     test_process_exit(true);
+  test_specialized_frees();
   test_bootstrap_and_stages();
   test_free_during_owner_drain();
   if (argc == 2)

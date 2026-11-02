@@ -49,7 +49,16 @@ Owner entries use the process registry's stage and reverse-creation ordering.
 The owner waits for admitted creators and ordinary frees. Once closing starts,
 later ordinary frees cannot steal a model while an earlier context callback is
 in flight. Each entry is erased exactly once under the registry mutex; cleanup
-callbacks run outside it. Reentrant close from a creator/free callback requests
+callbacks run outside it. Wrapper-owned TTS, speculative, MTP and n-gram
+sessions also register a live allocation identity at construction. Claiming
+cleanup retains that identity until destruction, so a late specialized free
+cannot fall back to a second raw free after the tracked entry is removed. A
+registered callback may delegate to its specialized free on the same thread;
+other callers cannot take over its claim. Destruction removes the identity,
+and a new allocation at the same address receives a fresh one. Valid legacy
+untracked sessions still use their normal specialized free.
+
+Reentrant close from a creator/free callback requests
 closure without waiting on itself. The outermost scope completes the drain.
 A process teardown racing an owner drain waits for its guarded call; reentrant
 owner release from process teardown leaves the process snapshot in charge.
@@ -82,7 +91,11 @@ ctest --test-dir build/owner -R 'llamadart_owner|llamadart_speculative_api_test'
 The tests cover bootstrap refusal/abandonment, independent owners, raw adoption,
 foreign dependencies, ordinary/duplicate/reentrant frees, stage ordering,
 creation failure, actual model/context/session creation, admitted-creator
-closure, ordinary free during owner drain, and process teardown races.
+closure, ordinary free during owner drain, and process teardown races. Gated
+callbacks exercise specialized frees during both owner and ordinary cleanup
+for all four session types, callback delegation, duplicate frees, valid
+untracked frees and deterministic address reuse. The model-backed owner test
+also races the real generic speculative session against owner closure.
 The test-only `llamadart_owner_creation_gate` library pauses after calling the
 real creator, using function pointers from the exact tested wrapper image.
 Core's local-only `llama_cpp_owner_creation_e2e_test.dart` queues a real worker

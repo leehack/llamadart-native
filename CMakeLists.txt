@@ -316,13 +316,17 @@ if (LLAMADART_BUILD_TESTS)
     add_executable(llamadart_owner_api_test tests/owner_api_test.cpp)
     add_dependencies(llamadart_owner_api_test llamadart_owner_creation_gate)
     target_compile_features(llamadart_owner_api_test PRIVATE cxx_std_17)
+    target_compile_definitions(llamadart_owner_api_test PRIVATE
+        LLAMADART_SPECULATIVE_HAS_COMMON_BATCH=$<BOOL:${LLAMADART_SPECULATIVE_HAS_COMMON_BATCH}>)
     target_link_libraries(llamadart_owner_api_test PRIVATE llamadart_lib Threads::Threads)
-    target_include_directories(llamadart_owner_api_test PRIVATE src)
+    target_include_directories(llamadart_owner_api_test PRIVATE src
+        third_party/llama.cpp/common third_party/llama.cpp/tools/mtmd)
     add_test(NAME llamadart_owner_api_test COMMAND llamadart_owner_api_test)
+    add_test(NAME llamadart_owner_specialized_process_exit COMMAND llamadart_owner_api_test specialized-process-exit)
     add_test(NAME llamadart_owner_process_exit COMMAND llamadart_owner_api_test process-exit)
     add_test(NAME llamadart_owner_process_exit_race COMMAND llamadart_owner_api_test process-exit-race)
     set_tests_properties(llamadart_owner_api_test llamadart_owner_process_exit
-        llamadart_owner_process_exit_race PROPERTIES TIMEOUT 30)
+        llamadart_owner_process_exit_race llamadart_owner_specialized_process_exit PROPERTIES TIMEOUT 30)
 
     add_executable(llamadart_speculative_api_test tests/speculative_api_test.cpp)
     target_compile_features(llamadart_speculative_api_test PRIVATE cxx_std_17)
@@ -618,7 +622,7 @@ if (LLAMADART_BUILD_TESTS)
     endif()
 
     # Contract assertions must execute against optimized Release libraries too.
-    foreach(test_target llamadart_speculative_api_test llamadart_tts_api_test
+    foreach(test_target llamadart_owner_api_test llamadart_speculative_api_test llamadart_tts_api_test
             llamadart_tts_types_test
             llamadart_build_identity_test llamadart_cancel_flag_test
             llamadart_tts_eval_test llamadart_tts_seed_test llamadart_exit_teardown_test
