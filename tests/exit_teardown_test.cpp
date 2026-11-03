@@ -9,6 +9,8 @@
 #include "gguf.h"
 #include "mtmd.h"
 
+#include <algorithm>
+#include <array>
 #include <atomic>
 #include <cassert>
 #include <chrono>
@@ -21,6 +23,7 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <type_traits>
 #include <vector>
 
 #if defined(__has_feature)
@@ -966,8 +969,11 @@ struct model_options {
 struct model_fixture {
   llama_model *model = nullptr;
   llama_context *context = nullptr;
-  std::vector<llama_token> tokens;
+  // Detached exit workers must retain caller-owned prompt storage through exit.
+  std::array<llama_token, 32> tokens{};
 };
+static_assert(std::is_trivially_destructible<model_fixture>::value,
+              "Exit fixtures must not release storage used by detached workers");
 
 model_fixture load_model(const char *path, model_options options = {}) {
   init_backends();
@@ -992,7 +998,7 @@ model_fixture load_model(const char *path, model_options options = {}) {
   assert(fixture.context != nullptr);
   // Token ids that every vocabulary has, so no tokenizer is needed.
   for (llama_token token = 1; token <= 32; ++token) {
-    fixture.tokens.push_back(token);
+    fixture.tokens[static_cast<size_t>(token - 1)] = token;
   }
   return fixture;
 }
@@ -1132,7 +1138,8 @@ int test_model_wrappers(const char *path) {
                                     restored.data(), restored.size(),
                                     &restored_count));
   restored.resize(restored_count);
-  assert(restored == fixture.tokens);
+  assert(std::equal(restored.begin(), restored.end(), fixture.tokens.begin(),
+                    fixture.tokens.end()));
   assert(remove(state_path.c_str()) == 0);
   assert(llama_get_logits_ith(fixture.context, -1)[0] == first_logit);
 
