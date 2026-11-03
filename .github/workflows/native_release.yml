@@ -206,6 +206,8 @@ jobs:
           fetch-depth: 0
           submodules: recursive
           persist-credentials: false
+      - name: Stage Android setup diagnostic helper
+        run: cp tools/android_ndk_install_diagnostics.py "$RUNNER_TEMP/android_ndk_install_diagnostics.py"
       - name: Checkout llama.cpp ref
         uses: ./.github/actions/checkout-llama-ref
         with:
@@ -223,9 +225,26 @@ jobs:
           distribution: temurin
           java-version: '17'
       - name: Setup Android SDK/NDK
+        id: android-sdk
         uses: android-actions/setup-android@v4
         with:
           packages: platform-tools ndk;${{ env.ANDROID_NDK_VERSION }}
+      - name: Capture failed Android NDK installation
+        if: ${{ always() && steps.android-sdk.outcome == 'failure' }}
+        timeout-minutes: 2
+        run: |
+          python3 "$RUNNER_TEMP/android_ndk_install_diagnostics.py" \
+            --sdk-root "${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/local/lib/android/sdk}}" \
+            --setup-outcome failure \
+            --output "$RUNNER_TEMP/android-ndk-install-diagnostics.json"
+      - name: Upload Android NDK installation diagnostics
+        if: ${{ always() && steps.android-sdk.outcome == 'failure' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: android-ndk-setup-${{ matrix.android_abi }}-${{ matrix.backend }}
+          path: ${{ runner.temp }}/android-ndk-install-diagnostics.json
+          if-no-files-found: error
+          retention-days: 7
       - name: Select pinned Android NDK
         run: |
           set -euo pipefail

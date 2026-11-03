@@ -42,6 +42,39 @@
   without raising the baseline ISA for other code.
 - Non-Apple: keep backends as separate dynamic libraries (`GGML_BACKEND_DL=ON`).
 
+## Android SDK installation diagnostics
+
+Android builds keep NDK `28.2.13676358` pinned. If `setup-android` fails before
+compilation, both validation paths and the release Android jobs immediately
+inspect the retained installer archive and upload only a small JSON receipt.
+They preserve the failed setup result; the diagnostic never retries, changes
+pins, deletes SDK data or uploads the archive or raw installer metadata.
+
+For command-line tools 22.0 (`15859902`), SDK package metadata at
+`ndk/28.2.13676358/.installer/.installData` contains the `path` of its
+`.temp/PackageOperationNN` directory. A normal failed prepare retains
+`android-ndk-r28c-linux.zip` there. A later SDK manager operation can remove
+orphaned temporary directories, so collection runs before any retry or cleanup.
+The helper walks beneath the SDK directory without following symlinks and
+rejects ambiguous metadata or paths outside the exact installer directory.
+
+The expected Linux archive is **722261334 bytes**, SHA-1
+`a7b54a5de87fecd125a17d54f73c446199e72a64`, from Google's
+[SDK repository metadata](https://dl.google.com/android/repository/repository2-3.xml)
+and [NDK download table](https://github.com/android/ndk/wiki/Unsupported-Downloads#r28c).
+The receipt records actual size, SHA-1/SHA-256 and a timed `unzip -t` result;
+file reads, metadata size and subprocess duration are bounded. Missing data,
+permission failures, oversize files and skipped checks are explicit outcomes.
+No payload, archive member names, raw metadata values or exception text appear
+in the receipt.
+
+A size or checksum mismatch proves that the retained bytes differ from the
+expected archive. A matching archive that also passes ZIP integrity shifts the
+investigation to the SDK reader or its environment. `SeekableByteChannel` is a
+generic ZIP-reader error, and download duration alone proves neither cause.
+Keep the receipt before choosing a controlled fresh download or an installer
+comparison; a successful retry alone cannot explain the earlier failure.
+
 ## ARM64 upgrade qualification
 
 `Validate Wrapper` checks pinned and exact post-v0.4.0 Windows ARM64 builds,

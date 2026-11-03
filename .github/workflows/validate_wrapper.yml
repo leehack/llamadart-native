@@ -64,9 +64,26 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
-      - uses: android-actions/setup-android@v4
+      - id: android-sdk
+        uses: android-actions/setup-android@v4
         with:
           packages: platform-tools ndk;28.2.13676358
+      - name: Capture failed Android NDK installation
+        if: ${{ always() && steps.android-sdk.outcome == 'failure' }}
+        timeout-minutes: 2
+        run: |
+          python3 tools/android_ndk_install_diagnostics.py \
+            --sdk-root "${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/local/lib/android/sdk}}" \
+            --setup-outcome failure \
+            --output "$RUNNER_TEMP/android-ndk-install-diagnostics.json"
+      - name: Upload Android NDK installation diagnostics
+        if: ${{ always() && steps.android-sdk.outcome == 'failure' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: android-ndk-setup-${{ github.job }}-${{ matrix.upstream }}
+          path: ${{ runner.temp }}/android-ndk-install-diagnostics.json
+          if-no-files-found: error
+          retention-days: 7
       - name: Install build dependencies
         run: sudo apt-get update && sudo apt-get install -y ninja-build
       - name: Build and audit the release ARMv8.2 CPU variant
@@ -115,9 +132,26 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
-      - uses: android-actions/setup-android@v4
+      - id: android-sdk
+        uses: android-actions/setup-android@v4
         with:
           packages: platform-tools ndk;28.2.13676358
+      - name: Capture failed Android NDK installation
+        if: ${{ always() && steps.android-sdk.outcome == 'failure' }}
+        timeout-minutes: 2
+        run: |
+          python3 tools/android_ndk_install_diagnostics.py \
+            --sdk-root "${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/local/lib/android/sdk}}" \
+            --setup-outcome failure \
+            --output "$RUNNER_TEMP/android-ndk-install-diagnostics.json"
+      - name: Upload Android NDK installation diagnostics
+        if: ${{ always() && steps.android-sdk.outcome == 'failure' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: android-ndk-setup-${{ github.job }}-${{ matrix.upstream }}
+          path: ${{ runner.temp }}/android-ndk-install-diagnostics.json
+          if-no-files-found: error
+          retention-days: 7
       - name: Install build dependencies and the release glslc
         run: |
           sudo apt-get update && sudo apt-get install -y ninja-build glslc
