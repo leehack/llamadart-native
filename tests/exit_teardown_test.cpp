@@ -9,6 +9,7 @@
 #include "gguf.h"
 #include "mtmd.h"
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cassert>
@@ -1137,7 +1138,8 @@ int test_model_wrappers(const char *path) {
                                     restored.data(), restored.size(),
                                     &restored_count));
   restored.resize(restored_count);
-  assert(restored == fixture.tokens);
+  assert(std::equal(restored.begin(), restored.end(), fixture.tokens.begin(),
+                    fixture.tokens.end()));
   assert(remove(state_path.c_str()) == 0);
   assert(llama_get_logits_ith(fixture.context, -1)[0] == first_logit);
 
