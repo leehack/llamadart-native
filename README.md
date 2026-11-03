@@ -104,6 +104,19 @@ matching partial state—including a tag-only state with the same transaction
 marker—is resumed, while any unmarked tag or tag, release, correlation, or asset
 mismatch fails closed without force-moving tags or replacing assets.
 
+To publish an already qualified nonpublishing preparation without rebuilding,
+use `Publish Qualified Native Preparation` (`publish_prepared.yml`) from `main`.
+Its explicit run/artifact digest and source inputs must match the original
+successful owner workflow, complete build/smoke gates, manifest, source bundle
+and same-run release result. Fresh complete remote history must also permit
+new publication or incomplete recovery; a fully published exact replay is a
+read-only no-op. `publish_approved=false` only validates;
+`true` publishes through the same immutable transaction code. Both native entrypoints share the non-cancelling `native-release-main` workflow
+lock, including preparations, so history cannot interleave with another native
+publication. The original
+build run/head/digest remain the release identity, with the publication executor
+recorded separately. See the version policy for the inputs and retry rules.
+
 Every successful preparation or publication uploads
 `native-release-result-<run-id>`. Its JSON returns the correlation identifier,
 workflow run ID/attempt/URL/head SHA, native tag plus legacy `tag`, upstream
