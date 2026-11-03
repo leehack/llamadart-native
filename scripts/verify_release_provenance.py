@@ -882,9 +882,53 @@ def verify_manifest_contract(errors: list[str]) -> None:
             )
 
 
+def publication_serialization_errors(native_workflow: str, prepared_workflow: str) -> list[str]:
+    """Keep history admission and publication under the historical main run lock."""
+    errors: list[str] = []
+    for path, workflow in (("native_release.yml", native_workflow),
+                           ("publish_prepared.yml", prepared_workflow)):
+        match = re.search(r"^concurrency:\n(?P<body>.*?)(?=^[^\s]|\Z)", workflow,
+                          flags=re.MULTILINE | re.DOTALL)
+        body = match.group("body") if match else ""
+        groups = re.findall(r"^  group: ([^\n]+)$", body, flags=re.MULTILINE)
+        cancellation = re.findall(r"^  cancel-in-progress: ([^\n]+)$", body, flags=re.MULTILINE)
+        if groups != ["native-release-main"] or cancellation != ["false"]:
+            errors.append(path + ": publication entrypoints must share workflow-level "
+                          "native-release-main with cancel-in-progress: false")
+    return errors
+
+
+def verify_prepared_publication_contract(errors: list[str]) -> None:
+    workflow = (ROOT / ".github/workflows/publish_prepared.yml").read_text()
+    errors.extend(publication_serialization_errors(WORKFLOW.read_text(), workflow))
+    job = workflow_job(workflow, "publish-prepared")
+    blocks = workflow_run_blocks(workflow)
+    require("workflow_dispatch:" in workflow and "default: false" in workflow
+            and "cancel-in-progress: false" in workflow,
+            "prepared publication must be explicit, default closed and non-cancelling", errors)
+    require("github.repository == 'leehack/llamadart-native'" in job
+            and "github.ref == 'refs/heads/main'" in job,
+            "prepared publication must run only in owner main", errors)
+    require(not direct_dispatch_input_expressions(workflow),
+            "prepared publication inputs must pass through quoted environment arguments", errors)
+    require(len(blocks) == 1 and "python3 scripts/publish_prepared_release.py" in blocks[0]
+            and '--publish-approved "$INPUT_PUBLISH_APPROVED"' in blocks[0]
+            and "tools/build.py" not in workflow,
+            "prepared publication must preserve bytes through the reviewed guarded publisher", errors)
+    owners = (ROOT / ".github/CODEOWNERS").read_text().splitlines()
+    require(all(path + " @leehack" in owners for path in (
+        "/.github/workflows/publish_prepared.yml", "/scripts/publish_prepared_release.py",
+        "/scripts/verify_release_provenance.py", "/tests/test_publish_prepared.py")),
+        "prepared publication source and workflow require explicit owner coverage", errors)
+    require("contents: write" in job and "actions: read" in job
+            and "persist-credentials: true" in job,
+            "only the trusted publication job may create the immutable transaction", errors)
+
+
 def main() -> int:
     errors: list[str] = []
     verify_workflow_contract(errors)
+    verify_prepared_publication_contract(errors)
     verify_documentation_contract(errors)
     verify_manifest_contract(errors)
     if errors:

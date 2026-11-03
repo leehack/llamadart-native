@@ -1,0 +1,100 @@
+name: Publish Qualified Native Preparation
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: 'Successful native_release.yml preparation run ID'
+        required: true
+        type: string
+      artifact_id:
+        description: 'Qualified release-publication artifact ID'
+        required: true
+        type: string
+      artifact_sha256:
+        description: 'Qualified raw artifact ZIP SHA256'
+        required: true
+        type: string
+      workflow_head_sha:
+        description: 'Original preparation workflow full head SHA'
+        required: true
+        type: string
+      native_commit:
+        description: 'Exact native source commit in the prepared bundle'
+        required: true
+        type: string
+      upstream_ref:
+        description: 'Exact original llama.cpp ref'
+        required: true
+        type: string
+      upstream_commit:
+        description: 'Exact original llama.cpp full commit SHA'
+        required: true
+        type: string
+      native_release_tag:
+        description: 'Exact qualified native release tag'
+        required: true
+        type: string
+      correlation_id:
+        description: 'Original preparation correlation ID'
+        required: true
+        type: string
+      publish_approved:
+        description: 'Publication explicitly authorized after qualification; false validates only'
+        required: true
+        default: false
+        type: boolean
+
+concurrency:
+  group: native-release-main
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  publish-prepared:
+    if: ${{ github.repository == 'leehack/llamadart-native' && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: true
+      - name: Verify original preparation and publish only approved bytes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_RUN_ID: ${{ inputs.run_id }}
+          INPUT_ARTIFACT_ID: ${{ inputs.artifact_id }}
+          INPUT_ARTIFACT_SHA256: ${{ inputs.artifact_sha256 }}
+          INPUT_WORKFLOW_HEAD_SHA: ${{ inputs.workflow_head_sha }}
+          INPUT_NATIVE_COMMIT: ${{ inputs.native_commit }}
+          INPUT_UPSTREAM_REF: ${{ inputs.upstream_ref }}
+          INPUT_UPSTREAM_COMMIT: ${{ inputs.upstream_commit }}
+          INPUT_NATIVE_RELEASE_TAG: ${{ inputs.native_release_tag }}
+          INPUT_CORRELATION_ID: ${{ inputs.correlation_id }}
+          INPUT_PUBLISH_APPROVED: ${{ inputs.publish_approved }}
+        run: |
+          python3 scripts/publish_prepared_release.py \
+            --run-id "$INPUT_RUN_ID" \
+            --artifact-id "$INPUT_ARTIFACT_ID" \
+            --artifact-sha256 "$INPUT_ARTIFACT_SHA256" \
+            --workflow-head-sha "$INPUT_WORKFLOW_HEAD_SHA" \
+            --native-commit "$INPUT_NATIVE_COMMIT" \
+            --upstream-ref "$INPUT_UPSTREAM_REF" \
+            --upstream-commit "$INPUT_UPSTREAM_COMMIT" \
+            --native-release-tag "$INPUT_NATIVE_RELEASE_TAG" \
+            --correlation-id "$INPUT_CORRELATION_ID" \
+            --publish-approved "$INPUT_PUBLISH_APPROVED" \
+            --directory "$RUNNER_TEMP/verified-preparation"
+      - name: Retain publication executor and original build provenance
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: prepared-publication-result-${{ github.run_id }}
+          path: ${{ runner.temp }}/verified-preparation/prepared-publication-report.json
+          if-no-files-found: ignore

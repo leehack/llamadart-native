@@ -170,6 +170,55 @@ This also applies when failure occurs immediately after the tag push: an orphan
 tag resumes only when its annotated transaction marker matches the same run.
 Unmarked tags and different transaction markers are ambiguous and fail closed.
 
+### Publishing a qualified preparation without rebuilding
+
+A preparation dispatched with `publish_release=false` cannot change its original
+inputs on rerun. Once its exact bytes are qualified, dispatch
+`publish_prepared.yml` from owner `main` with these original values:
+
+- `run_id`, `artifact_id` and the raw publication artifact ZIP `artifact_sha256`;
+- `workflow_head_sha`, `native_commit`, `upstream_ref`, `upstream_commit`;
+- `native_release_tag`, `correlation_id`, and explicit `publish_approved`.
+
+The default `publish_approved=false` validates without a release/tag mutation.
+Set it to `true` only after publication is authorized and the exact artifact
+qualification is complete. Repository/ref restrictions, a successful same-owner
+main `native_release.yml` dispatch, every current build/OS-floor/package/smoke
+job, producer timestamps and artifact API digests are checked before publication.
+Failed, incomplete, foreign, fork, unexpected-skip or incomplete-matrix runs are
+refused. The immutable publication ZIP must match the supplied digest; only its
+expected regular files are extracted. The imported source bundle must name the
+exact native commit and upstream gitlink. Every asset and checksum is rechecked,
+and the reconstructed preparation contract must equal the GitHub-produced
+same-run `native-release-result` artifact. Unknown source-result schemas or
+changed gate layouts fail closed until the maintained contract is reviewed.
+
+Both native release entrypoints hold the same workflow-level
+`native-release-main` concurrency group with `cancel-in-progress: false`.
+Serialization spans history admission, building or prepared-byte verification,
+and final publication across tags and refs. The literal group also matches
+historical main-run retries. Nonpublishing preparations share this conservative
+serialization; the owner keeps one active native release transaction at a time.
+
+Immediately before publication, the job reads every current remote tag and
+release page and applies the maintained `validate_history` ordering and wrapper
+lineage policy. A newer stable release/rebuild, missing earlier wrapper lineage,
+or failed/incomplete history read blocks a new publication. An exact marked
+tag-only or partial-draft transaction may resume only while current history
+still permits it. A fully published exact transaction can be verified as a
+read-only no-op after newer releases; its report records that new publication
+would now be blocked. Unmarked/mismatched tags, release metadata and assets can
+never use that exception, and it never invokes the publisher.
+
+The dedicated publication job reuses `release_publication.py`; it does not build
+or alter an asset. Prerelease classification comes from the version policy,
+including `true` for wrapper rebuilds. The original build run/head, artifact
+digest and correlation still determine the transaction ID. Its report records
+the new publication executor separately, without relabeling the source build.
+The same draft-first collision, exact-state retry and immutable-asset rules
+above apply. Retry with the identical original values if publication stops;
+a different source transaction cannot take over partial state.
+
 Before packaging, `smoke_policy=required` downloads the same-run Linux x64 core
 artifact, loads `libllamadart.so` with only packaged sibling libraries visible,
 and calls the model-free wrapper API-version probe. A failed required smoke

@@ -1,0 +1,8 @@
+/.github/workflows/native_release.yml @leehack
+/.github/CODEOWNERS @leehack
+/README.md @leehack
+/.github/workflows/publish_prepared.yml @leehack
+/scripts/publish_prepared_release.py @leehack
+/scripts/verify_release_provenance.py @leehack
+/tests/test_publish_prepared.py @leehack
+/docs/release_version_policy.md @leehack
