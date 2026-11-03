@@ -104,6 +104,35 @@ class ReleaseSourceIdentityTests(unittest.TestCase):
         self.assertNotIn('+dirty.', identity)
         self.assertEqual(self.upstream, build_identity.revision(self.source / 'third_party/llama.cpp'))
 
+    def test_container_checkout_trust_is_scoped_to_release_git_commands(self) -> None:
+        native = self.prepare()
+        git(self.source, 'checkout', '--detach', self.owner)
+        config = Path(os.environ['GIT_CONFIG_GLOBAL'])
+        original_config = config.read_bytes()
+        with mock.patch.dict(os.environ, {'GIT_TEST_ASSUME_DIFFERENT_OWNER': '1'}):
+            before = self.run_shell('git status --porcelain')
+            self.assertNotEqual(0, before.returncode)
+            self.assertIn('dubious ownership', before.stderr)
+            result = self.checkout(native)
+            self.assertEqual(0, result.returncode, result.stderr)
+            after = self.run_shell('git status --porcelain')
+            self.assertNotEqual(0, after.returncode)
+            self.assertIn('dubious ownership', after.stderr)
+        self.assertEqual(original_config, config.read_bytes())
+        self.assertEqual(native, git(self.source, 'rev-parse', 'HEAD'))
+
+    def test_container_trust_preserves_provenance_and_dirty_checks(self) -> None:
+        native = self.prepare()
+        with mock.patch.dict(os.environ, {'GIT_TEST_ASSUME_DIFFERENT_OWNER': '1'}):
+            mismatch = self.checkout(self.owner)
+            self.assertNotEqual(0, mismatch.returncode)
+            self.assertIn('native commit mismatch', mismatch.stderr)
+            path = self.source / 'wrapper.c'
+            path.write_text('edited\n')
+            dirty = self.checkout(native)
+            self.assertNotEqual(0, dirty.returncode)
+            self.assertIn('tracked changes', dirty.stderr)
+
     def test_an_already_pinned_source_keeps_its_commit(self) -> None:
         native = self.prepare()
         self.assertEqual(native, self.prepare())

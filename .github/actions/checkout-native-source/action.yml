@@ -22,6 +22,14 @@ runs:
       run: |
         set -euo pipefail
 
+        # Container checkout ownership can differ from the build user. Trust only
+        # these checked-out repositories, only for this provenance step.
+        release_workspace="$(pwd -P)"
+        git() {
+          command git -c safe.directory="$release_workspace" \
+            -c safe.directory="$release_workspace/third_party/llama.cpp" "$@"
+        }
+
         git fetch "$RUNNER_TEMP/release-source/release-provenance.bundle" \
           refs/heads/release-provenance:refs/remotes/release-source/provenance
         actual_native="$(git rev-parse refs/remotes/release-source/provenance)"
