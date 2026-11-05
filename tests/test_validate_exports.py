@@ -43,7 +43,7 @@ READELF_IMPORT = (
 
 
 class ValidateExportsTests(unittest.TestCase):
-    def test_speculative_retirement_inventory_retains_both_legacy_queries(self):
+    def test_speculative_retirement_inventory_retains_nextn_query(self):
         retiring = {
             'llama_dart_mtp_' + suffix for suffix in (
                 'init', 'init_with_draft_model', 'free', 'get_draft_context',
@@ -52,23 +52,60 @@ class ValidateExportsTests(unittest.TestCase):
             'llama_dart_ngram_' + suffix for suffix in (
                 'simple_init', 'free', 'begin', 'process_batch', 'draft', 'accept')
         }
-        self.assertEqual(len(retiring), 14)
+        retiring.add('llama_dart_speculative_need_embd')
+        self.assertEqual(len(retiring), 15)
         required = set(validate_exports.DEFAULT_REQUIRED_SYMBOLS)
         self.assertFalse(required & retiring)
-        self.assertTrue({
-            'llama_dart_speculative_need_embd',
-            'llama_dart_speculative_need_embd_nextn',
-        } <= required)
+        self.assertEqual(len(validate_exports.DEFAULT_REQUIRED_SYMBOLS), 92)
+        self.assertEqual(len(required), 92)
+        self.assertIn('llama_dart_speculative_need_embd_nextn', required)
+        self.assertEqual(len(validate_exports.RETIRED_SPECULATIVE_SYMBOLS), 15)
         self.assertEqual(set(validate_exports.RETIRED_SPECULATIVE_SYMBOLS), retiring)
 
     @unittest.skipIf(sys.platform == 'win32', 'the stand-in nm is a shell script')
     def test_retired_speculative_export_is_rejected(self):
-        for symbol in ('llama_dart_mtp_init', 'llama_dart_ngram_accept'):
+        for symbol in ('llama_dart_mtp_init', 'llama_dart_ngram_accept',
+                       'llama_dart_speculative_need_embd'):
             with self.subTest(symbol=symbol):
                 result = self.run_tool(NM_OUTPUT + f'0000000000005000 T _{symbol}\n')
                 self.assertEqual(result.returncode, 1, result.stderr)
                 self.assertIn('Retired speculative exports', result.stderr)
                 self.assertIn(symbol, result.stderr)
+
+    def validate_synthetic_exports(self, symbols):
+        listing = ''.join(f'0000000000005000 T _{symbol}\n'
+                          for symbol in symbols)
+        with patch.object(sys, 'argv', ['validate_exports.py', '--format', 'nm',
+                                        '--tool', 'synthetic-nm',
+                                        'synthetic.dylib']), \
+                patch.object(validate_exports, 'run_tool', return_value=listing), \
+                patch('sys.stderr') as stderr:
+            result = validate_exports.main()
+        diagnostics = ''.join(call.args[0] for call in stderr.write.call_args_list)
+        return result, diagnostics
+
+    def test_full_surviving_export_inventory_is_accepted(self):
+        result, diagnostics = self.validate_synthetic_exports(
+            validate_exports.DEFAULT_REQUIRED_SYMBOLS)
+        self.assertEqual(result, 0, diagnostics)
+        self.assertIn('Validated 92 required export(s)', diagnostics)
+
+    def test_retired_embedding_query_fails_with_all_required_exports(self):
+        result, diagnostics = self.validate_synthetic_exports([
+            *validate_exports.DEFAULT_REQUIRED_SYMBOLS,
+            'llama_dart_speculative_need_embd',
+        ])
+        self.assertEqual(result, 1, diagnostics)
+        self.assertIn('Retired speculative exports', diagnostics)
+        self.assertIn('llama_dart_speculative_need_embd', diagnostics)
+
+    def test_missing_nextn_query_fails_with_other_required_exports(self):
+        result, diagnostics = self.validate_synthetic_exports(
+            symbol for symbol in validate_exports.DEFAULT_REQUIRED_SYMBOLS
+            if symbol != 'llama_dart_speculative_need_embd_nextn')
+        self.assertEqual(result, 1, diagnostics)
+        self.assertIn('Missing exports', diagnostics)
+        self.assertIn('llama_dart_speculative_need_embd_nextn', diagnostics)
 
     def test_readelf_inspects_only_the_dynamic_symbol_table(self):
         with tempfile.TemporaryDirectory() as temp:

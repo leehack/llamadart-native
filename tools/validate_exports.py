@@ -98,7 +98,6 @@ DEFAULT_REQUIRED_SYMBOLS = [
     "llama_dart_speculative_init",
     "llama_dart_speculative_free",
     "llama_dart_speculative_get_draft_context",
-    "llama_dart_speculative_need_embd",
     "llama_dart_speculative_need_embd_nextn",
     "llama_dart_speculative_begin",
     "llama_dart_speculative_process_batch",
@@ -108,8 +107,8 @@ DEFAULT_REQUIRED_SYMBOLS = [
 ]
 
 
-# Obsolete families must not survive a partial consolidation. Both generic
-# embedding queries remain required for older Dart consumers.
+# Obsolete families and the constant-false embedding query must not survive
+# a partial consolidation. The meaningful next-token query remains required.
 RETIRED_SPECULATIVE_SYMBOLS = [
     "llama_dart_mtp_init",
     "llama_dart_mtp_init_with_draft_model",
@@ -125,6 +124,7 @@ RETIRED_SPECULATIVE_SYMBOLS = [
     "llama_dart_ngram_process_batch",
     "llama_dart_ngram_draft",
     "llama_dart_ngram_accept",
+    "llama_dart_speculative_need_embd",
 ]
 
 

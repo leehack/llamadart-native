@@ -250,7 +250,8 @@ LLAMADART_API void llama_dart_set_log_level(int level);
 // llama_dart_last_error, llama_dart_clear_last_error,
 // llama_dart_set_log_level, the
 // llama_dart_exit_ functions other than llama_dart_exit_track and
-// llama_dart_exit_free, the draft context and need_embd getters,
+// llama_dart_exit_free, the draft context getter and
+// llama_dart_speculative_need_embd_nextn,
 // llama_dart_tts_eval_callback, llama_dart_mtmd_eval_callback,
 // llama_dart_cancel_flag_abort_callback, the llama_dart_vulkan_ functions,
 // which report through their own status, and the llama_dart_tts_ functions
@@ -1026,11 +1027,6 @@ LLAMADART_API void llama_dart_speculative_free(
     struct llama_dart_speculative * speculative);
 
 LLAMADART_API struct llama_context * llama_dart_speculative_get_draft_context(
-    struct llama_dart_speculative * speculative);
-
-// Legacy ABI query. Current upstream speculative implementations configure
-// their required target outputs during initialization.
-LLAMADART_API bool llama_dart_speculative_need_embd(
     struct llama_dart_speculative * speculative);
 
 // Preserves the historical true result for MTP sessions. Current upstream

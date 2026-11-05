@@ -283,8 +283,11 @@ reclamation when a kill arrives during model, context or projector creation.
 It shares the exit registry and retains the existing ABI.
 
 The [generic speculative API](docs/speculative_api_consolidation.md) replaces
-the fourteen MTP/n-gram family exports while retaining both embedding query
-shims for older Dart consumers.
+the fourteen MTP/n-gram family exports. The
+[v0.8.0-3 wrapper rebuild](docs/v080_3_wrapper_rebuild.md) also removes the
+constant-false `llama_dart_speculative_need_embd` query and retains
+`llama_dart_speculative_need_embd_nextn` for its MTP answer. Older consumers
+keep their pinned artifacts; incompatible library overrides require migration.
 
 Generic MTP initialization requires empty target memory and checks rollback
 support before accepting the session. See [the MTP rollback contract and local
