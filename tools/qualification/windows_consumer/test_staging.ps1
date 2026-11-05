@@ -1,3 +1,4 @@
+param([switch]$InjectUnexpectedFailure)
 $ErrorActionPreference='Stop'
 $PSNativeCommandUseErrorActionPreference=$false
 $python=(Get-Command python).Source
@@ -74,7 +75,10 @@ with tarfile.open(root / 'runtime.tar.gz', 'w:gz') as archive:
   ExpectFailure { Download 'bad-hash' $asset } 'download digest differs'
   $asset.sha256=Hash $asset.url
   ExpectFailure { Download 'bad-length' $asset } 'download length differs'
+  if($InjectUnexpectedFailure){throw 'injected unexpected staging assertion failure'}
   Write-Output 'Synthetic production download/extraction staging checks passed'
 } finally {
   if(Test-Path -LiteralPath $scratch){Remove-Item -LiteralPath $scratch -Recurse -Force}
 }
+# Expected extraction refusals leave a nonzero native status; all checks and cleanup passed.
+exit 0
