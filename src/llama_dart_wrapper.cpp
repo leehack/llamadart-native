@@ -2797,12 +2797,6 @@ llama_dart_speculative_get_draft_context(
   return speculative->ctx_dft;
 }
 
-LLAMADART_API bool
-llama_dart_speculative_need_embd(struct llama_dart_speculative *speculative) {
-  return speculative != nullptr &&
-         speculative->embedding_requirements.need_embd;
-}
-
 LLAMADART_API bool llama_dart_speculative_need_embd_nextn(
     struct llama_dart_speculative *speculative) {
   return speculative != nullptr &&

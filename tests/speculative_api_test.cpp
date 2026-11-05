@@ -55,18 +55,20 @@ static void test_draft_moe_cache() {
   assert(draft.n_batch == 512 && draft.n_ubatch == 128);
 }
 
-static void expect_requirements(common_speculative_type type, bool need_embd,
+static void expect_requirements(common_speculative_type type,
                                 bool need_embd_nextn) {
   const auto requirements =
       llama_dart_speculative_embedding_requirements_for({type});
-  assert(requirements.need_embd == need_embd);
   assert(requirements.need_embd_nextn == need_embd_nextn);
 }
 
-static void test_legacy_query_exports() {
+static void test_nextn_query_export() {
   for (const auto types : {
            std::vector<common_speculative_type>{COMMON_SPECULATIVE_TYPE_DRAFT_SIMPLE},
            std::vector<common_speculative_type>{COMMON_SPECULATIVE_TYPE_NGRAM_SIMPLE},
+           std::vector<common_speculative_type>{COMMON_SPECULATIVE_TYPE_DRAFT_EAGLE3},
+           std::vector<common_speculative_type>{COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH},
+           std::vector<common_speculative_type>{COMMON_SPECULATIVE_TYPE_DRAFT_DSPARK},
            std::vector<common_speculative_type>{COMMON_SPECULATIVE_TYPE_DRAFT_MTP},
            std::vector<common_speculative_type>{COMMON_SPECULATIVE_TYPE_DRAFT_MTP,
                                                 COMMON_SPECULATIVE_TYPE_NGRAM_MOD},
@@ -74,7 +76,6 @@ static void test_legacy_query_exports() {
     auto *session = new llama_dart_speculative();
     session->embedding_requirements =
         llama_dart_speculative_embedding_requirements_for(types);
-    assert(!llama_dart_speculative_need_embd(session));
     assert(llama_dart_speculative_need_embd_nextn(session) ==
            session->embedding_requirements.need_embd_nextn);
     llama_dart_speculative_free(session);
@@ -575,21 +576,19 @@ int main(int argc, char **argv) {
     assert(argc == 1);
   }
   test_draft_moe_cache();
-  test_legacy_query_exports();
-  assert(!llama_dart_speculative_need_embd(nullptr));
+  test_nextn_query_export();
   assert(!llama_dart_speculative_need_embd_nextn(nullptr));
 
-  expect_requirements(COMMON_SPECULATIVE_TYPE_DRAFT_SIMPLE, false, false);
-  expect_requirements(COMMON_SPECULATIVE_TYPE_DRAFT_EAGLE3, false, false);
-  expect_requirements(COMMON_SPECULATIVE_TYPE_DRAFT_MTP, false, true);
-  expect_requirements(COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH, false, false);
-  expect_requirements(COMMON_SPECULATIVE_TYPE_DRAFT_DSPARK, false, false);
+  expect_requirements(COMMON_SPECULATIVE_TYPE_DRAFT_SIMPLE, false);
+  expect_requirements(COMMON_SPECULATIVE_TYPE_DRAFT_EAGLE3, false);
+  expect_requirements(COMMON_SPECULATIVE_TYPE_DRAFT_MTP, true);
+  expect_requirements(COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH, false);
+  expect_requirements(COMMON_SPECULATIVE_TYPE_DRAFT_DSPARK, false);
 
   const auto combined = llama_dart_speculative_embedding_requirements_for({
       COMMON_SPECULATIVE_TYPE_DRAFT_MTP,
       COMMON_SPECULATIVE_TYPE_NGRAM_MOD,
   });
-  assert(!combined.need_embd);
   assert(combined.need_embd_nextn);
 
   expect_draft_output_limits({COMMON_SPECULATIVE_TYPE_DRAFT_SIMPLE}, 7, true, 1,

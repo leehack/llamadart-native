@@ -190,7 +190,6 @@ static void test_mtp_model(const char *path, const char *draft_path) {
       model, draft_model, context, params, &spec_params);
   assert(session != nullptr);
   assert(llama_dart_speculative_get_draft_context(session) != nullptr);
-  assert(!llama_dart_speculative_need_embd(session));
   assert(llama_dart_speculative_need_embd_nextn(session));
   assert(llama_dart_exit_tracked_count() == 4);
   llama_dart_speculative_free(session);

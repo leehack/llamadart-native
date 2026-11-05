@@ -184,12 +184,11 @@ inline bool llama_dart_speculative_process_compat(
 }
 
 struct llama_dart_speculative_embedding_requirements {
-  bool need_embd = false;
   bool need_embd_nextn = false;
 };
 
-// Preserve the historical libllamadart answers after upstream removed its
-// common_speculative_need_embd* queries. Upstream speculative implementations
+// Preserve the historical next-token embedding query after upstream removed
+// common_speculative_need_embd_nextn. Upstream speculative implementations
 // now enable their required target outputs during initialization.
 inline llama_dart_speculative_embedding_requirements
 llama_dart_speculative_embedding_requirements_for(
