@@ -6,8 +6,9 @@ $python=(Get-Command python).Source
 $verify=Join-Path $H 'verify_evidence.py'
 $spec=Get-Content (Join-Path $H 'inputs.json') -Raw | ConvertFrom-Json
 $stage=Join-Path $Scratch 'stage';$out=Join-Path $Scratch 'out'
+$downloads=Join-Path $stage 'downloads'
 if(Test-Path -LiteralPath $Scratch){throw 'fresh scratch required; evidence must not be overwritten'}
-New-Item -ItemType Directory $stage,$out | Out-Null
+New-Item -ItemType Directory $stage,$out,$downloads | Out-Null
 $cases=@();$childrenExited=$true;$completed=$false;$failure=$null
 function Hash([string]$Path){(Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()}
 function SaveJson([string]$Path,$Value){$Value | ConvertTo-Json -Depth 40 | Set-Content -LiteralPath $Path -Encoding utf8}
@@ -43,7 +44,7 @@ function Must([string]$Name,[string]$Exe,[string[]]$Arguments,[string]$Cwd,[int]
   if($row.exitCode -ne 0 -or $row.timedOut -or -not $row.childExited){throw "child failed: $Name"}
 }
 function Download([string]$Name,$Asset){
-  $target=Join-Path $stage $Name
+  $target=Join-Path $downloads $Name
   if(Test-Path $target){throw 'download target already exists'}
   Must "download-$Name" "$env:WINDIR/System32/curl.exe" @('-fsSL','--max-time','900','--output',$target,$Asset.url) $stage 910
   if((Hash $target) -cne $Asset.sha256){throw "download digest differs: $Name"}

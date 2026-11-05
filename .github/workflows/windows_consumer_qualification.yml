@@ -71,6 +71,9 @@ jobs:
           if($errors.Count){$errors | Format-List;throw 'PowerShell syntax errors'}
       - name: Test synthetic archive, provenance and consumer oracles
         run: python -B -m unittest discover -s tests -p test_windows_consumer_qualification.py
+      - name: Test production download and extraction staging with synthetic archives
+        shell: pwsh
+        run: ./tools/qualification/windows_consumer/test_staging.ps1
 
   windows-consumer:
     needs: source-check
