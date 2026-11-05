@@ -6,3 +6,4 @@
 /scripts/verify_release_provenance.py @leehack
 /tests/test_publish_prepared.py @leehack
 /docs/release_version_policy.md @leehack
+/docs/v080_3_wrapper_rebuild.md @leehack
