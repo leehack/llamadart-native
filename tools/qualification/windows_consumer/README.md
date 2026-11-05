@@ -42,8 +42,11 @@ loader refusal. Actual loaded providers are checked separately.
 
 ## Execution and evidence
 
-The workflow has a model-free PR source-check job: PowerShell AST parsing and
-synthetic Python tests. Its real qualification job is restricted to a manual
+The workflow has a model-free PR source-check job: PowerShell AST parsing,
+synthetic Python tests, and a no-network PowerShell staging regression using
+the production download function and safe extractor. Download archives stay
+under `stage/downloads`, separate from their fresh extraction directories.
+Its real qualification job is restricted to a manual
 owner/main dispatch and an exact expected executor SHA. It has only
 `contents:read` and `actions:read`; its normal Actions token reads this owner's
 own exact publication artifact. No publication/provider credentials are used.

@@ -47,6 +47,31 @@ class ArchiveSafety(unittest.TestCase):
         self.assertEqual(rows, v.manifest(self.root / 'output'))
         self.assertEqual(rows[0]['relativePath'], 'runtime/llama.dll')
 
+    def test_extensionless_downloads_extract_to_separate_sdk_and_runtime_roots(self):
+        downloads = self.root / 'downloads'
+        downloads.mkdir()
+        sdk = self.zipped([
+            ('flutter/bin/cache/dart-sdk/bin/dart.exe', stat.S_IFREG),
+            ('flutter/unselected.txt', stat.S_IFREG),
+        ], 'sdk-fixture.zip')
+        sdk = sdk.rename(downloads / 'sdk')
+        runtime = self.tarred([('./llamadart.dll', tarfile.REGTYPE)])
+        runtime = runtime.rename(downloads / 'old-runtime')
+        for archive, prefix, member in (
+            (sdk, 'flutter/bin/cache/dart-sdk/', 'flutter/bin/cache/dart-sdk/bin/dart.exe'),
+            (runtime, None, 'llamadart.dll'),
+        ):
+            with self.subTest(archive=archive.name):
+                original = archive.read_bytes()
+                output = self.root / archive.name
+                rows = v.extract(archive, output, prefix)
+                self.assertEqual([member], [row['relativePath'] for row in rows])
+                self.assertEqual(rows, v.manifest(output))
+                for refused in (output, archive):
+                    with self.assertRaisesRegex(v.ContractError, 'fresh extraction directory required'):
+                        v.extract(archive, refused, prefix)
+                self.assertEqual(original, archive.read_bytes())
+
     def test_bad_paths_types_and_case_collisions_fail_before_extraction(self):
         cases = [[(name, stat.S_IFREG)] for name in (
             '../escape', '/absolute', 'C:/escape', r'runtime\escape',
