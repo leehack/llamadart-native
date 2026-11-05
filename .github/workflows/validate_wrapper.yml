@@ -218,7 +218,9 @@ jobs:
           git -C third_party/llama.cpp checkout --detach "$LLAMADART_QUALIFICATION_SHA"
           test "$(git -C third_party/llama.cpp rev-parse HEAD)" = "$LLAMADART_QUALIFICATION_SHA"
       - name: Install cross compiler and CPU emulator
-        run: sudo apt-get update && sudo apt-get install -y ninja-build gcc-aarch64-linux-gnu g++-aarch64-linux-gnu qemu-user
+        run: |
+          sudo python3 tools/prioritize_ubuntu_archive.py
+          sudo apt-get update && sudo apt-get install -y ninja-build gcc-aarch64-linux-gnu g++-aarch64-linux-gnu qemu-user
       - name: Build the real baseline CPU and dispatch test
         run: >-
           cmake -S . -B build/kleidiai-dispatch -G Ninja
@@ -419,6 +421,9 @@ jobs:
           test "$(git -C third_party/llama.cpp rev-parse HEAD)" = "$LLAMADART_QUALIFICATION_SHA"
       - name: Install Linux build and emulation dependencies
         run: |
+          if [ "${{ matrix.arch }}" = "arm64" ]; then
+            sudo python3 tools/prioritize_ubuntu_archive.py
+          fi
           sudo apt-get update
           sudo apt-get install -y ninja-build
           if [ "${{ matrix.arch }}" = "x64" ] && [ "${{ matrix.upstream }}" = "pinned" ]; then
