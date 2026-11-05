@@ -88,8 +88,10 @@ def extract(archive, output, prefix=None):
         entries = handle.infolist() if zipped else handle.getmembers()
         require(0 < len(entries) <= MAX_MEMBERS, 'archive member count exceeds limit')
         for member in entries:
-            raw = member.filename if zipped else member.name
+            raw = member.orig_filename if zipped else member.name
             name = canonical(raw.rstrip('/') if raw.endswith('/') else raw)
+            if zipped:
+                require(member.filename == raw, 'ZIP member name was normalized from its raw header')
             require(name.casefold() not in seen, 'case-insensitive duplicate archive member')
             seen.add(name.casefold())
             directory = member.is_dir() if zipped else member.isdir()

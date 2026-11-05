@@ -25,13 +25,20 @@ class ArchiveSafety(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name).resolve()
 
-    def zipped(self, entries):
-        archive = self.root / 'input.zip'
+    def zipped(self, entries, archive_name='input.zip'):
+        archive = self.root / archive_name
         with zipfile.ZipFile(archive, 'w') as stream:
             for name, mode in entries:
                 member = zipfile.ZipInfo(name)
+                # ZipInfo normalizes backslashes on Windows and truncates NUL.
+                # Preserve the adversarial header instead of writing a safe alias.
+                member.filename = name
+                member.orig_filename = name
                 member.external_attr = mode << 16
                 stream.writestr(member, b'synthetic fixture')
+        with zipfile.ZipFile(archive) as stream:
+            self.assertEqual([member.orig_filename for member in stream.infolist()],
+                             [name for name, _ in entries])
         return archive
 
     def test_regular_inventory_is_extracted_and_bound(self):
@@ -43,17 +50,33 @@ class ArchiveSafety(unittest.TestCase):
     def test_bad_paths_types_and_case_collisions_fail_before_extraction(self):
         cases = [[(name, stat.S_IFREG)] for name in (
             '../escape', '/absolute', 'C:/escape', r'runtime\escape',
-            './alias', 'a//b', 'runtime/NUL.dll', 'runtime/a. ',
+            './alias', 'a//b', 'runtime/NUL.dll', 'runtime/a. ', 'runtime/hidden\x00suffix',
         )]
         cases += [[('runtime/x', stat.S_IFLNK)],
                   [('runtime/', stat.S_IFLNK)],
                   [('runtime/X.dll', stat.S_IFREG), ('runtime/x.dll', stat.S_IFREG)]]
-        for entries in cases:
+        for index, entries in enumerate(cases):
             with self.subTest(entries=entries):
-                archive = self.zipped(entries)
+                archive = self.zipped(entries, f'input-{index}.zip')
+                output = self.root / f'output-{index}'
                 with self.assertRaises(v.ContractError):
-                    v.extract(archive, self.root / 'output')
-                self.assertFalse((self.root / 'output').exists())
+                    v.extract(archive, output)
+                self.assertFalse(output.exists())
+
+    def test_raw_backslash_header_is_rejected_when_windows_zip_reader_normalizes_it(self):
+        with patch.object(zipfile.os, 'sep', '\\'):
+            archive = self.zipped([(r'runtime\escape', stat.S_IFREG)])
+            with zipfile.ZipFile(archive) as stream:
+                member = stream.infolist()[0]
+                self.assertEqual(member.orig_filename, r'runtime\escape')
+                self.assertEqual(member.filename, 'runtime/escape')
+            output = self.root / 'windows-bad-output'
+            with self.assertRaisesRegex(v.ContractError, 'noncanonical'):
+                v.extract(archive, output)
+            self.assertFalse(output.exists())
+            safe = self.zipped([('runtime/regular.dll', stat.S_IFREG)], 'safe.zip')
+            rows = v.extract(safe, self.root / 'windows-safe-output')
+            self.assertEqual(rows[0]['relativePath'], 'runtime/regular.dll')
 
     def test_tar_hardlink_is_rejected(self):
         archive = self.root / 'input.tar.gz'
