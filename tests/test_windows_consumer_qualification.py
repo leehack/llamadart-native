@@ -88,6 +88,51 @@ class ArchiveSafety(unittest.TestCase):
         with self.assertRaisesRegex(v.ContractError, 'nonregular'):
             v.extract(archive, self.root / 'output')
 
+    def tarred(self, entries, archive_name='input.tar.gz'):
+        archive = self.root / archive_name
+        with tarfile.open(archive, 'w:gz') as stream:
+            for name, kind in entries:
+                member = tarfile.TarInfo(name)
+                member.type = kind
+                data = b'synthetic producer fixture' if kind == tarfile.REGTYPE else b''
+                member.size = len(data)
+                if kind in (tarfile.LNKTYPE, tarfile.SYMTYPE):
+                    member.linkname = 'llamadart.dll'
+                stream.addfile(member, io.BytesIO(data))
+        return archive
+
+    def test_producer_tar_dot_root_and_single_dot_prefix_are_extracted(self):
+        for index, root in enumerate(('.', './')):
+            with self.subTest(root=root):
+                archive = self.tarred([(root, tarfile.DIRTYPE),
+                    ('./ggml.dll', tarfile.REGTYPE), ('./llamadart.dll', tarfile.REGTYPE),
+                    ('./include/', tarfile.DIRTYPE), ('./include/header.h', tarfile.REGTYPE)],
+                    f'producer-{index}.tar.gz')
+                output = self.root / f'producer-{index}'
+                rows = v.extract(archive, output)
+                self.assertEqual([row['relativePath'] for row in rows],
+                                 ['ggml.dll', 'llamadart.dll', 'include/header.h'])
+                self.assertEqual(sorted(rows, key=lambda row: row['relativePath']), v.manifest(output))
+
+    def test_tar_normalization_preserves_strict_path_type_and_alias_guards(self):
+        cases = [[(name, tarfile.REGTYPE)] for name in (
+            '.', './', './../escape', '././escape', './nested/./escape',
+            './nested/../escape', './nested//escape', '/absolute', './C:/escape',
+            r'./runtime\escape', './runtime/NUL.dll', './runtime/a. ',
+        )]
+        cases += [[('./alias', kind)] for kind in (tarfile.LNKTYPE, tarfile.SYMTYPE, tarfile.FIFOTYPE)]
+        cases += [[(name, tarfile.DIRTYPE)] for name in ('././', './nested/./')]
+        cases += [[('llamadart.dll', tarfile.REGTYPE), ('./llamadart.dll', tarfile.REGTYPE)],
+                  [('./LLAMADART.dll', tarfile.REGTYPE), ('llamadart.dll', tarfile.REGTYPE)],
+                  [('./runtime', tarfile.DIRTYPE), ('runtime', tarfile.DIRTYPE)]]
+        for index, entries in enumerate(cases):
+            with self.subTest(entries=entries):
+                archive = self.tarred(entries, f'bad-tar-{index}.tar.gz')
+                output = self.root / f'bad-tar-{index}'
+                with self.assertRaises(v.ContractError):
+                    v.extract(archive, output)
+                self.assertFalse(output.exists())
+
     def test_expanded_size_guard_runs_before_extraction(self):
         archive = self.zipped([('runtime/x', stat.S_IFREG)])
         with patch.object(v, 'MAX_EXPANDED', 1):

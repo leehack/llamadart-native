@@ -89,12 +89,18 @@ def extract(archive, output, prefix=None):
         require(0 < len(entries) <= MAX_MEMBERS, 'archive member count exceeds limit')
         for member in entries:
             raw = member.orig_filename if zipped else member.name
+            directory = member.is_dir() if zipped else member.isdir()
+            # native_release packages TARs with `tar -C bundle .`.
+            if not zipped:
+                if directory and raw in ('.', './'):
+                    continue
+                if raw.startswith('./'):
+                    raw = raw[2:]
             name = canonical(raw.rstrip('/') if raw.endswith('/') else raw)
             if zipped:
                 require(member.filename == raw, 'ZIP member name was normalized from its raw header')
             require(name.casefold() not in seen, 'case-insensitive duplicate archive member')
             seen.add(name.casefold())
-            directory = member.is_dir() if zipped else member.isdir()
             regular = stat.S_IFMT(member.external_attr >> 16) in (0, stat.S_IFREG) if zipped else member.isfile()
             if directory:
                 if zipped:
