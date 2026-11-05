@@ -148,14 +148,15 @@ try {
     Remove-Item Env:LLAMADART_NATIVE_LIB_DIR,Env:LLAMADART_BACKEND_MODULE_DIR -ErrorAction SilentlyContinue
     if($aot){
       $distribution=Join-Path $Scratch "distributed-$name";$cwd=Join-Path $Scratch "empty-$name"
-      $plan=New-AotDistribution "$app/build/stock" $distribution $cwd $sourceRoots
+      $builtBundle=Join-Path $app 'build/stock/bundle'
+      $plan=New-AotDistribution $builtBundle $distribution $cwd $sourceRoots
       $env:Path=$cleanPath
       $row=InvokeChild $name "$distribution/bin/load_stock.exe" $arguments $cwd 900
       $row.cleanPath=$env:Path -ceq $cleanPath;$row.overridesAbsent=-not $env:LLAMADART_NATIVE_LIB_DIR -and -not $env:LLAMADART_BACKEND_MODULE_DIR
       $row.cwdEmpty=@(Get-ChildItem -LiteralPath $cwd -Force).Count -eq 0
       $row.distributionRoot=$distribution;$row.workingDirectory=$cwd;$row.sourceRoots=$sourceRoots
       $row.builtInventory=$plan.built.files;$row.distributionBefore=$plan.distributed.files;$row.distributionAfter=(Get-AotBundleManifest $distribution).files
-      Assert-AotManifestEqual $plan.built (Get-AotBundleManifest "$app/build/stock")
+      Assert-AotManifestEqual $plan.built (Get-AotBundleManifest $builtBundle)
       $env:Path=$buildPath
     }else{
       $row=InvokeChild $name $dart (@('run','load_stock.dart')+$arguments) $app 900
