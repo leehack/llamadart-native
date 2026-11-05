@@ -21,6 +21,10 @@ HERE = Path(__file__).resolve().parent
 MAX_EXPANDED = 8 * 1024 ** 3
 MAX_MEMBERS = 30000
 NATIVE = re.compile(r'^(?:lib)?(?:llama(?:dart)?|mtmd|ggml(?:-.*)?)(?:-windows-x64)?\.dll$', re.I)
+NGRAM_PROMPT = 'Repeat and continue this sequence exactly:\n' + '\n'.join(
+    ['alpha beta gamma delta epsilon zeta eta theta'] * 5)
+NGRAM_FIXTURE = {'strategy': 'ngram-simple', 'sizeN': 4, 'sizeM': 8, 'minHits': 1,
+                 'promptSha256': hashlib.sha256(NGRAM_PROMPT.encode()).hexdigest()}
 
 
 def require(value, message):
@@ -61,6 +65,37 @@ def no_reparse(path):
             info = node.lstat()
             require(not stat.S_ISLNK(info.st_mode) and not
                     (getattr(info, 'st_file_attributes', 0) & 0x400), 'link/reparse path rejected')
+
+
+def resolver_context(root):
+    return {'resolvedExecutablePath': str(root) + '/sdk/dart.exe',
+            'currentDirectoryPath': str(root), 'environment': {}}
+
+
+def resolver_fixture(scratch, missing=None):
+    """Plan a fresh sibling control after checking its entire resolver ancestry."""
+    scratch = Path(scratch).absolute()
+    mixed = scratch / 'stage'
+    missing = Path(missing).absolute() if missing is not None else scratch / 'resolver-missing-v2-only'
+    require(mixed.is_dir() and missing.parent == mixed.parent and missing != mixed,
+            'resolver controls must be distinct siblings')
+    require(not missing.exists() and not missing.is_symlink(), 'missing-cache control must be fresh')
+    no_reparse(missing)
+    checked = []
+    for ancestor in [missing, *missing.parents]:
+        for relative in ('.dart_tool/lib', '.dart_tool/llamadart/native_bundles',
+                         '.dart_tool/llamadart/native_bundles_v2'):
+            candidate = ancestor / relative
+            no_reparse(candidate)
+            require(not candidate.exists(), 'resolver ancestor contains native cache or code assets')
+        for directory in (ancestor, ancestor / 'sdk', ancestor / 'bin', ancestor / 'lib'):
+            no_reparse(directory)
+            if directory.is_dir():
+                require(not any(NATIVE.fullmatch(child.name) for child in directory.iterdir()),
+                        'resolver ancestor/executable context contains native decoy')
+        checked.append(str(ancestor))
+    return {'mixedRoot': str(mixed), 'missingRoot': str(missing), 'checkedAncestors': checked,
+            'contexts': {'mixed': resolver_context(mixed), 'missing': resolver_context(missing)}}
 
 
 def canonical(name):
@@ -208,6 +243,15 @@ def within(path, root):
 
 def validate_case(case, stdout, runtime):
     result, modules, registry = parse_case(stdout)
+    require(json.dumps(result.get('fixture'), sort_keys=True) == json.dumps(NGRAM_FIXTURE, sort_keys=True),
+            'reviewed ngram fixture metadata differs')
+    mixed, missing = case['cacheRoot'], case['missingCacheRoot']
+    normalized = lambda path: PurePosixPath(path.replace('\\', '/').casefold())
+    require(normalized(mixed).parent == normalized(missing).parent and
+            normalized(mixed) != normalized(missing), 'resolver controls are not distinct siblings')
+    contexts = {'mixed': resolver_context(mixed), 'missing': resolver_context(missing)}
+    require(case.get('resolverContexts') == contexts and result.get('resolverContexts') == contexts,
+            'explicit resolver executable/CWD/environment context differs')
     query = result.get('query', {})
     candidate = case['name'] not in ('old-default', 'old-aot')
     require(result.get('disposed') is True and not result.get('disposeError')
@@ -240,10 +284,20 @@ def validate_case(case, stdout, runtime):
                 'llama_dart_speculative_need_embd' in result.get('error', ''),
                 'unsupported old/candidate pairing did not show actual missing-query failure')
         return
+    namespace = ('.dart_tool/llamadart/native_bundles_v2/v0.8.0-3/windows-x64/extracted' if candidate
+                 else '.dart_tool/llamadart/native_bundles/v0.8.0-1/windows-x64/extracted')
+    expected_missing = missing + '/' + namespace if candidate else missing + '/sdk'
+    require(normalized(case['expectedCache']) == normalized(mixed + '/' + namespace) and
+            normalized(case['expectedMissingCache']) == normalized(expected_missing),
+            'cache namespace/fallback controls differ')
     require(case['exitCode'] == 0 and result.get('completed') is True and result.get('unloaded') is True,
             'supported public generation failed')
     require(result.get('maxTokens') == 128 and result.get('threads') == 2 and result.get('gpuLayers') == 0,
             'sampling/CPU execution contract differs')
+    require(all(type(result.get(key)) is int and result[key] == 128
+                for key in ('baselineEvalTokens', 'ngramEvalTokens', 'reloadEvalTokens')) and
+            type(result.get('draftAttempts')) is int and result['draftAttempts'] > 0,
+            'actual 128-token execution/attempt evidence missing')
     baseline, ngram, reloaded = (result.get(key) for key in ('baselineOutput', 'ngramOutput', 'reloadOutput'))
     require(isinstance(baseline, str) and baseline and baseline == ngram == reloaded and
             hashlib.sha256(baseline.encode()).hexdigest() == result.get('baselineSha256') and
@@ -357,12 +411,14 @@ def main():
     e = sub.add_parser('extract'); e.add_argument('archive', type=Path); e.add_argument('output', type=Path); e.add_argument('--prefix')
     m = sub.add_parser('manifest'); m.add_argument('directory', type=Path); m.add_argument('output', type=Path)
     s = sub.add_parser('seal'); s.add_argument('directory', type=Path)
+    r = sub.add_parser('resolver-fixture'); r.add_argument('scratch', type=Path); r.add_argument('output', type=Path)
     v = sub.add_parser('verify'); v.add_argument('directory', type=Path); v.add_argument('--expected', type=Path, required=True)
     args = p.parse_args(); spec = load(HERE / 'inputs.json')
     if args.command == 'intake': intake(args, spec)
     elif args.command == 'extract': extract(args.archive, args.output, args.prefix)
     elif args.command == 'manifest': write(args.output, manifest(args.directory))
     elif args.command == 'seal': seal(args.directory)
+    elif args.command == 'resolver-fixture': write(args.output, resolver_fixture(args.scratch))
     else: verify(args.directory, load(args.expected), spec)
 
 

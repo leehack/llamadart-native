@@ -174,6 +174,49 @@ class ArchiveSafety(unittest.TestCase):
                                   for name in ['X.dll', 'x.dll']])
 
 
+class ResolverFixtureTopology(unittest.TestCase):
+    def test_real_plan_keeps_mixed_caches_outside_the_missing_control_ancestry(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            scratch = Path(tmp).resolve() / 'scratch'
+            mixed = scratch / 'stage'
+            for namespace in ('native_bundles', 'native_bundles_v2'):
+                cache = mixed / '.dart_tool/llamadart' / namespace / 'fixture'
+                cache.mkdir(parents=True)
+                (cache / 'llama.dll').write_text('synthetic')
+            plan = v.resolver_fixture(scratch)
+            missing = Path(plan['missingRoot'])
+            self.assertEqual(mixed.parent, missing.parent)
+            self.assertNotIn(mixed, missing.parents)
+            self.assertEqual([str(missing), *map(str, missing.parents)], plan['checkedAncestors'])
+            self.assertEqual({}, plan['contexts']['missing']['environment'])
+            self.assertFalse(missing.exists())
+            with self.assertRaisesRegex(v.ContractError, 'siblings'):
+                v.resolver_fixture(scratch, mixed / 'missing-legacy-cache')
+
+    def test_full_ancestor_cache_and_native_decoys_are_rejected_before_creation(self):
+        for relative in ('.dart_tool/lib', '.dart_tool/llamadart/native_bundles',
+                         '.dart_tool/llamadart/native_bundles_v2', 'sdk', 'bin', 'lib', '.'):
+            with self.subTest(relative=relative), tempfile.TemporaryDirectory() as tmp:
+                ancestor = Path(tmp).resolve() / 'outer'
+                scratch = ancestor / 'scratch'
+                (scratch / 'stage').mkdir(parents=True)
+                decoy = ancestor / relative
+                decoy.mkdir(parents=True, exist_ok=True)
+                if not relative.startswith('.dart_tool'):
+                    (decoy / 'ggml-cpu.dll').write_text('synthetic')
+                with self.assertRaisesRegex(v.ContractError, 'ancestor'):
+                    v.resolver_fixture(scratch)
+                self.assertFalse((scratch / 'resolver-missing-v2-only').exists())
+
+    def test_existing_missing_tree_is_not_reused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            scratch = Path(tmp).resolve()
+            (scratch / 'stage').mkdir()
+            (scratch / 'resolver-missing-v2-only').mkdir()
+            with self.assertRaisesRegex(v.ContractError, 'fresh'):
+                v.resolver_fixture(scratch)
+
+
 def fixture(name):
     candidate = name not in ('old-default', 'old-aot')
     root = 'C:/distributed/' + name if name.endswith('-aot') else 'C:/stage/' + name
@@ -184,21 +227,31 @@ def fixture(name):
         runtime.append({'relativePath': leaf, 'bytes': 12, 'sha256': digest})
         modules.append({'modulePath': root + '/lib/' + leaf, 'bytes': 12, 'sha256': digest,
                         'imports': [], 'exports': []})
+    missing_root = 'C:/resolver-missing-v2-only'
+    namespace = ('.dart_tool/llamadart/native_bundles_v2/v0.8.0-3/windows-x64/extracted' if candidate
+                 else '.dart_tool/llamadart/native_bundles/v0.8.0-1/windows-x64/extracted')
+    expected_cache = 'C:/stage/' + namespace
+    expected_missing = missing_root + '/' + namespace if candidate else missing_root + '/sdk'
+    contexts = {'mixed': v.resolver_context('C:/stage'), 'missing': v.resolver_context(missing_root)}
     result = {'disposed': True, 'unloaded': True, 'completed': True, 'maxTokens': 128,
+              'fixture': copy.deepcopy(v.NGRAM_FIXTURE), 'draftAttempts': 4,
+              'baselineEvalTokens': 128, 'ngramEvalTokens': 128, 'reloadEvalTokens': 128,
+              'resolverContexts': copy.deepcopy(contexts),
               'threads': 2, 'gpuLayers': 0, 'fullOutputParity': True, 'reloadParity': True,
               'baselineBytes': 128, 'baselineOutput': 'alpha ' * 32, 'ngramOutput': 'alpha ' * 32,
               'reloadOutput': 'alpha ' * 32,
               'baselineSha256': v.hashlib.sha256(('alpha ' * 32).encode()).hexdigest(),
               'ngramSha256': v.hashlib.sha256(('alpha ' * 32).encode()).hexdigest(),
-              'drafted': 12, 'accepted': 8, 'cacheSelected': 'C:/stage/cache/selected',
-              'missingLegacySelected': 'C:/cache/missing',
+              'drafted': 12, 'accepted': 8, 'cacheSelected': expected_cache,
+              'missingLegacySelected': expected_missing,
               'query': {'hasLegacyQuery': not candidate, 'hasNextn': True, 'nextnNullFalse': True,
                         'probeAfterPublicOutcome': True, 'wrapperPath': modules[0]['modulePath'],
                         'wrapperSha256': runtime[0]['sha256'], 'nextnOwnerPath': modules[0]['modulePath'],
                         'nextnOwnerSha256': runtime[0]['sha256']}}
-    case = {'name': name, 'exitCode': 0, 'expectedCache': 'C:/stage/cache/selected',
-            'expectedMissingCache': 'C:/cache/missing',
-            'cacheRoot': 'C:/stage', 'workingDirectory': root}
+    case = {'name': name, 'exitCode': 0, 'expectedCache': expected_cache,
+            'expectedMissingCache': expected_missing,
+            'cacheRoot': 'C:/stage', 'missingCacheRoot': missing_root,
+            'resolverContexts': contexts, 'workingDirectory': root}
     if name == 'old-incompatible-candidate':
         case['exitCode'] = 1;result['completed'] = False
         result['error'] = 'Failed to lookup symbol llama_dart_speculative_need_embd'
@@ -231,11 +284,33 @@ class BehavioralOracle(unittest.TestCase):
         mutations = [('drafted', 0), ('accepted', 0), ('accepted', 100), ('fullOutputParity', False),
                      ('reloadParity', False), ('ngramSha256', 'b' * 64), ('disposed', False),
                      ('unloaded', False), ('threads', 4), ('maxTokens', 16), ('gpuLayers', 1),
-                     ('cacheSelected', 'C:/legacy/wrong'), ('missingLegacySelected', 'C:/v2/wrong')]
+                     ('cacheSelected', 'C:/legacy/wrong'), ('missingLegacySelected', 'C:/v2/wrong'),
+                     ('baselineEvalTokens', 127), ('ngramEvalTokens', 0), ('reloadEvalTokens', None),
+                     ('draftAttempts', 0)]
         for key, value in mutations:
             with self.subTest(key=key):
                 case, result, modules, registry, runtime = fixture('new-candidate')
                 result[key] = value
+                with self.assertRaises(v.ContractError):
+                    v.validate_case(case, log(result, modules, registry), runtime)
+
+    def test_fixture_metadata_and_resolver_context_cannot_be_substituted(self):
+        for key, value in [('strategy', 'ngram-map-k'), ('sizeN', 3), ('sizeM', 4),
+                           ('minHits', 2), ('minHits', True), ('promptSha256', 'a' * 64)]:
+            with self.subTest(key=key):
+                case, result, modules, registry, runtime = fixture('new-candidate')
+                result['fixture'][key] = value
+                with self.assertRaisesRegex(v.ContractError, 'fixture metadata'):
+                    v.validate_case(case, log(result, modules, registry), runtime)
+        for change in ('descendant', 'environment', 'executable'):
+            with self.subTest(change=change):
+                case, result, modules, registry, runtime = fixture('new-candidate')
+                if change == 'descendant':
+                    case['missingCacheRoot'] = 'C:/stage/missing-legacy-cache'
+                elif change == 'environment':
+                    result['resolverContexts']['missing']['environment'] = {'LLAMADART_NATIVE_LIB_DIR': 'C:/foreign'}
+                else:
+                    result['resolverContexts']['missing']['resolvedExecutablePath'] = 'C:/foreign/dart.exe'
                 with self.assertRaises(v.ContractError):
                     v.validate_case(case, log(result, modules, registry), runtime)
 
@@ -249,7 +324,20 @@ class BehavioralOracle(unittest.TestCase):
                 case['cacheRoot'] = 'C:/stage/mixed-cache'
                 case['expectedCache'] = case['cacheRoot'] + '/cache/selected'
                 result['cacheSelected'] = case['expectedCache']
+                case['missingCacheRoot'] = 'C:/stage/missing-only'
+                case['resolverContexts'] = {key: v.resolver_context(case[field])
+                                            for key, field in (('mixed', 'cacheRoot'), ('missing', 'missingCacheRoot'))}
+                result['resolverContexts'] = copy.deepcopy(case['resolverContexts'])
                 with self.assertRaisesRegex(v.ContractError, 'working-directory ancestor'):
+                    v.validate_case(case, log(result, modules, registry), runtime)
+
+    def test_matching_return_and_expectation_cannot_waive_the_cache_namespace(self):
+        for name in ('old-default', 'new-candidate'):
+            with self.subTest(name=name):
+                case, result, modules, registry, runtime = fixture(name)
+                case['expectedMissingCache'] = case['missingCacheRoot'] + '/foreign'
+                result['missingLegacySelected'] = case['expectedMissingCache']
+                with self.assertRaisesRegex(v.ContractError, 'namespace/fallback'):
                     v.validate_case(case, log(result, modules, registry), runtime)
 
     def test_missing_retained_export_and_unretired_query_fail(self):

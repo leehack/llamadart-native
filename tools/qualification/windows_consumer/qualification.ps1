@@ -128,7 +128,9 @@ try {
   $oldCacheArchive=Join-Path $oldCore '.dart_tool/llamadart/native_bundles/v0.8.0-1/windows-x64/llamadart-native-windows-x64-v0.8.0-1.tar.gz'
   if((Hash $oldCacheArchive) -cne $spec.assets.old_runtime.sha256){throw 'ordinary old hook did not acquire exact old archive'}
   SaveJson "$out/ordinary-old-delivery.json" @{tag='v0.8.0-1';archiveSha256=Hash $oldCacheArchive;expectedExactUrl=$spec.assets.old_runtime.url;sourcePinVerified=$true}
-  $cache=$stage;$missing=Join-Path $stage 'missing-legacy-cache'
+  Must 'plan-resolver-fixture' $python @($verify,'resolver-fixture',$Scratch,"$out/resolver-fixture.json") $H
+  $resolverFixture=Get-Content "$out/resolver-fixture.json" -Raw | ConvertFrom-Json
+  $cache=$resolverFixture.mixedRoot;$missing=$resolverFixture.missingRoot
   $legacy=Join-Path $cache '.dart_tool/llamadart/native_bundles/v0.8.0-1/windows-x64/extracted'
   $v2=Join-Path $cache '.dart_tool/llamadart/native_bundles_v2/v0.8.0-3/windows-x64/extracted'
   $missingV2=Join-Path $missing '.dart_tool/llamadart/native_bundles_v2/v0.8.0-3/windows-x64/extracted'
@@ -158,7 +160,8 @@ try {
     }else{
       $row=InvokeChild $name $dart (@('run','load_stock.dart')+$arguments) $app 900
     }
-    $row.cacheRoot=$cache;$row.expectedCache=$expectedCache;$row.expectedMissingCache=$expectedMissing
+    $row.cacheRoot=$cache;$row.missingCacheRoot=$missing;$row.resolverContexts=$resolverFixture.contexts
+    $row.expectedCache=$expectedCache;$row.expectedMissingCache=$expectedMissing
     $cases+=,$row
     if($row.timedOut -or -not $row.childExited){throw "consumer child did not finish: $name"}
     if($name -eq 'old-incompatible-candidate'){if($row.exitCode -eq 0){throw 'unsupported old/candidate pairing unexpectedly succeeded'}}

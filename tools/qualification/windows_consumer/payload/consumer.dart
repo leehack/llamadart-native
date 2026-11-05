@@ -94,10 +94,19 @@ Future<void> main(List<String> args) async {
     'disposed': false,
   };
   const prompt =
-      'Continue this exact repeating sequence without explanations: '
-      'alpha beta gamma alpha beta gamma alpha beta gamma alpha beta gamma '
-      'alpha beta gamma alpha beta gamma alpha beta gamma alpha beta gamma '
-      'alpha beta gamma alpha beta gamma alpha beta gamma alpha beta gamma';
+      'Repeat and continue this sequence exactly:\n'
+      'alpha beta gamma delta epsilon zeta eta theta\n'
+      'alpha beta gamma delta epsilon zeta eta theta\n'
+      'alpha beta gamma delta epsilon zeta eta theta\n'
+      'alpha beta gamma delta epsilon zeta eta theta\n'
+      'alpha beta gamma delta epsilon zeta eta theta';
+  result['fixture'] = {
+    'strategy': 'ngram-simple',
+    'sizeN': 4,
+    'sizeM': 8,
+    'minHits': 1,
+    'promptSha256': digest(prompt),
+  };
   const modelParams = ModelParams(
     contextSize: 2048,
     preferredBackend: GpuBackend.cpu,
@@ -128,8 +137,8 @@ Future<void> main(List<String> args) async {
           speculativeDecodingConfig: speculative
               ? const SpeculativeDecodingConfig(
                   strategy: SpeculativeDecodingStrategy.ngramSimple,
-                  ngramSizeN: 3,
-                  ngramSizeM: 4,
+                  ngramSizeN: 4,
+                  ngramSizeM: 8,
                   ngramMinHits: 1,
                 )
               : null,
@@ -139,6 +148,8 @@ Future<void> main(List<String> args) async {
   try {
     await load();
     final baseline = await generate(false);
+    final baselinePerf = await engine.getPerformanceContext();
+    result['baselineEvalTokens'] = baselinePerf?.evalTokens;
     result['baselineOutput'] = baseline;
     result['baselineSha256'] = digest(baseline);
     result['baselineBytes'] = utf8.encode(baseline).length;
@@ -150,6 +161,8 @@ Future<void> main(List<String> args) async {
     result['ngramSha256'] = digest(speculative);
     result['drafted'] = perf?.speculativeDraftTokens;
     result['accepted'] = perf?.speculativeAcceptedDraftTokens;
+    result['draftAttempts'] = perf?.speculativeDraftAttempts;
+    result['ngramEvalTokens'] = perf?.evalTokens;
     result['fullOutputParity'] = baseline == speculative;
     if (baseline.isEmpty ||
         baseline != speculative ||
@@ -162,6 +175,8 @@ Future<void> main(List<String> args) async {
     await engine.unloadModel();
     await load();
     final reloaded = await generate(false);
+    final reloadPerf = await engine.getPerformanceContext();
+    result['reloadEvalTokens'] = reloadPerf?.evalTokens;
     result['reloadOutput'] = reloaded;
     result['reloadParity'] = reloaded == baseline;
     if (result['reloadParity'] != true)
@@ -198,6 +213,14 @@ Future<void> main(List<String> args) async {
             currentDirectoryPath: root,
             environment: const {},
           );
+      result['resolverContexts'] = {
+        for (final entry in {'mixed': args[2], 'missing': args[3]}.entries)
+          entry.key: {
+            'resolvedExecutablePath': '${entry.value}/sdk/dart.exe',
+            'currentDirectoryPath': entry.value,
+            'environment': <String, String>{},
+          },
+      };
       result['cacheSelected'] = discover(args[2]);
       result['missingLegacySelected'] = discover(args[3]);
     } catch (error) {
