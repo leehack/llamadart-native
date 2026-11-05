@@ -40,6 +40,25 @@ The model-free public cache resolver also records the old missing-assets/v2-only
 case honestly. A best-effort directory result is not claimed as a typed native
 loader refusal. Actual loaded providers are checked separately.
 
+The fixed raw prompt is `Repeat and continue this sequence exactly:` followed
+by five newline-separated `alpha beta gamma delta epsilon zeta eta theta`
+lines, with no final newline. Ngram-simple uses N4/M8/minHits1. This reuses the
+accepted Mac Qwen-family fixture; it still requires an actual preflight on the
+pinned 1.5B model before another Windows campaign. The former three-word/N3
+fixture produced parity with zero drafts on Windows and did not qualify active
+speculation. Fixture metadata, prompt SHA-256, draft attempts and actual eval
+counts are retained; all supported cases require 128 tokens and positive
+drafted/accepted counts, full output parity, reload and disposal.
+
+Mixed legacy/v2 caches stay under `stage`. The missing-v2-only resolver control
+is a fresh sibling, `resolver-missing-v2-only`, under scratch. Before creating
+it, the planner checks every ancestor through the filesystem root for legacy/v2
+caches, `.dart_tool/lib` and native decoys in direct/executable/CLI locations.
+The receipt records that ancestry and the explicit synthetic executable, CWD
+and empty environment. The payload invokes the real static resolver with that
+context. Its returned path is separate evidence from actual generation's
+loaded DLL/provider hashes; the verifier preserves both sets of requirements.
+
 ## Execution and evidence
 
 The workflow has a model-free PR source-check job: PowerShell AST parsing,
