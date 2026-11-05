@@ -73,7 +73,16 @@ jobs:
         run: python -B -m unittest discover -s tests -p test_windows_consumer_qualification.py
       - name: Test production download and extraction staging with synthetic archives
         shell: pwsh
-        run: ./tools/qualification/windows_consumer/test_staging.ps1
+        run: |
+          $PSNativeCommandUseErrorActionPreference=$false
+          $test='./tools/qualification/windows_consumer/test_staging.ps1'
+          & pwsh -NoLogo -NoProfile -File $test
+          if($LASTEXITCODE -ne 0){throw 'staging regression process failed'}
+          $failure=& pwsh -NoLogo -NoProfile -File $test -InjectUnexpectedFailure 2>&1
+          if($LASTEXITCODE -eq 0 -or "$failure" -notmatch 'injected unexpected staging assertion failure'){
+            throw 'staging regression did not propagate the unexpected assertion failure'
+          }
+          $LASTEXITCODE=0
 
   windows-consumer:
     needs: source-check
