@@ -4,10 +4,11 @@ import copy
 import importlib.util
 import io
 import json
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 import stat
 import tarfile
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 import zipfile
@@ -174,45 +175,105 @@ class ArchiveSafety(unittest.TestCase):
                                   for name in ['X.dll', 'x.dll']])
 
 
+class ResolverFilesystem:
+    """Model a complete drive without inheriting the host's root/bin links."""
+    def __init__(self, path_type=PureWindowsPath):
+        self.nodes = {}
+        nodes = self.nodes
+
+        class FixturePath(path_type):
+            def absolute(self):
+                assert self.is_absolute()
+                return self
+
+            def exists(self):
+                return self in nodes
+
+            def is_symlink(self):
+                return self.exists() and stat.S_ISLNK(self.lstat().st_mode)
+
+            def is_dir(self):
+                return self.exists() and stat.S_ISDIR(self.lstat().st_mode)
+
+            def lstat(self):
+                if not self.exists():
+                    raise FileNotFoundError(str(self))
+                return nodes[self]
+
+            def iterdir(self):
+                return iter(node for node in nodes if node != self and node.parent == self)
+
+        self.path = FixturePath
+
+    def add(self, name, mode=stat.S_IFDIR, attributes=0):
+        path = self.path(name)
+        for node in reversed([path, *path.parents]):
+            self.nodes.setdefault(node, SimpleNamespace(st_mode=stat.S_IFDIR, st_file_attributes=0))
+        self.nodes[path] = SimpleNamespace(st_mode=mode, st_file_attributes=attributes)
+        return path
+
+
 class ResolverFixtureTopology(unittest.TestCase):
     def test_real_plan_keeps_mixed_caches_outside_the_missing_control_ancestry(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            scratch = Path(tmp).resolve() / 'scratch'
-            mixed = scratch / 'stage'
-            for namespace in ('native_bundles', 'native_bundles_v2'):
-                cache = mixed / '.dart_tool/llamadart' / namespace / 'fixture'
-                cache.mkdir(parents=True)
-                (cache / 'llama.dll').write_text('synthetic')
+        tree = ResolverFilesystem()
+        scratch = tree.path('C:/outer/scratch')
+        mixed = scratch / 'stage'
+        for namespace in ('native_bundles', 'native_bundles_v2'):
+            tree.add(mixed / '.dart_tool/llamadart' / namespace / 'fixture/llama.dll', stat.S_IFREG)
+        with patch.object(v, 'Path', tree.path):
             plan = v.resolver_fixture(scratch)
-            missing = Path(plan['missingRoot'])
+            missing = tree.path(plan['missingRoot'])
             self.assertEqual(mixed.parent, missing.parent)
             self.assertNotIn(mixed, missing.parents)
             self.assertEqual([str(missing), *map(str, missing.parents)], plan['checkedAncestors'])
+            self.assertEqual(str(tree.path('C:/')), plan['checkedAncestors'][-1])
             self.assertEqual({}, plan['contexts']['missing']['environment'])
             self.assertFalse(missing.exists())
             with self.assertRaisesRegex(v.ContractError, 'siblings'):
                 v.resolver_fixture(scratch, mixed / 'missing-legacy-cache')
 
+    def test_linux_root_bin_symlink_reproduces_host_ancestry_rejection(self):
+        tree = ResolverFilesystem(PurePosixPath)
+        scratch = tree.add('/tmp/scratch/stage').parent
+        tree.add('/bin', stat.S_IFLNK)
+        with patch.object(v, 'Path', tree.path):
+            with self.assertRaisesRegex(v.ContractError, 'link/reparse'):
+                v.resolver_fixture(scratch)
+            self.assertFalse((scratch / 'resolver-missing-v2-only').exists())
+
     def test_full_ancestor_cache_and_native_decoys_are_rejected_before_creation(self):
-        for relative in ('.dart_tool/lib', '.dart_tool/llamadart/native_bundles',
-                         '.dart_tool/llamadart/native_bundles_v2', 'sdk', 'bin', 'lib', '.'):
-            with self.subTest(relative=relative), tempfile.TemporaryDirectory() as tmp:
-                ancestor = Path(tmp).resolve() / 'outer'
-                scratch = ancestor / 'scratch'
-                (scratch / 'stage').mkdir(parents=True)
-                decoy = ancestor / relative
-                decoy.mkdir(parents=True, exist_ok=True)
-                if not relative.startswith('.dart_tool'):
-                    (decoy / 'ggml-cpu.dll').write_text('synthetic')
-                with self.assertRaisesRegex(v.ContractError, 'ancestor'):
-                    v.resolver_fixture(scratch)
-                self.assertFalse((scratch / 'resolver-missing-v2-only').exists())
+        for ancestor in ('C:/outer', 'C:/'):
+            for relative in ('.dart_tool/lib', '.dart_tool/llamadart/native_bundles',
+                             '.dart_tool/llamadart/native_bundles_v2', 'sdk', 'bin', 'lib', '.'):
+                with self.subTest(ancestor=ancestor, relative=relative):
+                    tree = ResolverFilesystem()
+                    scratch = tree.add('C:/outer/scratch/stage').parent
+                    decoy = tree.add(tree.path(ancestor) / relative)
+                    if not relative.startswith('.dart_tool'):
+                        tree.add(decoy / 'ggml-cpu.dll', stat.S_IFREG)
+                    with patch.object(v, 'Path', tree.path):
+                        with self.assertRaisesRegex(v.ContractError, 'ancestor'):
+                            v.resolver_fixture(scratch)
+                    self.assertFalse((scratch / 'resolver-missing-v2-only').exists())
+
+    def test_windows_reparse_and_symlink_ancestors_are_rejected(self):
+        for name in ('C:/', 'C:/outer', 'C:/outer/sdk', 'C:/bin',
+                     'C:/lib', 'C:/outer/.dart_tool/llamadart/native_bundles'):
+            for mode, attributes in ((stat.S_IFDIR, 0x400), (stat.S_IFLNK, 0)):
+                with self.subTest(name=name, mode=mode, attributes=attributes):
+                    tree = ResolverFilesystem()
+                    scratch = tree.add('C:/outer/scratch/stage').parent
+                    tree.add(name, mode, attributes)
+                    with patch.object(v, 'Path', tree.path):
+                        with self.assertRaisesRegex(v.ContractError, 'link/reparse'):
+                            v.resolver_fixture(scratch)
+                    self.assertFalse((scratch / 'resolver-missing-v2-only').exists())
 
     def test_existing_missing_tree_is_not_reused(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            scratch = Path(tmp).resolve()
-            (scratch / 'stage').mkdir()
-            (scratch / 'resolver-missing-v2-only').mkdir()
+        tree = ResolverFilesystem()
+        scratch = tree.add('C:/outer/scratch/stage').parent
+        tree.add(scratch / 'resolver-missing-v2-only')
+        with patch.object(v, 'Path', tree.path):
             with self.assertRaisesRegex(v.ContractError, 'fresh'):
                 v.resolver_fixture(scratch)
 
