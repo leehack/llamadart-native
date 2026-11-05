@@ -529,6 +529,26 @@ def complete_terminal(root):
 
 
 class SealingAndWorkflow(unittest.TestCase):
+    def test_aot_copy_and_source_recheck_select_the_complete_cli_bundle(self):
+        source = (HERE / 'qualification.ps1').read_text()
+        import re
+        selectors = re.findall(r"(?m)^\s*\$builtBundle=Join-Path \$app '([^']+)'$", source)
+        self.assertEqual(len(selectors), 1, 'one production bundle-root selector required')
+        self.assertIn('$plan=New-AotDistribution $builtBundle $distribution $cwd $sourceRoots', source)
+        self.assertIn('Assert-AotManifestEqual $plan.built (Get-AotBundleManifest $builtBundle)', source)
+        with tempfile.TemporaryDirectory() as tmp:
+            app = Path(tmp).resolve() / 'app'
+            bundle = app / 'build/stock/bundle'
+            files = ['bin/load_stock.exe', 'lib/nested/sidecar.json', '.hidden-sidecar']
+            for name in files:
+                path = bundle / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text('synthetic ' + name)
+            (bundle.parent / 'build-only.txt').write_text('outside the shipping bundle')
+            selected = app / selectors[0]
+            self.assertTrue((selected / 'bin/load_stock.exe').is_file())
+            self.assertEqual([row['relativePath'] for row in v.manifest(selected)], sorted(files))
+
     def test_complete_terminal_is_verified_and_later_raw_log_changes_are_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp).resolve()

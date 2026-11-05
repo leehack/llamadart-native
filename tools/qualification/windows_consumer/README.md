@@ -94,8 +94,8 @@ case collisions, links/reparse points and oversized inventories before writes.
 
 The source-bound core observer and AOT helpers are copied/read from that exact
 checkout; their historical registry inputs and 16-case matrix remain untouched.
-The whole AOT bundle uses `load_stock.exe` because that is the reviewed helper's
-existing target layout. The consumer payload itself is `payload/consumer.dart`.
+Dart writes the shipping tree under `build/stock/bundle`; that complete subtree
+is copied and rechecked. It uses `load_stock.exe`, the reviewed helper's target layout. The consumer payload itself is `payload/consumer.dart`.
 
 Every child has a timeout, raw logs, fresh temporary/Pub state and process-tree
 cleanup on timeout. The first failure is sealed too. Upload names include core,
