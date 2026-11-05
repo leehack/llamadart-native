@@ -7,3 +7,6 @@
 /tests/test_publish_prepared.py @leehack
 /docs/release_version_policy.md @leehack
 /docs/v080_3_wrapper_rebuild.md @leehack
+/.github/workflows/windows_consumer_qualification.yml @leehack
+/tools/qualification/windows_consumer/ @leehack
+/tests/test_windows_consumer_qualification.py @leehack
