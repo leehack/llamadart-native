@@ -223,6 +223,10 @@ def validate_case(case, stdout, runtime):
         for symbol in row.get('exports', []) + row.get('imports', []):
             if re.match(r'^(ggml_backend_|llama_model_load|sd_dart_llama_model_load|llama_dart_model_load)', symbol['symbol']):
                 require(symbol.get('ownerPath', '').replace('\\', '/').casefold() in known, 'foreign registry/model symbol owner')
+    if not case['name'].endswith('-aot'):
+        require(within(case['workingDirectory'], case['cacheRoot']) and
+                within(case['expectedCache'], case['cacheRoot']),
+                'mixed cache is not an actual consumer working-directory ancestor')
     if case['name'] == 'old-incompatible-candidate':
         require(case['exitCode'] != 0 and result.get('completed') is False and
                 'llama_dart_speculative_need_embd' in result.get('error', ''),

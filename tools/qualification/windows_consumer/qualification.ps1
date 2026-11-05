@@ -32,7 +32,7 @@ function InvokeChild([string]$Name,[string]$Exe,[string[]]$Arguments,[string]$Cw
     $exit=$process.ExitCode
     [IO.File]::WriteAllText("$out/$Name.stdout.log",$stdout.GetAwaiter().GetResult(),[Text.UTF8Encoding]::new($false))
     [IO.File]::WriteAllText("$out/$Name.stderr.log",$stderr.GetAwaiter().GetResult(),[Text.UTF8Encoding]::new($false))
-    return @{name=$Name;exitCode=$exit;timedOut=$timedOut;childExited=$process.HasExited;stdout=FileReceipt "$out/$Name.stdout.log";stderr=FileReceipt "$out/$Name.stderr.log"}
+    return @{name=$Name;exitCode=$exit;timedOut=$timedOut;childExited=$process.HasExited;workingDirectory=$start.WorkingDirectory;stdout=FileReceipt "$out/$Name.stdout.log";stderr=FileReceipt "$out/$Name.stderr.log"}
   } finally {
     if($started -and -not $process.HasExited){$process.Kill($true);$process.WaitForExit();$script:childrenExited=$process.HasExited}
     $process.Dispose()
@@ -127,7 +127,7 @@ try {
   $oldCacheArchive=Join-Path $oldCore '.dart_tool/llamadart/native_bundles/v0.8.0-1/windows-x64/llamadart-native-windows-x64-v0.8.0-1.tar.gz'
   if((Hash $oldCacheArchive) -cne $spec.assets.old_runtime.sha256){throw 'ordinary old hook did not acquire exact old archive'}
   SaveJson "$out/ordinary-old-delivery.json" @{tag='v0.8.0-1';archiveSha256=Hash $oldCacheArchive;expectedExactUrl=$spec.assets.old_runtime.url;sourcePinVerified=$true}
-  $cache=Join-Path $stage 'mixed-cache';$missing=Join-Path $stage 'missing-legacy-cache'
+  $cache=$stage;$missing=Join-Path $stage 'missing-legacy-cache'
   $legacy=Join-Path $cache '.dart_tool/llamadart/native_bundles/v0.8.0-1/windows-x64/extracted'
   $v2=Join-Path $cache '.dart_tool/llamadart/native_bundles_v2/v0.8.0-3/windows-x64/extracted'
   $missingV2=Join-Path $missing '.dart_tool/llamadart/native_bundles_v2/v0.8.0-3/windows-x64/extracted'
@@ -157,7 +157,7 @@ try {
     }else{
       $row=InvokeChild $name $dart (@('run','load_stock.dart')+$arguments) $app 900
     }
-    $row.expectedCache=$expectedCache;$row.expectedMissingCache=$expectedMissing
+    $row.cacheRoot=$cache;$row.expectedCache=$expectedCache;$row.expectedMissingCache=$expectedMissing
     $cases+=,$row
     if($row.timedOut -or -not $row.childExited){throw "consumer child did not finish: $name"}
     if($name -eq 'old-incompatible-candidate'){if($row.exitCode -eq 0){throw 'unsupported old/candidate pairing unexpectedly succeeded'}}

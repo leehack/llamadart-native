@@ -83,7 +83,7 @@ class ArchiveSafety(unittest.TestCase):
 
 def fixture(name):
     candidate = name not in ('old-default', 'old-aot')
-    root = 'C:/distributed/' + name if name.endswith('-aot') else 'C:/build/' + name
+    root = 'C:/distributed/' + name if name.endswith('-aot') else 'C:/stage/' + name
     runtime = []
     modules = []
     for i, leaf in enumerate(['llamadart.dll', 'llama.dll', 'ggml.dll', 'ggml-base.dll', 'ggml-cpu.dll']):
@@ -97,14 +97,15 @@ def fixture(name):
               'reloadOutput': 'alpha ' * 32,
               'baselineSha256': v.hashlib.sha256(('alpha ' * 32).encode()).hexdigest(),
               'ngramSha256': v.hashlib.sha256(('alpha ' * 32).encode()).hexdigest(),
-              'drafted': 12, 'accepted': 8, 'cacheSelected': 'C:/cache/selected',
+              'drafted': 12, 'accepted': 8, 'cacheSelected': 'C:/stage/cache/selected',
               'missingLegacySelected': 'C:/cache/missing',
               'query': {'hasLegacyQuery': not candidate, 'hasNextn': True, 'nextnNullFalse': True,
                         'probeAfterPublicOutcome': True, 'wrapperPath': modules[0]['modulePath'],
                         'wrapperSha256': runtime[0]['sha256'], 'nextnOwnerPath': modules[0]['modulePath'],
                         'nextnOwnerSha256': runtime[0]['sha256']}}
-    case = {'name': name, 'exitCode': 0, 'expectedCache': 'C:/cache/selected',
-            'expectedMissingCache': 'C:/cache/missing'}
+    case = {'name': name, 'exitCode': 0, 'expectedCache': 'C:/stage/cache/selected',
+            'expectedMissingCache': 'C:/cache/missing',
+            'cacheRoot': 'C:/stage', 'workingDirectory': root}
     if name == 'old-incompatible-candidate':
         case['exitCode'] = 1;result['completed'] = False
         result['error'] = 'Failed to lookup symbol llama_dart_speculative_need_embd'
@@ -143,6 +144,19 @@ class BehavioralOracle(unittest.TestCase):
                 case, result, modules, registry, runtime = fixture('new-candidate')
                 result[key] = value
                 with self.assertRaises(v.ContractError):
+                    v.validate_case(case, log(result, modules, registry), runtime)
+
+    def test_mixed_cache_must_be_on_the_actual_child_working_directory_ancestry(self):
+        for name in ('old-default', 'new-candidate', 'old-incompatible-candidate'):
+            with self.subTest(name=name):
+                case, result, modules, registry, runtime = fixture(name)
+                v.validate_case(case, log(result, modules, registry), runtime)
+                # Explicit resolver results still look correct, but this sibling
+                # cache cannot affect discovery from the actual child CWD.
+                case['cacheRoot'] = 'C:/stage/mixed-cache'
+                case['expectedCache'] = case['cacheRoot'] + '/cache/selected'
+                result['cacheSelected'] = case['expectedCache']
+                with self.assertRaisesRegex(v.ContractError, 'working-directory ancestor'):
                     v.validate_case(case, log(result, modules, registry), runtime)
 
     def test_missing_retained_export_and_unretired_query_fail(self):
