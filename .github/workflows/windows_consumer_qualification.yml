@@ -1,0 +1,133 @@
+name: Windows Consumer ABI Qualification
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/windows_consumer_qualification.yml
+      - tools/qualification/windows_consumer/**
+      - tests/test_windows_consumer_qualification.py
+  workflow_dispatch:
+    inputs:
+      expected_executor_sha:
+        description: Reviewed full owner workflow commit (must equal github.sha)
+        type: string
+        required: true
+      core_sha:
+        description: Exact reviewed merged core commit
+        type: string
+        required: true
+        default: 7ef0eadc4826ab5a0bbe3e90cea177c48e9acefa
+      owner_run_id:
+        description: Successful original native_release preparation
+        type: string
+        required: true
+        default: '42040929247'
+      owner_artifact_id:
+        description: Qualified release-publication artifact ID
+        type: string
+        required: true
+      owner_artifact_sha256:
+        description: Independently retained raw publication ZIP SHA256
+        type: string
+        required: true
+      owner_workflow_head_sha:
+        description: Original preparation workflow head
+        type: string
+        required: true
+        default: 703c0f51fe9f8ebfa941c70504ad0b13c7ca79cb
+      owner_native_commit:
+        description: Actual generated native provenance commit (not inferred from workflow head)
+        type: string
+        required: true
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: windows-consumer-qualification-${{ github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  source-check:
+    runs-on: windows-2022
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Parse PowerShell without executing the qualification
+        shell: pwsh
+        run: |
+          $tokens=$null;$errors=$null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            "$env:GITHUB_WORKSPACE/tools/qualification/windows_consumer/qualification.ps1",
+            [ref]$tokens,[ref]$errors) | Out-Null
+          if($errors.Count){$errors | Format-List;throw 'PowerShell syntax errors'}
+      - name: Test synthetic archive, provenance and consumer oracles
+        run: python -B -m unittest discover -s tests -p test_windows_consumer_qualification.py
+
+  windows-consumer:
+    needs: source-check
+    if: ${{ github.event_name == 'workflow_dispatch' && github.repository == 'leehack/llamadart-native' && github.ref == 'refs/heads/main' }}
+    runs-on: windows-2022
+    timeout-minutes: 90
+    steps:
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - uses: actions/checkout@v7
+        with:
+          path: owner
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          repository: leehack/llamadart
+          ref: ${{ inputs.core_sha }}
+          path: core
+          persist-credentials: false
+      - name: Qualify exact candidate through old and prepared consumers
+        shell: pwsh
+        working-directory: owner
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_EXPECTED_EXECUTOR_SHA: ${{ inputs.expected_executor_sha }}
+          INPUT_CORE_SHA: ${{ inputs.core_sha }}
+          INPUT_OWNER_RUN_ID: ${{ inputs.owner_run_id }}
+          INPUT_OWNER_ARTIFACT_ID: ${{ inputs.owner_artifact_id }}
+          INPUT_OWNER_ARTIFACT_SHA256: ${{ inputs.owner_artifact_sha256 }}
+          INPUT_OWNER_WORKFLOW_HEAD_SHA: ${{ inputs.owner_workflow_head_sha }}
+          INPUT_OWNER_NATIVE_COMMIT: ${{ inputs.owner_native_commit }}
+        run: |
+          ./tools/qualification/windows_consumer/qualification.ps1 `
+            -Scratch "$env:RUNNER_TEMP/windows-consumer-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT" `
+            -CoreCheckout "$env:GITHUB_WORKSPACE/core"
+      - name: Seal success or first-failure evidence
+        if: always()
+        shell: pwsh
+        working-directory: owner
+        run: |
+          $out="$env:RUNNER_TEMP/windows-consumer-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT/out"
+          New-Item -ItemType Directory $out -Force | Out-Null
+          if(-not (Test-Path "$out/terminal.json")){
+            @{completed=$false;failure='qualification did not reach terminal';runId=$env:GITHUB_RUN_ID;runAttempt=$env:GITHUB_RUN_ATTEMPT} | ConvertTo-Json | Set-Content "$out/terminal.json" -Encoding utf8
+          }
+          python tools/qualification/windows_consumer/verify_evidence.py seal $out
+          if($LASTEXITCODE -ne 0){throw 'evidence sealing failed'}
+          python tools/qualification/windows_consumer/verify_evidence.py verify $out --expected "$out/expected-identity.json"
+          if($LASTEXITCODE -ne 0){throw 'independent evidence verification failed'}
+      - name: Retain immutable attempt-qualified evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-consumer-${{ inputs.core_sha }}-${{ inputs.owner_run_id }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/windows-consumer-${{ github.run_id }}-${{ github.run_attempt }}/out/
+          if-no-files-found: error
+          overwrite: false
+          retention-days: 30

@@ -1,0 +1,54 @@
+{
+  "schema": "llamadart.windows-consumer-inputs.v1",
+  "core_sha": "7ef0eadc4826ab5a0bbe3e90cea177c48e9acefa",
+  "core_tree": "39b41e038837f20de2918ca049463b0e8fae1851",
+  "owner_run_id": "42040929247",
+  "owner_workflow_head_sha": "703c0f51fe9f8ebfa941c70504ad0b13c7ca79cb",
+  "native_tag": "v0.8.0-3",
+  "upstream_ref": "v0.8.0",
+  "upstream_commit": "8642541b255bfb5dc39cd351a178be09013a55d6",
+  "correlation_id": "core018-native51-need-embd-v0803-20261105",
+  "flutter_version": "3.47.1",
+  "dart_version": "3.13.1",
+  "assets": {
+    "sdk": {
+      "url": "https://storage.googleapis.com/flutter_infra_release/releases/stable/windows/flutter_windows_3.47.1-stable.zip",
+      "sha256": "4cbf94fde1f5f8d6b9fc50b2483b57cf2077f61712282c2f4cf92560168f442b"
+    },
+    "old_package": {
+      "url": "https://pub.dev/api/archives/llamadart-0.17.5.tar.gz",
+      "sha256": "62d8a9081579c2dc176dc509502edb8fc5714be3797a49230a3738d64bfe48ca",
+      "bytes": 4191094
+    },
+    "old_runtime": {
+      "url": "https://github.com/leehack/llamadart-native/releases/download/v0.8.0-1/llamadart-native-windows-x64-v0.8.0-1.tar.gz",
+      "sha256": "e7bbc544cfc65780569b62823157f91e1bff45b79332b61fa1da87ff8fd62121",
+      "bytes": 16277395
+    },
+    "model": {
+      "url": "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/91cad51170dc346986eccefdc2dd33a9da36ead9/qwen2.5-1.5b-instruct-q4_k_m.gguf",
+      "sha256": "6a1a2eb6d15622bf3c96857206351ba97e1af16c30d7a74ee38970e434e9407e",
+      "bytes": 1117320736
+    }
+  },
+  "observer": "test/fixtures/windows_ggml_registry_qualification/payload/passive_modules.dart",
+  "aot_helper": "test/fixtures/windows_ggml_registry_qualification/aot_distribution.ps1",
+  "cases": [
+    "old-default",
+    "new-candidate",
+    "old-incompatible-candidate",
+    "old-aot",
+    "new-aot"
+  ],
+  "max_tokens": 128,
+  "threads": 2,
+  "dependencies": {
+    "crypto": "3.0.8",
+    "ffi": "2.2.0"
+  },
+  "old_source_files": 1695,
+  "old_source_proofs": {
+    "lib/src/hook/native_release_pins.dart": "b736607333cee70e2f04c0a033f9f7ceb775e4282f83d9e0e2f965eb58dbc29d",
+    "lib/src/backends/llama_cpp/llama_cpp_service.dart": "002fa8ae101927a42ace18bf12a494e014f6c931efe52a8c84b31729fe435444"
+  }
+}
