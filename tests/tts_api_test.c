@@ -66,6 +66,8 @@ int main(void) {
     const uint32_t qwen3 = 1u << LLAMA_DART_TTS_MODEL_TYPE_QWEN3;
     const uint32_t lfm3 = 1u << LLAMA_DART_TTS_MODEL_TYPE_LFM3_AUDIO;
     const uint32_t soprano = 1u << LLAMA_DART_TTS_MODEL_TYPE_SOPRANO;
+    const uint32_t chatterbox = 1u << LLAMA_DART_TTS_MODEL_TYPE_CHATTERBOX;
+    const uint32_t pocket = 1u << LLAMA_DART_TTS_MODEL_TYPE_POCKET_TTS;
     // Read from the checked-out llama.cpp headers, not from the build's own
     // probes, which would agree with a probe that wrongly compiled a type out.
     const char *expected_text = getenv("LLAMADART_EXPECTED_TTS_MODEL_TYPES");
@@ -73,8 +75,10 @@ int main(void) {
     const uint32_t expected = (uint32_t)strtoul(expected_text, NULL, 0);
     const uint32_t supported = llama_dart_tts_supported_model_types();
     if (supported != expected) {
-        fprintf(stderr, "supported TTS model types 0x%x, expected 0x%x (qwen3 0x%x, lfm3 0x%x, soprano 0x%x)\n",
-                supported, expected, qwen3, lfm3, soprano);
+        fprintf(stderr,
+                "supported TTS model types 0x%x, expected 0x%x (qwen3 0x%x, lfm3 0x%x, soprano 0x%x, "
+                "chatterbox 0x%x, pocket 0x%x)\n",
+                supported, expected, qwen3, lfm3, soprano, chatterbox, pocket);
     }
     assert(supported == expected);
     info.struct_size = sizeof(info);
@@ -87,6 +91,21 @@ int main(void) {
     assert(status == LLAMA_DART_TTS_STATUS_INVALID_ARGUMENT);
     assert(llama_dart_tts_start_with_voice(NULL, &request, NULL) == LLAMA_DART_TTS_STATUS_INVALID_ARGUMENT);
     assert(llama_dart_tts_start_with_voice(NULL, &request, "male") == LLAMA_DART_TTS_STATUS_INVALID_ARGUMENT);
+
+    const uint32_t all_types = qwen3 | lfm3 | soprano | chatterbox | pocket;
+    int32_t voice_count = -1;
+    assert(llama_dart_tts_get_voice_count(NULL, all_types, &voice_count) == LLAMA_DART_TTS_STATUS_INVALID_ARGUMENT);
+    assert(voice_count == -1);
+    assert(llama_dart_tts_get_voice_count(NULL, all_types, NULL) == LLAMA_DART_TTS_STATUS_INVALID_ARGUMENT);
+    char voice_name[16] = "unchanged";
+    size_t voice_length = 7;
+    assert(llama_dart_tts_get_voice_name(NULL, all_types, 0, voice_name, sizeof(voice_name), &voice_length) ==
+           LLAMA_DART_TTS_STATUS_INVALID_ARGUMENT);
+    assert(llama_dart_tts_get_voice_name(NULL, all_types, 0, NULL, 0, &voice_length) ==
+           LLAMA_DART_TTS_STATUS_INVALID_ARGUMENT);
+    assert(llama_dart_tts_get_voice_name(NULL, all_types, 0, voice_name, sizeof(voice_name), NULL) ==
+           LLAMA_DART_TTS_STATUS_INVALID_ARGUMENT);
+    assert(voice_length == 7 && strcmp(voice_name, "unchanged") == 0);
 
     // A failure that is not a caught exception leaves no last error.
     assert(llama_dart_last_error() == NULL);

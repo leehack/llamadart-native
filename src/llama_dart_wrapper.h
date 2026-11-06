@@ -72,6 +72,10 @@ enum llama_dart_tts_model_type {
     LLAMA_DART_TTS_MODEL_TYPE_LFM3_AUDIO = 2,
     // Reported only to callers that accept it, see llama_dart_tts_get_info_ext.
     LLAMA_DART_TTS_MODEL_TYPE_SOPRANO = 3,
+    // Reported only to callers that accept it, see llama_dart_tts_get_info_ext.
+    LLAMA_DART_TTS_MODEL_TYPE_CHATTERBOX = 4,
+    // Reported only to callers that accept it, see llama_dart_tts_get_info_ext.
+    LLAMA_DART_TTS_MODEL_TYPE_POCKET_TTS = 5,
     LLAMA_DART_TTS_MODEL_TYPE_UNKNOWN = 255,
 };
 
@@ -968,9 +972,39 @@ LLAMADART_API const char * llama_dart_tts_last_error(
 // next chunk boundary. Fewer than two frames fail that step with
 // UPSTREAM_ERROR. request->seed seeds the backbone sampler, the only sampler.
 
+// CHATTERBOX (Chatterbox Turbo and Multilingual V3) and POCKET_TTS speak
+// with a predefined voice of the projector or clone a speaker reference;
+// see llama_dart_tts_get_voice_count. A voice and a speaker reference together
+// are INVALID_ARGUMENT, and a speaker reference needs
+// LLAMA_DART_TTS_CAPABILITY_SPEAKER_REFERENCE, else UNSUPPORTED. With neither,
+// the first predefined voice speaks, as in upstream llama-tts; a Chatterbox
+// without predefined voices then returns INVALID_ARGUMENT, and Pocket TTS
+// speaks unconditioned. Both return complete PCM.
+//
+// CHATTERBOX samples backbone tokens with the request's sampling settings;
+// request->seed seeds that sampler and the flow decoder. It decodes the whole
+// utterance's audio on the step that ends generation, which a cancel
+// interrupts as for SOPRANO. Turbo has no capability bit for a language and
+// rejects one. Multilingual reports LANGUAGE: request->language is a code
+// such as "fr", not validated, that upstream lower-cases and prefixes to the
+// text. Multilingual decodes an unconditional twin of the task sequence
+// for classifier-free guidance at sequence n_seq_max / 2 + sequence_id, which
+// the task owns and clears like its own: llama_dart_tts_init_ext returns
+// UNSUPPORTED for a context with n_seq_max < 2, and a request whose
+// sequence_id is not below n_seq_max / 2 is INVALID_ARGUMENT. Without
+// kv_unified each of the two sequences holds n_ctx / n_seq_max positions.
+//
+// All backbone samplers apply the GGUF's tokenizer.ggml.suppress_tokens, as
+// upstream common_sampler does: Chatterbox suppresses its text tokens.
+//
+// POCKET_TTS generates from the hidden state with the sampling settings of
+// its weights: request top_k, top_p, min_p and temperature are validated but
+// unused, and request->seed seeds the flow decoder. It has no language
+// capability: the language is that of the weights.
+
 // Returns the mask of model types llama_dart_tts_init_ext can create in this
-// build. QWEN3 is always set; LFM3_AUDIO and SOPRANO only when the bundled
-// mtmd has their generators.
+// build. QWEN3 is always set; LFM3_AUDIO, SOPRANO, CHATTERBOX and POCKET_TTS
+// only when the bundled mtmd has their generators.
 LLAMADART_API uint32_t llama_dart_tts_supported_model_types(void);
 
 LLAMADART_API enum llama_dart_tts_status llama_dart_tts_get_info_ext(
@@ -987,12 +1021,37 @@ LLAMADART_API struct llama_dart_tts * llama_dart_tts_init_ext(
 
 // llama_dart_tts_start with a voice; NULL is the model's default voice and
 // otherwise identical to llama_dart_tts_start. A voice needs
-// LLAMA_DART_TTS_CAPABILITY_VOICE, else UNSUPPORTED. LFM3_AUDIO voices are
-// "female" (default) and "male", in any case; others are INVALID_ARGUMENT.
+// LLAMA_DART_TTS_CAPABILITY_VOICE, else UNSUPPORTED. It is one of the names
+// llama_dart_tts_get_voice_name lists, matched in any case; any other name is
+// INVALID_ARGUMENT, never a fallback to the default. LFM3_AUDIO voices are
+// "female" (default) and "male".
 LLAMADART_API enum llama_dart_tts_status llama_dart_tts_start_with_voice(
     struct llama_dart_tts * tts,
     const struct llama_dart_tts_request * request,
     const char * voice);
+
+// Writes the number of voices llama_dart_tts_start_with_voice accepts for the
+// projector, 0 for a model without LLAMA_DART_TTS_CAPABILITY_VOICE. A model
+// type outside accepted_model_types, or one this build cannot drive, is
+// UNSUPPORTED as in llama_dart_tts_get_info_ext, with *out_count 0.
+LLAMADART_API enum llama_dart_tts_status llama_dart_tts_get_voice_count(
+    const struct mtmd_context * mtmd,
+    uint32_t accepted_model_types,
+    int32_t * out_count);
+
+// Copies the index-th voice name, NUL-terminated, into out_name and writes
+// its length without the NUL to *out_length. out_name may be NULL with
+// out_capacity 0 to query the length. An index outside
+// [0, voice count), or an out_capacity not above the length, is
+// INVALID_ARGUMENT; the latter still writes *out_length. The order is
+// upstream's; index 0 is the voice used when a request names none.
+LLAMADART_API enum llama_dart_tts_status llama_dart_tts_get_voice_name(
+    const struct mtmd_context * mtmd,
+    uint32_t accepted_model_types,
+    int32_t index,
+    char * out_name,
+    size_t out_capacity,
+    size_t * out_length);
 
 // Creates a sampler that applies llama.cpp's reasoning-token budget before an
 // optional grammar sampler. The returned sampler owns grammar_sampler.

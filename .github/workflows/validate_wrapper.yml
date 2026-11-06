@@ -534,6 +534,7 @@ jobs:
           llamadart_tts_smoke
           llamadart_tts_lfm3_smoke
           llamadart_soprano_tts_smoke
+          llamadart_tts_voice_smoke
       - name: Run wrapper contract tests
         run: ctest --test-dir build/wrapper-contract --output-on-failure
       - name: Check that the build identity is reproducible and follows its inputs

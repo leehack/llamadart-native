@@ -27,7 +27,10 @@ struct llama_dart_tts {
   const int8_t *cancel_flag = nullptr;
   llama_dart_tts_state state = LLAMA_DART_TTS_STATE_IDLE;
   llama_seq_id sequence_id = 0;
+  // Chatterbox Multilingual's unconditional sequence, -1 for other models.
+  llama_seq_id cfg_sequence_id = -1;
   bool owns_sequence = false;
+  bool paired_cfg = false;
   int32_t prompt_batch_size = 512;
   int32_t max_frames = 512;
   int32_t prompt_tokens_remaining = 0;
@@ -78,9 +81,14 @@ llama_dart_tts_release_task_resources(llama_dart_tts *tts) {
     mtmd_helper_gen_audio_reset(tts->generator);
   }
   if (tts->owns_sequence) {
-    llama_memory_seq_rm(llama_get_memory(tts->llama), tts->sequence_id, 0, -1);
+    llama_memory_t memory = llama_get_memory(tts->llama);
+    llama_memory_seq_rm(memory, tts->sequence_id, 0, -1);
+    if (tts->cfg_sequence_id >= 0) {
+      llama_memory_seq_rm(memory, tts->cfg_sequence_id, 0, -1);
+    }
     tts->owns_sequence = false;
   }
+  tts->cfg_sequence_id = -1;
   tts->cancel_flag = nullptr;
 }
 

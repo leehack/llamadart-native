@@ -24,6 +24,21 @@ FEATURES = (
             ("common/chat.h", r"\bcommon_chat_get_tts_prompt\b"),
         ),
     ),
+    (
+        "CHATTERBOX",
+        (
+            ("tools/mtmd/mtmd.h", r"^\s*MTMD_GEN_AUDIO_TYPE_CHATTERBOX\s*[,=]"),
+            ("tools/mtmd/mtmd.h", r"\bmtmd_gen_audio_read_tensor\b"),
+            ("tools/mtmd/mtmd.h", r"\bmtmd_gen_audio_get_voice\b"),
+        ),
+    ),
+    (
+        "POCKET_TTS",
+        (
+            ("tools/mtmd/mtmd.h", r"^\s*MTMD_GEN_AUDIO_TYPE_POCKETTTS\s*[,=]"),
+            ("tools/mtmd/mtmd.h", r"\bmtmd_gen_audio_get_voice\b"),
+        ),
+    ),
 )
 
 
