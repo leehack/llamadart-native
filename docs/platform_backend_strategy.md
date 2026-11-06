@@ -132,8 +132,8 @@ qualified releases as separate regression inputs.
     which KleidiAI compiles with `-march=armv8.2-a+sve+sve2`. The baseline ISA
     audit reads `.dynsym` and cannot attribute a local routine, so it fails.
     GCC 13 emits no SVE in that file. ggml reaches the routine only through
-    `q4_k_rhs_pack`, whose one table entry requires `SME2 | FP16` (v0.7.0 and
-    v0.8.0; KleidiAI v1.31.0 and v1.32.0 have the same file). That gate does
+    `q4_k_rhs_pack`, whose one table entry requires `SME2 | FP16` (v0.7.0 to
+    v0.9.0; KleidiAI v1.31.0 and v1.32.0 have the same file). That gate does
     not make the SVE safe: the routine runs outside streaming mode, and SME2
     does not imply SVE there. On an Apple M4 Max (SME2, no FEAT_SVE) this
     instruction raises SIGILL outside streaming mode and runs inside it.

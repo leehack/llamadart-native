@@ -1,5 +1,6 @@
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -91,7 +92,7 @@ class ScopeTests(unittest.TestCase):
         self.assertIn('github.event.pull_request.base.sha || github.event.before',changes)
         self.assertIn('tools/ci_scope.py',changes)
         windows=workflow_job(workflow,'windows-arm64-kleidiai')
-        self.assertIn('upstream: [pinned, post-v0.4.0, v0.5.0, v0.6.0, v0.7.0, v0.8.0]',windows)
+        self.assertIn('upstream: [pinned, post-v0.4.0, v0.5.0, v0.6.0, v0.7.0, v0.8.0, v0.9.0]',windows)
         for filename in ('validate_wrapper.yml','validate_release_provenance.yml'):
             content=(ROOT/'.github/workflows'/filename).read_text()
             triggers=content.split('permissions:')[0]
@@ -112,16 +113,19 @@ class ScopeTests(unittest.TestCase):
                 self.assertIn('rev-parse HEAD)" = "$LLAMADART_QUALIFICATION_SHA"',body)
 
 
-    def test_v080_qualification_uses_the_exact_candidate_in_every_native_lane(self):
+    def test_v080_and_v090_qualification_use_the_exact_candidate_in_every_native_lane(self):
         workflow=(ROOT/'.github/workflows/validate_wrapper.yml').read_text()
-        self.assertIn('LLAMADART_V080_QUALIFICATION_SHA: 8642541b255bfb5dc39cd351a178be09013a55d6',workflow)
-        for job in JOBS:
-            with self.subTest(job=job):
-                body=workflow_job(workflow,job)
-                self.assertRegex(body,r'upstream: \[[^\n]*v0\.8\.0\]')
-                self.assertIn("matrix.upstream == 'v0.8.0' && env.LLAMADART_V080_QUALIFICATION_SHA",body)
-                self.assertIn('checkout --detach "$LLAMADART_QUALIFICATION_SHA"',body)
-                self.assertIn('rev-parse HEAD)" = "$LLAMADART_QUALIFICATION_SHA"',body)
+        candidates=(('v0.8.0','V080','8642541b255bfb5dc39cd351a178be09013a55d6'),
+                    ('v0.9.0','V090','cd959bae99ff4bed22bef2604f45241c09bbb8c8'))
+        for upstream,name,sha in candidates:
+            self.assertIn(f'LLAMADART_{name}_QUALIFICATION_SHA: {sha}',workflow)
+            for job in JOBS:
+                with self.subTest(upstream=upstream,job=job):
+                    body=workflow_job(workflow,job)
+                    self.assertRegex(body,rf'upstream: \[[^\n]*{re.escape(upstream)}[,\]]')
+                    self.assertIn(f"matrix.upstream == '{upstream}' && env.LLAMADART_{name}_QUALIFICATION_SHA",body)
+                    self.assertIn('checkout --detach "$LLAMADART_QUALIFICATION_SHA"',body)
+                    self.assertIn('rev-parse HEAD)" = "$LLAMADART_QUALIFICATION_SHA"',body)
 
 
 if __name__ == '__main__': unittest.main()
