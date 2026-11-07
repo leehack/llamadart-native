@@ -428,6 +428,12 @@ if (LLAMADART_BUILD_TESTS)
     )
     add_test(NAME llamadart_tts_seed_test COMMAND llamadart_tts_seed_test)
 
+    add_executable(llamadart_tts_sampler_test tests/tts_sampler_test.cpp)
+    target_compile_features(llamadart_tts_sampler_test PRIVATE cxx_std_17)
+    target_include_directories(llamadart_tts_sampler_test PRIVATE src)
+    target_link_libraries(llamadart_tts_sampler_test PRIVATE llama)
+    add_test(NAME llamadart_tts_sampler_test COMMAND llamadart_tts_sampler_test)
+
     add_executable(llamadart_image_token_limit_test tests/image_token_limit_test.cpp)
     target_compile_features(llamadart_image_token_limit_test PRIVATE cxx_std_17)
     target_include_directories(llamadart_image_token_limit_test PRIVATE
@@ -705,7 +711,8 @@ if (LLAMADART_BUILD_TESTS)
     foreach(test_target llamadart_owner_api_test llamadart_owner_reentrancy_test llamadart_speculative_api_test llamadart_tts_api_test
             llamadart_tts_types_test
             llamadart_build_identity_test llamadart_cancel_flag_test
-            llamadart_tts_eval_test llamadart_tts_seed_test llamadart_exit_teardown_test
+            llamadart_tts_eval_test llamadart_tts_seed_test llamadart_tts_sampler_test
+            llamadart_exit_teardown_test
             llamadart_mtmd_compat_test
             llamadart_vulkan_device_info_test llamadart_barrier_test llamadart_image_token_limit_test)
         if (MSVC)
