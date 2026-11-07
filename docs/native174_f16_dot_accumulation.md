@@ -68,6 +68,10 @@ negative-length guard carries the marker; its presence proves inclusion,
 not numerical correctness. Verify the marker in every actual optimized and
 baseline module, including Linux variants.
 
+The Android ISA audit enables `+fp16fml` in objdump so FHM instructions decode
+instead of appearing as unknown words. This changes decoder selection only;
+source fingerprints and exact SVE/SME function-range checks stay unchanged.
+
 Before merge or publication, ROOT must provide:
 
 - Paired original/candidate/reverted builds with identical source and flags,
