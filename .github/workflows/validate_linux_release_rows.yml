@@ -42,7 +42,6 @@ env:
   CMAKE_C_COMPILER_LAUNCHER: ccache
   CMAKE_CXX_COMPILER_LAUNCHER: ccache
   CMAKE_CUDA_COMPILER_LAUNCHER: ccache
-  LLAMADART_V080_QUALIFICATION_SHA: 8642541b255bfb5dc39cd351a178be09013a55d6
 
 # The caches are restored only: saving one here could evict the release's.
 jobs:
@@ -66,7 +65,6 @@ jobs:
             needs_openblas: false
             needs_cuda: false
             backend_glob: libggml-vulkan.so
-            upstream: pinned
           - arch: x64
             backend: cuda
             include_core: false
@@ -74,7 +72,6 @@ jobs:
             needs_openblas: false
             needs_cuda: true
             backend_glob: libggml-cuda.so
-            upstream: pinned
           - arch: x64
             backend: blas
             include_core: false
@@ -82,7 +79,6 @@ jobs:
             needs_openblas: true
             needs_cuda: false
             backend_glob: libggml-blas.so
-            upstream: pinned
           - arch: arm64
             backend: vulkan
             include_core: true
@@ -90,7 +86,6 @@ jobs:
             needs_openblas: false
             needs_cuda: false
             backend_glob: libggml-vulkan.so
-            upstream: pinned
           - arch: arm64
             backend: blas
             include_core: false
@@ -98,28 +93,12 @@ jobs:
             needs_openblas: true
             needs_cuda: false
             backend_glob: libggml-blas.so
-            upstream: pinned
-          # No other lane compiles the CUDA backend against the release candidate.
-          - arch: x64
-            backend: cuda
-            include_core: false
-            needs_vulkan: false
-            needs_openblas: false
-            needs_cuda: true
-            backend_glob: libggml-cuda.so
-            upstream: v0.8.0
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           submodules: recursive
           persist-credentials: false
-      - name: Select candidate upstream
-        if: matrix.upstream != 'pinned'
-        run: |
-          git -C third_party/llama.cpp fetch --depth=1 origin "$LLAMADART_V080_QUALIFICATION_SHA"
-          git -C third_party/llama.cpp checkout --detach "$LLAMADART_V080_QUALIFICATION_SHA"
-          test "$(git -C third_party/llama.cpp rev-parse HEAD)" = "$LLAMADART_V080_QUALIFICATION_SHA"
       - name: Install build deps
         run: |
           . tools/apt_retry.sh
@@ -298,10 +277,6 @@ jobs:
     env:
       CCACHE_DIR: ${{ github.workspace }}/.ccache
       CCACHE_MAXSIZE: 5G
-    strategy:
-      fail-fast: false
-      matrix:
-        upstream: [pinned, v0.8.0]
     steps:
       - name: Install Git
         run: |
@@ -334,12 +309,6 @@ jobs:
           fetch-depth: 0
           submodules: recursive
           persist-credentials: false
-      - name: Select candidate upstream
-        if: matrix.upstream != 'pinned'
-        run: |
-          git -C third_party/llama.cpp fetch --depth=1 origin "$LLAMADART_V080_QUALIFICATION_SHA"
-          git -C third_party/llama.cpp checkout --detach "$LLAMADART_V080_QUALIFICATION_SHA"
-          test "$(git -C third_party/llama.cpp rev-parse HEAD)" = "$LLAMADART_V080_QUALIFICATION_SHA"
       - name: Install build deps
         run: |
           . tools/apt_retry.sh

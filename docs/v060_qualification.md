@@ -70,7 +70,11 @@ image evaluation and both success/error legacy callback paths. These are
 pipeline checks, not qualification of newly added model families, MTP weights,
 ASR or TTS. M-RoPE layout has synthetic adapter coverage, not a real-model claim.
 
-`validate_wrapper.yml` adds exact v0.6.0 candidate lanes for Android ISA and
+Retired in November 2026 (llamadart-native#178): no supported `llamadart`
+core loads a native older than v0.7.0, so `validate_wrapper.yml` no longer
+builds the post-v0.4.0, v0.4.1, v0.5.0 or v0.6.0 rows described here.
+
+`validate_wrapper.yml` added exact v0.6.0 candidate lanes for Android ISA and
 Vulkan shaders, emulated KleidiAI dispatch, Windows ARM64 CPU/Vulkan, Linux
 x64/arm64 artifacts, Linux wrapper contracts, MSVC mtmd linking and macOS
 Release/ASan teardown. Existing production and historical baselines remain.

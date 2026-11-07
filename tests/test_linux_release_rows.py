@@ -14,7 +14,7 @@ LANE = "validate_linux_release_rows.yml"
 # The lane replaces these: it builds checked-out sources and never saves a cache
 # the release could restore or that would evict the release's.
 RELEASE_ONLY = {"Checkout llama.cpp ref", "Checkout exact release source", "Set up ccache", "Upload"}
-LANE_ONLY = {"Select candidate upstream", "Restore release ccache", "Prime ccache"}
+LANE_ONLY = {"Restore release ccache", "Prime ccache"}
 
 
 def workflow_env(workflow: str) -> dict[str, str]:
@@ -52,22 +52,12 @@ class ReleaseRowsMirrorTest(unittest.TestCase):
         self.assertLess(names.index("Validate Linux HIP artifacts"), names.index("Check the glibc floor"))
         self.assertLess(names.index("Check the glibc floor"), names.index("Stage upload payload"))
 
-    def test_every_release_row_runs_pinned(self) -> None:
+    def test_the_lane_runs_exactly_the_release_rows(self) -> None:
+        # A pull request that moves the pin runs this lane on the new upstream.
         release = matrix_rows(job_block(RELEASE, "build-linux"))
-        lane = matrix_rows(job_block(LANE, "build-linux"))
         self.assertEqual(5, len(release))
-        pinned = [{k: v for k, v in row.items() if k != "upstream"} for row in lane if row["upstream"] == "pinned"]
-        self.assertEqual(release, pinned)
-
-    def test_candidate_rows_repeat_release_rows(self) -> None:
-        release = matrix_rows(job_block(RELEASE, "build-linux"))
-        candidates = [row for row in matrix_rows(job_block(LANE, "build-linux")) if row["upstream"] != "pinned"]
-        self.assertIn(
-            {"arch": "x64", "backend": "cuda", "upstream": "v0.8.0"},
-            [{key: row[key] for key in ("arch", "backend", "upstream")} for row in candidates],
-        )
-        for row in candidates:
-            self.assertIn({k: v for k, v in row.items() if k != "upstream"}, release)
+        self.assertEqual(release, matrix_rows(job_block(LANE, "build-linux")))
+        self.assertNotIn("strategy", job_keys(job_block(LANE, "build-linux-hip")))
 
     def test_the_lane_uses_the_release_image_container_and_toolkit(self) -> None:
         for job in ("build-linux", "build-linux-hip"):
@@ -81,10 +71,6 @@ class ReleaseRowsMirrorTest(unittest.TestCase):
         for key in ("CUDA_REDIST_VERSION", "CMAKE_C_COMPILER_LAUNCHER", "CMAKE_CXX_COMPILER_LAUNCHER", "CMAKE_CUDA_COMPILER_LAUNCHER"):
             self.assertEqual(release_env[key], lane_env[key], key)
 
-    def test_the_candidate_is_the_wrapper_lanes_candidate(self) -> None:
-        name = "LLAMADART_V080_QUALIFICATION_SHA"
-        self.assertEqual(workflow_env("validate_wrapper.yml")[name], workflow_env(LANE)[name])
-
     def test_the_loaded_core_reports_the_tts_types_the_headers_promise(self) -> None:
         # #146: a linked CMake probe compiled LFM3 speech out of the GCC bundles.
         for workflow, job in ((RELEASE, "build-linux"), (LANE, "build-linux"), ("validate_wrapper.yml", "linux-artifact-contract")):
@@ -94,7 +80,6 @@ class ReleaseRowsMirrorTest(unittest.TestCase):
 
     def test_steps_are_not_skipped_or_allowed_to_fail(self) -> None:
         allowed_conditions = {
-            "Select candidate upstream": "if: matrix.upstream != 'pinned'",
             "Report ccache stats": "if: always()",
             "Validate clean Linux consumer dlopen": "if: ${{ matrix.include_core }}",
             "Audit and select the Linux arm64 CPU variants": "if: ${{ matrix.arch == 'arm64' && matrix.include_core }}",

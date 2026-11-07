@@ -1,0 +1,58 @@
+--- a/ggml/src/ggml-cpu/vec.cpp
++++ b/ggml/src/ggml-cpu/vec.cpp
+@@ -263,4 +263,5 @@
+ 
+ void ggml_vec_dot_f16(int n, float * GGML_RESTRICT s, size_t bs, ggml_fp16_t * GGML_RESTRICT x, size_t bx, ggml_fp16_t * GGML_RESTRICT y, size_t by, int nrc) {
++    GGML_ASSERT(n >= 0 && "llamadart F16 dot F32 accumulation");
+     assert(nrc == 1);
+     GGML_UNUSED(nrc);
+@@ -272,5 +273,48 @@
+ 
+ 
+-#if defined(GGML_SIMD)
++#if defined(__ARM_NEON) && defined(__ARM_FEATURE_FMA) && defined(__ARM_FP16_FORMAT_IEEE) && \
++    defined(__ARM_FEATURE_FP16_VECTOR_ARITHMETIC) && !defined(__ARM_FEATURE_SVE)
++    // F16 products and partial sums can overflow before the F32 result is stored.
++    float32x4_t sum_lo[4], sum_hi[4];
++    for (int j = 0; j < 4; ++j) {
++        sum_lo[j] = vdupq_n_f32(0.0f);
++        sum_hi[j] = vdupq_n_f32(0.0f);
++    }
++    const int np = n - n % 32;
++    const int np8 = n - n % 8;
++    int i = 0;
++    for (; i < np; i += 32) {
++        for (int j = 0; j < 4; ++j) {
++            const float16x8_t vx = vld1q_f16((const __fp16 *) (x + i + 8*j));
++            const float16x8_t vy = vld1q_f16((const __fp16 *) (y + i + 8*j));
++#if defined(__ARM_FEATURE_FP16_FML)
++            sum_lo[j] = vfmlalq_low_f16(sum_lo[j], vx, vy);
++            sum_hi[j] = vfmlalq_high_f16(sum_hi[j], vx, vy);
++#else
++            sum_lo[j] = vfmaq_f32(sum_lo[j], vcvt_f32_f16(vget_low_f16(vx)), vcvt_f32_f16(vget_low_f16(vy)));
++            sum_hi[j] = vfmaq_f32(sum_hi[j], vcvt_f32_f16(vget_high_f16(vx)), vcvt_f32_f16(vget_high_f16(vy)));
++#endif
++        }
++    }
++    for (; i < np8; i += 8) {
++        const float16x8_t vx = vld1q_f16((const __fp16 *) (x + i));
++        const float16x8_t vy = vld1q_f16((const __fp16 *) (y + i));
++#if defined(__ARM_FEATURE_FP16_FML)
++        sum_lo[0] = vfmlalq_low_f16(sum_lo[0], vx, vy);
++        sum_hi[0] = vfmlalq_high_f16(sum_hi[0], vx, vy);
++#else
++        sum_lo[0] = vfmaq_f32(sum_lo[0], vcvt_f32_f16(vget_low_f16(vx)), vcvt_f32_f16(vget_low_f16(vy)));
++        sum_hi[0] = vfmaq_f32(sum_hi[0], vcvt_f32_f16(vget_high_f16(vx)), vcvt_f32_f16(vget_high_f16(vy)));
++#endif
++    }
++    for (int j = 1; j < 4; ++j) {
++        sum_lo[0] = vaddq_f32(sum_lo[0], sum_lo[j]);
++        sum_hi[0] = vaddq_f32(sum_hi[0], sum_hi[j]);
++    }
++    sumf = (ggml_float) vaddvq_f32(vaddq_f32(sum_lo[0], sum_hi[0]));
++    for (; i < n; ++i) {
++        sumf += (ggml_float) GGML_CPU_FP16_TO_FP32(x[i]) * (ggml_float) GGML_CPU_FP16_TO_FP32(y[i]);
++    }
++#elif defined(GGML_SIMD)
+     #if defined(__ARM_FEATURE_SVE)
+         const int ggml_f16_epr = svcnth();

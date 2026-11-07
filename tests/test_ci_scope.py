@@ -1,7 +1,7 @@
 import json
 import os
-import re
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -9,7 +9,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tools'))
-from ci_scope import changed_paths, native_required, validate_results
+from ci_scope import changed_paths, native_required, pinned_llama_cpp, upstream_rows, validate_results
 sys.path.insert(0, str(ROOT / 'scripts'))
 from verify_release_provenance import workflow_job
 
@@ -91,8 +91,8 @@ class ScopeTests(unittest.TestCase):
         self.assertIn('fetch-depth: 0',changes)
         self.assertIn('github.event.pull_request.base.sha || github.event.before',changes)
         self.assertIn('tools/ci_scope.py',changes)
-        windows=workflow_job(workflow,'windows-arm64-kleidiai')
-        self.assertIn('upstream: [pinned, post-v0.4.0, v0.5.0, v0.6.0, v0.7.0, v0.8.0, v0.9.0]',windows)
+        self.assertIn('upstreams: ${{ steps.scope.outputs.upstreams }}',changes)
+        self.assertIn('pinned: ${{ steps.scope.outputs.pinned }}',changes)
         for filename in ('validate_wrapper.yml','validate_release_provenance.yml'):
             content=(ROOT/'.github/workflows'/filename).read_text()
             triggers=content.split('permissions:')[0]
@@ -101,31 +101,31 @@ class ScopeTests(unittest.TestCase):
             self.assertIn("cancel-in-progress: ${{ github.event_name == 'pull_request' }}",content)
             self.assertIn('github.event.pull_request.number || github.run_id',content)
 
-    def test_v070_qualification_uses_the_exact_candidate_in_every_native_lane(self):
+    def test_the_pin_is_exactly_one_upstream_row(self):
+        rows='{"v0.7.0": "a", "v0.8.0": "b"}'
+        self.assertEqual(upstream_rows(rows,'b'),(['v0.7.0','v0.8.0'],'v0.8.0'))
+        for pin,table in (('c',rows),('a','{"v0.7.0": "a", "v0.7.0-copy": "a"}'),('a','{}')):
+            with self.subTest(pin=pin,table=table), self.assertRaisesRegex(ValueError,'exactly one'):
+                upstream_rows(table,pin)
+
+    def test_every_native_lane_builds_each_upstream_row_once(self):
         workflow=(ROOT/'.github/workflows/validate_wrapper.yml').read_text()
-        self.assertIn('LLAMADART_V070_QUALIFICATION_SHA: 620d2225cc436ab0b001e3200e590e3b286ef9ab',workflow)
+        table=re.search(r"^  LLAMADART_UPSTREAMS: >-\n((?:    .*\n)+)",workflow,re.MULTILINE)[1]
+        rows=json.loads(table)
+        # Shipped llamadart cores still load these lines, so they keep their rows.
+        self.assertLessEqual({'v0.7.0':'620d2225cc436ab0b001e3200e590e3b286ef9ab',
+                              'v0.8.0':'8642541b255bfb5dc39cd351a178be09013a55d6'}.items(),rows.items())
+        upstream_rows(table,pinned_llama_cpp())
+        self.assertNotIn("'pinned'",workflow)
+        self.assertEqual(workflow.count('QUALIFICATION_SHA:'),len(JOBS))
         for job in JOBS:
             with self.subTest(job=job):
                 body=workflow_job(workflow,job)
-                self.assertRegex(body,r'upstream: \[[^\n]*v0\.7\.0[,\]]')
-                self.assertIn("matrix.upstream == 'v0.7.0' && env.LLAMADART_V070_QUALIFICATION_SHA",body)
+                self.assertIn('upstream: ${{ fromJSON(needs.changes.outputs.upstreams) }}',body)
+                self.assertIn('if: matrix.upstream != needs.changes.outputs.pinned\n',body)
+                self.assertIn('LLAMADART_QUALIFICATION_SHA: ${{ fromJSON(env.LLAMADART_UPSTREAMS)[matrix.upstream] }}',body)
                 self.assertIn('checkout --detach "$LLAMADART_QUALIFICATION_SHA"',body)
                 self.assertIn('rev-parse HEAD)" = "$LLAMADART_QUALIFICATION_SHA"',body)
-
-
-    def test_v080_and_v090_qualification_use_the_exact_candidate_in_every_native_lane(self):
-        workflow=(ROOT/'.github/workflows/validate_wrapper.yml').read_text()
-        candidates=(('v0.8.0','V080','8642541b255bfb5dc39cd351a178be09013a55d6'),
-                    ('v0.9.0','V090','cd959bae99ff4bed22bef2604f45241c09bbb8c8'))
-        for upstream,name,sha in candidates:
-            self.assertIn(f'LLAMADART_{name}_QUALIFICATION_SHA: {sha}',workflow)
-            for job in JOBS:
-                with self.subTest(upstream=upstream,job=job):
-                    body=workflow_job(workflow,job)
-                    self.assertRegex(body,rf'upstream: \[[^\n]*{re.escape(upstream)}[,\]]')
-                    self.assertIn(f"matrix.upstream == '{upstream}' && env.LLAMADART_{name}_QUALIFICATION_SHA",body)
-                    self.assertIn('checkout --detach "$LLAMADART_QUALIFICATION_SHA"',body)
-                    self.assertIn('rev-parse HEAD)" = "$LLAMADART_QUALIFICATION_SHA"',body)
 
 
 if __name__ == '__main__': unittest.main()
