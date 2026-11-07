@@ -528,7 +528,8 @@ cmake -S . -B build/tts-smoke -G Ninja \
 cmake --build build/tts-smoke --target \
   llamadart_speculative_api_test llamadart_tts_api_test \
   llamadart_tts_types_test llamadart_tts_eval_test llamadart_mtmd_compat_test \
-  llamadart_tts_smoke llamadart_tts_lfm3_smoke llamadart_soprano_tts_smoke
+  llamadart_tts_smoke llamadart_tts_lfm3_smoke llamadart_soprano_tts_smoke \
+  llamadart_tts_voice_smoke
 ctest --test-dir build/tts-smoke --output-on-failure
 build/tts-smoke/llamadart_tts_smoke \
   /path/to/Qwen3-TTS-model.gguf \
@@ -611,6 +612,25 @@ metadata, the speaker, language and voice rejections, cancel/reset, the
 one-frame failure, finite non-silent PCM, seeded repeats, a cancel issued
 inside the audio decode (it must stop at the decode's first chunk boundary)
 and `max_frames` truncation.
+
+### Chatterbox and Pocket TTS
+
+Builds on llama.cpp v0.9.0 and later also drive Chatterbox (Turbo and
+Multilingual V3) and Pocket TTS for callers whose `_ext` mask names
+`LLAMA_DART_TTS_MODEL_TYPE_CHATTERBOX` or `LLAMA_DART_TTS_MODEL_TYPE_POCKET_TTS`.
+`llama_dart_tts_get_voice_count` and `llama_dart_tts_get_voice_name` list a
+projector's predefined voices, and `llama_dart_tts_start_with_voice` selects
+one by name; an unknown name is `INVALID_ARGUMENT`. Without a voice or a
+speaker reference the first voice speaks. Chatterbox Multilingual takes a
+language and a second sequence for classifier-free guidance. Rules, ABI delta
+and the qualified model files: [docs/tts_voices.md](docs/tts_voices.md).
+
+```bash
+build/tts-smoke/llamadart_tts_voice_smoke \
+  /path/to/chatterbox-turbo-Q8_0.gguf \
+  /path/to/mmproj-chatterbox-turbo-F16.gguf \
+  /tmp/voice-smoke --speaker /path/to/reference.wav --gpu
+```
 
 ## Windows Build Notes
 

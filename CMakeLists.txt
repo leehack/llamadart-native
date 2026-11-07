@@ -185,6 +185,24 @@ unset(LLAMADART_MTMD_HAS_SOPRANO CACHE)
 llamadart_probe_declaration(LLAMADART_MTMD_HAS_SOPRANO
     "#include <mtmd.h>
 int main() { return MTMD_GEN_AUDIO_TYPE_SOPRANO == MTMD_GEN_AUDIO_TYPE_NONE; }")
+# Predefined voices as voice bitmaps (upstream v0.9.0, #31429).
+unset(LLAMADART_MTMD_HAS_GEN_VOICES CACHE)
+llamadart_probe_declaration(LLAMADART_MTMD_HAS_GEN_VOICES
+    "#include <mtmd.h>
+int main() {
+  mtmd_gen_audio_info info{};
+  return info.n_voices != 0 ||
+         sizeof(decltype(&mtmd_gen_audio_voice_name)) == 0 ||
+         sizeof(decltype(&mtmd_gen_audio_get_voice)) == 0 ||
+         sizeof(decltype(&mtmd_bitmap_is_voice)) == 0;
+}")
+unset(LLAMADART_MTMD_HAS_CHATTERBOX CACHE)
+llamadart_probe_declaration(LLAMADART_MTMD_HAS_CHATTERBOX
+    "#include <mtmd.h>
+int main() {
+  return MTMD_GEN_AUDIO_TYPE_CHATTERBOX == MTMD_GEN_AUDIO_TYPE_NONE ||
+         sizeof(decltype(&mtmd_gen_audio_read_tensor)) == 0;
+}")
 list(APPEND CMAKE_REQUIRED_INCLUDES
     "${CMAKE_CURRENT_SOURCE_DIR}/third_party/llama.cpp/common"
     "${CMAKE_CURRENT_SOURCE_DIR}/third_party/llama.cpp/vendor")
@@ -278,6 +296,8 @@ target_compile_definitions(llamadart_lib PRIVATE
     LLAMADART_MTMD_HAS_GEN_STATE=$<BOOL:${LLAMADART_MTMD_HAS_GEN_STATE}>
     LLAMADART_MTMD_HAS_LFM3A_GEN=$<BOOL:${LLAMADART_MTMD_HAS_LFM3A_GEN}>
     LLAMADART_MTMD_HAS_SOPRANO=$<BOOL:${LLAMADART_MTMD_HAS_SOPRANO}>
+    LLAMADART_MTMD_HAS_GEN_VOICES=$<BOOL:${LLAMADART_MTMD_HAS_GEN_VOICES}>
+    LLAMADART_MTMD_HAS_CHATTERBOX=$<BOOL:${LLAMADART_MTMD_HAS_CHATTERBOX}>
     LLAMADART_SPECULATIVE_HAS_COMMON_BATCH=$<BOOL:${LLAMADART_SPECULATIVE_HAS_COMMON_BATCH}>
     LLAMADART_SPECULATIVE_HAS_BATCH_STATE=$<BOOL:${LLAMADART_SPECULATIVE_HAS_BATCH_STATE}>
     LLAMADART_MTMD_HELPER_HAS_OPTIONS=$<BOOL:${LLAMADART_MTMD_HELPER_HAS_OPTIONS}>)
@@ -395,7 +415,9 @@ if (LLAMADART_BUILD_TESTS)
     target_compile_features(llamadart_tts_types_test PRIVATE cxx_std_17)
     target_compile_definitions(llamadart_tts_types_test PRIVATE
         LLAMADART_MTMD_HAS_LFM3A_GEN=$<BOOL:${LLAMADART_MTMD_HAS_LFM3A_GEN}>
-        LLAMADART_MTMD_HAS_SOPRANO=$<BOOL:${LLAMADART_MTMD_HAS_SOPRANO}>)
+        LLAMADART_MTMD_HAS_SOPRANO=$<BOOL:${LLAMADART_MTMD_HAS_SOPRANO}>
+        LLAMADART_MTMD_HAS_GEN_VOICES=$<BOOL:${LLAMADART_MTMD_HAS_GEN_VOICES}>
+        LLAMADART_MTMD_HAS_CHATTERBOX=$<BOOL:${LLAMADART_MTMD_HAS_CHATTERBOX}>)
     target_include_directories(llamadart_tts_types_test PRIVATE
         src
         third_party/llama.cpp/include
@@ -771,6 +793,15 @@ if (LLAMADART_BUILD_TTS_SMOKE)
     target_compile_features(llamadart_soprano_tts_smoke PRIVATE cxx_std_17)
     target_link_libraries(llamadart_soprano_tts_smoke PRIVATE llamadart_lib)
     target_include_directories(llamadart_soprano_tts_smoke PRIVATE
+        third_party/llama.cpp/include
+        third_party/llama.cpp/tools/mtmd
+        src
+    )
+
+    add_executable(llamadart_tts_voice_smoke tools/tts_voice_smoke.cpp)
+    target_compile_features(llamadart_tts_voice_smoke PRIVATE cxx_std_17)
+    target_link_libraries(llamadart_tts_voice_smoke PRIVATE llamadart_lib)
+    target_include_directories(llamadart_tts_voice_smoke PRIVATE
         third_party/llama.cpp/include
         third_party/llama.cpp/tools/mtmd
         src

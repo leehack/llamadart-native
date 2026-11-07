@@ -9,16 +9,24 @@ sys.path.insert(0, str(ROOT / 'tools'))
 import expected_tts_model_types as expected
 
 HEADER = ROOT / 'src/llama_dart_wrapper.h'
-QWEN3, LFM3, SOPRANO = 1 << 1, 1 << 2, 1 << 3
+QWEN3, LFM3, SOPRANO, CHATTERBOX, POCKET = 1 << 1, 1 << 2, 1 << 3, 1 << 4, 1 << 5
 
-MTMD = 'enum mtmd_gen_audio_type {\n    MTMD_GEN_AUDIO_TYPE_NONE = 0,\n    MTMD_GEN_AUDIO_TYPE_QWEN3TTS,\n%s};\n'
+MTMD = 'enum mtmd_gen_audio_type {\n    MTMD_GEN_AUDIO_TYPE_NONE = 0,\n    MTMD_GEN_AUDIO_TYPE_QWEN3TTS,\n%s};\n%s'
 
 
-def checkout(root: Path, *, soprano=False, lfm3_enum=False, helper=False, prompt=False) -> Path:
-    enums = ('    MTMD_GEN_AUDIO_TYPE_SOPRANO,\n' if soprano else '') + (
-        '    MTMD_GEN_AUDIO_TYPE_LFM3A,\n' if lfm3_enum else '')
+def checkout(root: Path, *, soprano=False, lfm3_enum=False, helper=False, prompt=False,
+             pocket_enum=False, chatterbox_enum=False, voices=False, read_tensor=False) -> Path:
+    enums = ''.join(
+        f'    MTMD_GEN_AUDIO_TYPE_{name},\n'
+        for name, present in (('POCKETTTS', pocket_enum), ('SOPRANO', soprano), ('LFM3A', lfm3_enum),
+                              ('CHATTERBOX', chatterbox_enum))
+        if present)
+    functions = ('mtmd_bitmap * mtmd_gen_audio_get_voice(const mtmd_context * ctx, const char * name);\n'
+                 if voices else '') + (
+        'size_t mtmd_gen_audio_read_tensor(mtmd_context * ctx, const char * name, float * out, size_t n_max);\n'
+        if read_tensor else '')
     for name, text in {
-        'tools/mtmd/mtmd.h': MTMD % enums,
+        'tools/mtmd/mtmd.h': MTMD % (enums, functions),
         'tools/mtmd/mtmd-helper.h': 'bool mtmd_helper_gen_audio_next_is_text(void*);\n' if helper else '',
         'common/chat.h': 'std::string common_chat_get_tts_prompt();\n' if prompt else '',
     }.items():
@@ -45,7 +53,21 @@ class ExpectedTtsModelTypesTest(unittest.TestCase):
             self.assertEqual(QWEN3, self.mask(**missing), missing)
 
     def test_the_v080_shape_reports_the_mask_the_macos_and_android_bundles_do(self) -> None:
-        self.assertEqual(0xE, self.mask(soprano=True, lfm3_enum=True, helper=True, prompt=True))
+        self.assertEqual(0xE, self.mask(soprano=True, lfm3_enum=True, helper=True, prompt=True, pocket_enum=True))
+
+    def test_pocket_tts_needs_voice_bitmaps(self) -> None:
+        self.assertEqual(QWEN3, self.mask(pocket_enum=True))
+        self.assertEqual(QWEN3 | POCKET, self.mask(pocket_enum=True, voices=True))
+
+    def test_chatterbox_needs_the_enumerator_voices_and_tensor_reads(self) -> None:
+        self.assertEqual(QWEN3 | CHATTERBOX, self.mask(chatterbox_enum=True, voices=True, read_tensor=True))
+        for missing in ({'voices': True, 'read_tensor': True}, {'chatterbox_enum': True, 'read_tensor': True},
+                        {'chatterbox_enum': True, 'voices': True}):
+            self.assertEqual(QWEN3, self.mask(**missing), missing)
+
+    def test_the_v090_shape_reports_every_type(self) -> None:
+        self.assertEqual(0x3E, self.mask(soprano=True, lfm3_enum=True, helper=True, prompt=True, pocket_enum=True,
+                                         chatterbox_enum=True, voices=True, read_tensor=True))
 
     def test_a_moved_mtmd_header_is_an_error_not_an_empty_answer(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

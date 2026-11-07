@@ -69,6 +69,8 @@ and the oldest iOS simulator because ggml compiles Metal source on the user's
 device, and for what it does not cover (macOS 13 and 14, iOS 16 and 17).
 See `docs/lfm3_support.md` for which LFM3 variants need wrapper surface, the
 opt-in LFM3-Audio speech exports and what stays unwrapped.
+See `docs/tts_voices.md` for the opt-in Chatterbox and Pocket TTS types, the
+predefined-voice exports and their ABI delta for the Dart bindings.
 See `docs/v070_native_contracts.md` for draft expert-cache isolation, dynamic
 export validation, ABI handoff and opt-in EmbeddingGemma-2 model qualification.
 See `docs/v060_1_wrapper_rebuild.md` for the `v0.6.0-1` header additions and
