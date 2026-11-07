@@ -1,18 +1,14 @@
 --- a/ggml/src/ggml-cpu/vec.cpp
 +++ b/ggml/src/ggml-cpu/vec.cpp
-@@ -263,4 +263,5 @@
+@@ -262,5 +262,93 @@
+ }
  
- void ggml_vec_dot_f16(int n, float * GGML_RESTRICT s, size_t bs, ggml_fp16_t * GGML_RESTRICT x, size_t bx, ggml_fp16_t * GGML_RESTRICT y, size_t by, int nrc) {
-+    GGML_ASSERT(n >= 0 && "llamadart F16 dot F32 accumulation");
-     assert(nrc == 1);
-     GGML_UNUSED(nrc);
-@@ -272,5 +273,48 @@
- 
- 
--#if defined(GGML_SIMD)
 +#if defined(__ARM_NEON) && defined(__ARM_FEATURE_FMA) && defined(__ARM_FP16_FORMAT_IEEE) && \
 +    defined(__ARM_FEATURE_FP16_VECTOR_ARITHMETIC) && !defined(__ARM_FEATURE_SVE)
-+    // F16 products and partial sums can overflow before the F32 result is stored.
++#define LLAMADART_F16_DOT_BLOCKED
++// F32 products and sums, for a dot product whose F16 sums were nonfinite.
++__attribute__((noinline))
++static void ggml_vec_dot_f16_f32_sums(int n, float * GGML_RESTRICT s, const ggml_fp16_t * GGML_RESTRICT x, const ggml_fp16_t * GGML_RESTRICT y) {
 +    float32x4_t sum_lo[4], sum_hi[4];
 +    for (int j = 0; j < 4; ++j) {
 +        sum_lo[j] = vdupq_n_f32(0.0f);
@@ -49,9 +45,77 @@
 +        sum_lo[0] = vaddq_f32(sum_lo[0], sum_lo[j]);
 +        sum_hi[0] = vaddq_f32(sum_hi[0], sum_hi[j]);
 +    }
-+    sumf = (ggml_float) vaddvq_f32(vaddq_f32(sum_lo[0], sum_hi[0]));
++    ggml_float sumf = (ggml_float) vaddvq_f32(vaddq_f32(sum_lo[0], sum_hi[0]));
 +    for (; i < n; ++i) {
 +        sumf += (ggml_float) GGML_CPU_FP16_TO_FP32(x[i]) * (ggml_float) GGML_CPU_FP16_TO_FP32(y[i]);
++    }
++    *s = sumf;
++}
++
++// Upstream's F16 multiply-adds over elements [i, end) and its F16 reduction.
++static inline float16x8_t ggml_vec_dot_f16_block(const ggml_fp16_t * GGML_RESTRICT x, const ggml_fp16_t * GGML_RESTRICT y, int i, int end) {
++    float16x8_t sum[4] = { vdupq_n_f16(0.0f), vdupq_n_f16(0.0f), vdupq_n_f16(0.0f), vdupq_n_f16(0.0f) };
++    for (; i < end; i += 32) {
++        for (int j = 0; j < 4; ++j) {
++            sum[j] = vfmaq_f16(sum[j], vld1q_f16((const __fp16 *) (x + i + 8*j)),
++                                       vld1q_f16((const __fp16 *) (y + i + 8*j)));
++        }
++    }
++    sum[0] = vaddq_f16(sum[0], sum[2]);
++    sum[1] = vaddq_f16(sum[1], sum[3]);
++    return vaddq_f16(sum[0], sum[1]);
++}
++
++// Rows longer than one block add each block's F16 sums into F32.
++__attribute__((noinline))
++static void ggml_vec_dot_f16_blocks(int n, float * GGML_RESTRICT s, const ggml_fp16_t * GGML_RESTRICT x, const ggml_fp16_t * GGML_RESTRICT y) {
++    const int np = n & ~31;
++    float32x4_t sum_lo = vdupq_n_f32(0.0f);
++    float32x4_t sum_hi = vdupq_n_f32(0.0f);
++    for (int i = 0; i < np; i += 64 * 32) {
++        const float16x8_t sum = ggml_vec_dot_f16_block(x, y, i, np - i < 64 * 32 ? np : i + 64 * 32);
++        sum_lo = vaddq_f32(sum_lo, vcvt_f32_f16(vget_low_f16(sum)));
++        sum_hi = vaddq_f32(sum_hi, vcvt_f32_f16(vget_high_f16(sum)));
++    }
++    const float sum = vaddvq_f32(vaddq_f32(sum_lo, sum_hi));
++    if (__builtin_expect(!isfinite(sum), 0)) {
++        ggml_vec_dot_f16_f32_sums(n, s, x, y);
++        return;
++    }
++    ggml_float sumf = sum;
++    for (int i = np; i < n; ++i) {
++        sumf += (ggml_float)(GGML_CPU_FP16_TO_FP32(x[i])*GGML_CPU_FP16_TO_FP32(y[i]));
++    }
++    *s = sumf;
++}
++#endif
++
+ void ggml_vec_dot_f16(int n, float * GGML_RESTRICT s, size_t bs, ggml_fp16_t * GGML_RESTRICT x, size_t bx, ggml_fp16_t * GGML_RESTRICT y, size_t by, int nrc) {
++    GGML_ASSERT(n >= 0 && "llamadart F16 dot F32 accumulation");
+     assert(nrc == 1);
+     GGML_UNUSED(nrc);
+@@ -272,5 +360,24 @@
+ 
+ 
+-#if defined(GGML_SIMD)
++#if defined(LLAMADART_F16_DOT_BLOCKED)
++    // F16 sums overflow past 65504. Upstream's F16 multiply-adds and reduction
++    // run in its order on at most 64 products per lane, then add in F32; a
++    // nonfinite F16 or F32 sum is recomputed with F32 products and sums.
++    const int np = n & ~31;
++    if (np > 64 * 32) {
++        ggml_vec_dot_f16_blocks(n, s, x, y);
++        return;
++    }
++    const float16x8_t sum = ggml_vec_dot_f16_block(x, y, 0, np);
++    // sum - sum is zero in every lane only when every lane is finite.
++    if (__builtin_expect(vminvq_u16(vceqzq_f16(vsubq_f16(sum, sum))) == 0, 0)) {
++        ggml_vec_dot_f16_f32_sums(n, s, x, y);
++        return;
++    }
++    sumf = (ggml_float) vaddvq_f32(vaddq_f32(vcvt_f32_f16(vget_low_f16(sum)), vcvt_f32_f16(vget_high_f16(sum))));
++    for (int i = np; i < n; ++i) {
++        sumf += (ggml_float)(GGML_CPU_FP16_TO_FP32(x[i])*GGML_CPU_FP16_TO_FP32(y[i]));
 +    }
 +#elif defined(GGML_SIMD)
      #if defined(__ARM_FEATURE_SVE)

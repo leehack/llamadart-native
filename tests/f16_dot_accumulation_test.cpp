@@ -9,6 +9,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <vector>
 
 namespace {
@@ -24,6 +25,61 @@ void require(bool condition, const char *message) {
 
 float rounded_f16(float value) {
   return ggml_fp16_to_fp32(ggml_fp32_to_fp16(value));
+}
+
+// Rounds to the nearest F16, ties to even, overflowing to infinity. Products
+// and sums of the F16 test inputs below are exact in double, so this models one
+// F16 multiply-add or add.
+double round_f16(double value) {
+  if (!std::isfinite(value) || value == 0.0) {
+    return value;
+  }
+  int exponent;
+  std::frexp(value, &exponent);
+  const int quantum = std::max(exponent - 11, -24);
+  const double rounded = std::ldexp(std::nearbyint(std::ldexp(value, -quantum)), quantum);
+  return std::fabs(rounded) > 65504.0 ? std::copysign(INFINITY, value) : rounded;
+}
+
+// Whether the CPU module multiplies and adds F16 dot products in F16: FP16
+// vector arithmetic without SVE (upstream widens to F32 under SVE).
+bool f16_sums = false;
+
+// Patch 0005 keeps upstream's single-column F16 dot where it is finite: four
+// accumulators of eight lanes take one multiply-add per 32-element step, for
+// at most 64 steps; then accumulators 0+2 and 1+3 and the two results add in
+// F16, and each lane adds into F32. The lanes reduce as (0+4 + 1+5) + (2+6 +
+// 3+7) in F32 and elements past the last full step add in double. A nonfinite
+// result (returned as such) is recomputed in F32 by the kernel.
+constexpr int dot_step = 32;
+constexpr int dot_block_steps = 64;
+constexpr int dot_block = dot_step * dot_block_steps;
+
+double blocked_f16_dot(const std::vector<double> &k, const std::vector<double> &q) {
+  const int n = static_cast<int>(k.size());
+  const int np = n - n % dot_step;
+  float lanes[8] = {};
+  for (int start = 0; start < np; start += dot_block) {
+    const int end = std::min(np, start + dot_block);
+    double sums[dot_step] = {};
+    for (int i = start; i < end; ++i) {
+      sums[i % dot_step] = round_f16(sums[i % dot_step] + k[i] * q[i]);
+    }
+    for (int lane = 0; lane < 8; ++lane) {
+      const double sum02 = round_f16(sums[lane] + sums[16 + lane]);
+      const double sum13 = round_f16(sums[8 + lane] + sums[24 + lane]);
+      lanes[lane] += static_cast<float>(round_f16(sum02 + sum13));
+    }
+  }
+  float pairs[4];
+  for (int lane = 0; lane < 4; ++lane) {
+    pairs[lane] = lanes[lane] + lanes[4 + lane];
+  }
+  double sum = (pairs[0] + pairs[1]) + (pairs[2] + pairs[3]);
+  for (int i = np; i < n; ++i) {
+    sum += k[i] * q[i];
+  }
+  return sum;
 }
 
 class Graph {
@@ -63,8 +119,14 @@ class Graph {
 bool check_result(float actual, double expected, double tolerance,
                   const char *name, int width, int cols) {
   const double error = std::fabs(static_cast<double>(actual) - expected);
-  if (!std::isfinite(actual) || !std::isfinite(expected) ||
-      !std::isfinite(error) || error > tolerance) {
+  bool pass = std::isfinite(actual) && std::isfinite(expected) &&
+              std::isfinite(error) && error <= tolerance;
+  if (std::isnan(expected)) {
+    pass = std::isnan(actual);
+  } else if (std::isinf(expected)) {
+    pass = actual == expected;
+  }
+  if (!pass) {
     std::fprintf(stderr,
                  "FAIL: %s width=%d cols=%d expected=%.17g actual=%.9g tolerance=%.9g\n",
                  name, width, cols, expected, actual, tolerance);
@@ -72,6 +134,75 @@ bool check_result(float actual, double expected, double tolerance,
     return false;
   }
   return true;
+}
+
+// Sixteen identical weight rows times `cols` identical query columns. One
+// column takes the vector dot kernel; eight or more take llamafile GEMM where
+// it is built. NaN padding after each weight row fails any read past the row,
+// unless a nonfinite result is recomputed: without padding such a read takes
+// the next row's finite values instead. One F16 column must match
+// blocked_f16_dot exactly where that is finite; everything else must match
+// the exact sum.
+void values_case(ggml_backend_t backend, const std::vector<float> &key_values,
+                 const std::vector<float> &query_values, ggml_type weight_type,
+                 const char *name, int cols = 1, int padding = 8) {
+  constexpr int rows = 16;
+  const int width = static_cast<int>(key_values.size());
+  const int stride = width + padding;
+  Graph graph(backend);
+  auto *padded = ggml_new_tensor_2d(graph.ctx, weight_type, stride, rows);
+  auto *k = ggml_view_2d(graph.ctx, padded, width, rows, padded->nb[1], 0);
+  auto *q = ggml_new_tensor_2d(graph.ctx, GGML_TYPE_F32, width, cols);
+  auto *out = ggml_mul_mat(graph.ctx, k, q);
+  ggml_mul_mat_set_prec(out, GGML_PREC_F32);
+  graph.allocate(out);
+
+  std::vector<float> keys(static_cast<size_t>(stride) * rows, NAN);
+  std::vector<ggml_fp16_t> half_keys(keys.size(), ggml_fp32_to_fp16(NAN));
+  std::vector<float> queries(static_cast<size_t>(width) * cols);
+  std::vector<double> actual_k(width), actual_q(width);
+  double reference = 0.0;
+  double absolute_sum = 0.0;
+  for (int i = 0; i < width; ++i) {
+    const float kv = key_values[i];
+    const float qv = query_values[i];
+    for (int r = 0; r < rows; ++r) {
+      keys[static_cast<size_t>(r) * stride + i] = kv;
+      half_keys[static_cast<size_t>(r) * stride + i] = ggml_fp32_to_fp16(kv);
+    }
+    for (int c = 0; c < cols; ++c) {
+      queries[static_cast<size_t>(c) * width + i] = qv;
+    }
+    actual_k[i] = weight_type == GGML_TYPE_F16 ? rounded_f16(kv) : kv;
+    // The F16 CPU type trait rounds the F32 query before its dot product.
+    actual_q[i] = weight_type == GGML_TYPE_F16 ? rounded_f16(qv) : qv;
+    const double product = actual_k[i] * actual_q[i];
+    reference += product;
+    absolute_sum += std::fabs(product);
+  }
+  double expected = reference;
+  double tolerance = 1e-7 + 2e-6 * absolute_sum;
+  if (cols == 1 && weight_type == GGML_TYPE_F16 && f16_sums) {
+    const double blocked = blocked_f16_dot(actual_k, actual_q);
+    if (std::isfinite(blocked)) {
+      expected = static_cast<float>(blocked);
+      tolerance = 0.0;
+    }
+  }
+  if (weight_type == GGML_TYPE_F16) {
+    ggml_backend_tensor_set(padded, half_keys.data(), 0, half_keys.size() * sizeof(ggml_fp16_t));
+  } else {
+    ggml_backend_tensor_set(padded, keys.data(), 0, keys.size() * sizeof(float));
+  }
+  ggml_backend_tensor_set(q, queries.data(), 0, queries.size() * sizeof(float));
+  graph.compute();
+  std::vector<float> actual(static_cast<size_t>(rows) * cols);
+  ggml_backend_tensor_get(out, actual.data(), 0, actual.size() * sizeof(float));
+  for (float value : actual) {
+    if (!check_result(value, expected, tolerance, name, width, cols)) {
+      break;
+    }
+  }
 }
 
 // Patch 0006 sums each F16 GEMM lane over at most this many K elements (eight
@@ -88,29 +219,17 @@ enum class Pattern {
   // Each lane sums 64 products to 2047, exact in F16; a 65th product of 32
   // gives the odd 2079, which F16 cannot hold.
   block_exact,
+  // block_exact for the single-column dot's 64 steps of 32 elements.
+  dot_block_exact,
+  // Lanes 0-7 of the first step take 2048, after which each product of 1
+  // rounds away in F16; with the other accumulators' lanes this pins
+  // upstream's F16 multiply-add, reduction order and block length.
+  f16_rounding,
 };
 
-// Sixteen identical weight rows times `cols` identical query columns. One
-// column takes the vector dot kernel; eight or more take llamafile GEMM where
-// it is built. NaN padding after each weight row fails any read past `width`.
-void dot_case(ggml_backend_t backend, int width, float magnitude,
-              Pattern pattern, ggml_type weight_type, const char *name, int cols = 1) {
-  constexpr int rows = 16;
-  constexpr int padding = 8;
-  const int stride = width + padding;
-  Graph graph(backend);
-  auto *padded = ggml_new_tensor_2d(graph.ctx, weight_type, stride, rows);
-  auto *k = ggml_view_2d(graph.ctx, padded, width, rows, padded->nb[1], 0);
-  auto *q = ggml_new_tensor_2d(graph.ctx, GGML_TYPE_F32, width, cols);
-  auto *out = ggml_mul_mat(graph.ctx, k, q);
-  ggml_mul_mat_set_prec(out, GGML_PREC_F32);
-  graph.allocate(out);
-
-  std::vector<float> keys(static_cast<size_t>(stride) * rows, NAN);
-  std::vector<ggml_fp16_t> half_keys(keys.size(), ggml_fp32_to_fp16(NAN));
-  std::vector<float> queries(static_cast<size_t>(width) * cols);
-  double reference = 0.0;
-  double absolute_sum = 0.0;
+void dot_case(ggml_backend_t backend, int width, float magnitude, Pattern pattern,
+              ggml_type weight_type, const char *name, int cols = 1, int padding = 8) {
+  std::vector<float> keys(width), queries(width);
   for (int i = 0; i < width; ++i) {
     float kv = magnitude * (1.0f + 0.1f * (i % 5));
     float qv = magnitude * (1.0f + 0.1f * ((i * 3) % 5));
@@ -132,35 +251,39 @@ void dot_case(ggml_backend_t backend, int width, float magnitude,
     } else if (pattern == Pattern::block_exact) {
       kv = (i % gemm_block) / 8 == 1 ? 31.0f : 32.0f;
       qv = 1.0f;
+    } else if (pattern == Pattern::dot_block_exact) {
+      kv = (i % dot_block) / dot_step == 1 ? 31.0f : 32.0f;
+      qv = 1.0f;
+    } else if (pattern == Pattern::f16_rounding) {
+      kv = i < 8 ? 64.0f : 1.0f;
+      qv = i < 8 ? 32.0f : 1.0f;
     }
-    for (int r = 0; r < rows; ++r) {
-      keys[static_cast<size_t>(r) * stride + i] = kv;
-      half_keys[static_cast<size_t>(r) * stride + i] = ggml_fp32_to_fp16(kv);
-    }
-    for (int c = 0; c < cols; ++c) {
-      queries[static_cast<size_t>(c) * width + i] = qv;
-    }
-    const double actual_k = weight_type == GGML_TYPE_F16 ? rounded_f16(kv) : kv;
-    // The F16 CPU type trait rounds the F32 query before its dot product.
-    const double actual_q = weight_type == GGML_TYPE_F16 ? rounded_f16(qv) : qv;
-    const double product = actual_k * actual_q;
-    reference += product;
-    absolute_sum += std::fabs(product);
+    keys[i] = kv;
+    queries[i] = qv;
   }
-  if (weight_type == GGML_TYPE_F16) {
-    ggml_backend_tensor_set(padded, half_keys.data(), 0, half_keys.size() * sizeof(ggml_fp16_t));
-  } else {
-    ggml_backend_tensor_set(padded, keys.data(), 0, keys.size() * sizeof(float));
+  values_case(backend, keys, queries, weight_type, name, cols, padding);
+}
+
+// One F16 multiply-add of 256 * 256 = 65536 overflows the lane at `index`
+// (step index / 32, position index % 32); a second index takes -65536. All
+// other products are 1, so every exact result is finite.
+void lane_overflow_case(ggml_backend_t backend, int width, int index, const char *name,
+                        int negative_index = -1) {
+  std::vector<float> keys(width, 1.0f), queries(width, 1.0f);
+  keys[index] = queries[index] = 256.0f;
+  if (negative_index >= 0) {
+    keys[negative_index] = 256.0f;
+    queries[negative_index] = -256.0f;
   }
-  ggml_backend_tensor_set(q, queries.data(), 0, queries.size() * sizeof(float));
-  graph.compute();
-  std::vector<float> actual(static_cast<size_t>(rows) * cols);
-  ggml_backend_tensor_get(out, actual.data(), 0, actual.size() * sizeof(float));
-  for (float value : actual) {
-    if (!check_result(value, reference, 1e-7 + 2e-6 * absolute_sum, name, width, cols)) {
-      break;
-    }
-  }
+  values_case(backend, keys, queries, GGML_TYPE_F16, name);
+}
+
+// A NaN or infinite input stays nonfinite, in the F16 steps and in the tail.
+void nonfinite_input_case(ggml_backend_t backend, int width, int index, float value,
+                          const char *name) {
+  std::vector<float> keys(width, 1.0f), queries(width, 1.0f);
+  keys[index] = value;
+  values_case(backend, keys, queries, GGML_TYPE_F16, name);
 }
 
 // Sixteen weight rows times twelve query columns with exact integer products.
@@ -320,10 +443,16 @@ int main() {
       ggml_backend_reg_get_proc_address(reg, "ggml_backend_get_features"));
   require(get_features != nullptr, "CPU features unavailable");
   std::printf("CPU features:");
+  bool fp16_va = false;
+  bool sve = false;
   for (auto *feature = get_features(reg); feature->name != nullptr; ++feature) {
     std::printf(" %s=%s", feature->name, feature->value);
+    fp16_va |= std::strcmp(feature->name, "FP16_VA") == 0;
+    sve |= std::strcmp(feature->name, "SVE") == 0;
   }
-  std::printf("\n");
+  f16_sums = fp16_va && !sve;
+  std::printf("\nSingle-column F16 dot expectation: %s\n",
+              f16_sums ? "upstream F16 sums in 64-step blocks" : "exact");
 
   for (int magnitude = 30; magnitude <= 100; magnitude += 10) {
     dot_case(backend, 64, static_cast<float>(magnitude), Pattern::positive,
@@ -340,6 +469,53 @@ int main() {
   dot_case(backend, 32, 0.0f, Pattern::large_product, GGML_TYPE_F16, "large-product");
   dot_case(backend, 64, 0.0f, Pattern::maximum, GGML_TYPE_F16, "maximum-finite");
   dot_case(backend, 64, 100.0f, Pattern::positive, GGML_TYPE_F32, "f32-control");
+  for (int width : {33, 39, 40, 41, 63, 65, 127, 129}) {
+    dot_case(backend, width, 0.0f, Pattern::maximum, GGML_TYPE_F16, "maximum-tail");
+    dot_case(backend, width, 1.0f, Pattern::positive, GGML_TYPE_F16, "unpadded-tail", 1, 0);
+  }
+  for (int width : {dot_block - dot_step, dot_block, dot_block + dot_step, dot_block + 39,
+                    2 * dot_block + dot_step + 7}) {
+    dot_case(backend, width, 0.0f, Pattern::dot_block_exact, GGML_TYPE_F16, "dot-block-exact");
+  }
+  for (int width : {dot_block - 1, dot_block + dot_step - 1, 2 * dot_block + 5}) {
+    dot_case(backend, width, 0.0f, Pattern::f16_rounding, GGML_TYPE_F16, "f16-rounding");
+  }
+  {
+    // Rows of one block: acc0 lane 7 (high half) of the first step and acc3
+    // lane 7 of the second; overflows of opposite sign in acc0 lanes 0 and 4,
+    // and in acc0 and acc2 lane 0.
+    constexpr int width = 2 * dot_step + 5;
+    for (int index : {7, dot_step + 31}) {
+      lane_overflow_case(backend, width, index, "short-lane-overflow");
+    }
+    lane_overflow_case(backend, width, 0, "short-split-overflow", dot_step + 4);
+    lane_overflow_case(backend, width, 0, "short-split-overflow", dot_step + 16);
+  }
+  {
+    constexpr int width = 2 * dot_block + dot_step + 5;
+    // The first block's acc0 lane 0, the second's acc0 lane 7 (high half),
+    // the last step of the first block in acc2 lane 4, and the final partial
+    // block's acc3 lane 7.
+    for (int index : {3 * dot_step, (dot_block_steps + 5) * dot_step + 7,
+                      (dot_block_steps - 1) * dot_step + 20, 2 * dot_block + 31}) {
+      lane_overflow_case(backend, width, index, "lane-overflow");
+    }
+    // +inf in lane 0 and -inf in lane 4 meet in the F32 sum; +inf in acc0 and
+    // -inf in acc2 meet in the F16 reduction. Both give NaN, not infinity.
+    lane_overflow_case(backend, width, 3 * dot_step, "split-overflow-f32",
+                       (dot_block_steps + 6) * dot_step + 4);
+    lane_overflow_case(backend, width, 3 * dot_step, "split-overflow-f16",
+                       4 * dot_step + 16);
+  }
+  // Upstream's other F16 dot paths assert a finite sum in debug builds.
+  if (f16_sums) {
+    for (int width : {2 * dot_step + 5, 2 * dot_block + dot_step + 5}) {
+      for (int index : {9, width - 3}) {
+        nonfinite_input_case(backend, width, index, NAN, "nan-input");
+        nonfinite_input_case(backend, width, index, INFINITY, "inf-input");
+      }
+    }
+  }
   dot_case(backend, 256, 128.0f, Pattern::cancellation, GGML_TYPE_F16, "hidden-overflow");
   for (int cols : {8, 16, 32}) {
     dot_case(backend, 64, 100.0f, Pattern::positive, GGML_TYPE_F16, "gemm-positive", cols);
