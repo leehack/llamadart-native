@@ -519,6 +519,7 @@ jobs:
         run: >-
           cmake --build build/wrapper-contract --target
           llamadart_owner_api_test llamadart_owner_reentrancy_test
+          llamadart_f16_dot_accumulation_test
           llamadart_speculative_api_test
           llamadart_build_identity_test
           llamadart_cancel_flag_test
@@ -717,6 +718,7 @@ jobs:
           cmake --build ${{ matrix.build_dir }} --target
           llamadart_owner_api_test llamadart_owner_reentrancy_test llamadart_exit_teardown_test llamadart_image_token_limit_test
           llamadart_build_identity_test llamadart_cancel_flag_test
+          llamadart_f16_dot_accumulation_test
       - name: Validate wrapper exports and the static destructor binding
         run: >-
           python3 tools/validate_exports.py --format nm --tool nm
@@ -727,7 +729,7 @@ jobs:
       # the Metal library, which takes most of a minute.
       - name: Run the exit teardown scenarios
         run: >-
-          ctest --test-dir ${{ matrix.build_dir }} -R "owner_|exit_teardown|image_token_limit|build_identity|cancel_flag"
+          ctest --test-dir ${{ matrix.build_dir }} -R "owner_|exit_teardown|image_token_limit|build_identity|cancel_flag|f16_dot_accumulation"
           --timeout 300 --output-on-failure
       # A model that nothing tracks aborts at exit when Metal residency sets
       # are live. Whether a runner has them is outside this repository's

@@ -17,6 +17,23 @@ these hold:
 The v0.7.0 embedding-mode reservation repair and its exact baseline/candidate
 evidence are documented in [v070_native_contracts.md](../../docs/v070_native_contracts.md).
 
+## Proposed exception for native #174
+
+Patch 0005 requests a narrow exception to the first two eligibility conditions
+above; accepting this change requires explicit maintainer approval of that
+exception. Disabling optimized FP16 arithmetic is a build workaround, and this
+localized correctness branch is more than a few lines. The ordinary policy
+therefore does not literally cover it.
+
+Published ARM64 artifacts return nonfinite results for finite F16 dot products.
+The internal kernel cannot be repaired in wrapper `src/`; globally disabling
+FP16 arithmetic would change unrelated kernels and undo optimized CPU variant
+performance. Patch 0005 changes only the non-SVE NEON F16 dot implementation,
+without changing ISA flags, ABI, variants or cache defaults. Qualification,
+performance risk and retirement gates are in
+[native174_f16_dot_accumulation.md](../../docs/native174_f16_dot_accumulation.md).
+This exception does not extend eligibility to other patches.
+
 ## Files
 
 - `series.json` lists the patches in the order they apply. Each entry has the
