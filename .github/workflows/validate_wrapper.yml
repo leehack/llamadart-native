@@ -519,6 +519,7 @@ jobs:
         run: >-
           cmake --build build/wrapper-contract --target
           llamadart_owner_api_test llamadart_owner_reentrancy_test
+          llamadart_f16_dot_accumulation_test
           llamadart_speculative_api_test
           llamadart_build_identity_test
           llamadart_cancel_flag_test
@@ -717,6 +718,7 @@ jobs:
           cmake --build ${{ matrix.build_dir }} --target
           llamadart_owner_api_test llamadart_owner_reentrancy_test llamadart_exit_teardown_test llamadart_image_token_limit_test
           llamadart_build_identity_test llamadart_cancel_flag_test
+          llamadart_f16_dot_accumulation_test
       - name: Validate wrapper exports and the static destructor binding
         run: >-
           python3 tools/validate_exports.py --format nm --tool nm
@@ -727,8 +729,23 @@ jobs:
       # the Metal library, which takes most of a minute.
       - name: Run the exit teardown scenarios
         run: >-
-          ctest --test-dir ${{ matrix.build_dir }} -R "owner_|exit_teardown|image_token_limit|build_identity|cancel_flag"
+          ctest --test-dir ${{ matrix.build_dir }} -R "owner_|exit_teardown|image_token_limit|build_identity|cancel_flag|f16_dot_accumulation"
           --timeout 300 --output-on-failure
+      # Apple CPUs have FHM, so the shipped build takes the FMLAL branch of
+      # patch 0005. ARMv8.2-A with FP16 compiles its conversion branch, as on
+      # the armv8.2_2 Linux and Android variants.
+      - name: Run the F16 accumulation test on the conversion path
+        if: matrix.build == 'release'
+        run: |
+          cmake -S . -B build/f16-conversion -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DGGML_NATIVE=OFF -DGGML_CPU_ARM_ARCH=armv8.2-a+fp16+dotprod \
+            -DGGML_METAL=OFF -DGGML_OPENMP=OFF -DGGML_CCACHE=OFF -DLLAMADART_BUILD_TESTS=ON
+          cmake --build build/f16-conversion --target llamadart_f16_dot_accumulation_test
+          if objdump -d build/f16-conversion/llamadart_f16_dot_accumulation_test | grep -q fmlal; then
+            echo "The conversion-path build contains FMLAL" >&2
+            exit 1
+          fi
+          build/f16-conversion/llamadart_f16_dot_accumulation_test
       # A model that nothing tracks aborts at exit when Metal residency sets
       # are live. Whether a runner has them is outside this repository's
       # control, so their absence is reported instead of failing every native

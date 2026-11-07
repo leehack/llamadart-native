@@ -34,6 +34,10 @@ enables. The compiler also uses these where they apply:
   and 3 `stlur` (LRCPC2, ARMv8.4) instructions, plus the same inline LSE.
   Neither is a scored feature; ARMv8.6 guarantees both, and the I8MM that
   scores this variant is an ARMv8.6 feature.
+- `linux_armv8.6_1` and `android_armv8.6_1` also use FMLAL/FMLAL2 (FHM) in the
+  F16 dot kernel of carried patch 0005: FP16 on ARMv8.4 or later implies FHM,
+  so the compiler defines `__ARM_FEATURE_FP16_FML`. The `armv8.2_2` variants
+  use the conversion path instead.
 - `libggml-cpu.so` (ARMv8.0) contains LSE only inside libgcc's outline-atomic
   helpers, each of which tests `__aarch64_have_lse_atomics` before reaching the
   LSE instruction. It contains no LRCPC, LRCPC2 or CRC.
