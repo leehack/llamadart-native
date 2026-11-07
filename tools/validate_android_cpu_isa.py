@@ -225,7 +225,7 @@ def main():
         symbols = subprocess.check_output([args.readelf, "--dyn-syms", "--wide", str(args.library)], text=True)
         # Decode extensions rather than letting objdump hide them as <unknown>.
         disassembly = subprocess.check_output([
-            args.objdump, "-d", "--mattr=+v9.4a,+sve,+sve2,+sme,+sme2,+mte", str(args.library)
+            args.objdump, "-d", "--mattr=+v9.4a,+sve,+sve2,+sme,+sme2,+mte,+fp16fml", str(args.library)
         ], text=True)
         has_scalable = any(
             is_scalable(int(match[2], 16), match[3].strip())

@@ -34,7 +34,7 @@ def deterministic_correlation_id(
 ) -> str:
     """Return a correlation identifier bound only to the exact release identity.
 
-    Retries and later scheduled runs must reuse the same identifier so
+    Retries and later detector runs must reuse the same identifier so
     `native_release.yml` reconciles them as one idempotent publication
     transaction; nothing run-specific may enter the digest.
     """

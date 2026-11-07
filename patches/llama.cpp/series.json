@@ -38,6 +38,25 @@
         "path": "ggml/src/ggml-metal/kernels/unary.metal",
         "text": "inline constexpr bfloat4 ggml_metal_unary_cast<bfloat4, float4>(float4 x) {"
       }
+    },
+    {
+      "file": "0005-arm-f16-dot-f32-accumulation.patch",
+      "tracking": "https://github.com/leehack/llamadart-native/issues/174",
+      "upstream": "https://github.com/ggml-org/llama.cpp/issues/31734",
+      "android_markers": [
+        {"library": "libggml-cpu.so", "text": "llamadart F16 dot F32 accumulation"}
+      ],
+      "apple_markers": [
+        {"library": "libllamadart.dylib", "text": "llamadart F16 dot F32 accumulation"}
+      ]
+    },
+    {
+      "file": "0006-arm-f16-gemm-f32-accumulation.patch",
+      "tracking": "https://github.com/leehack/llamadart-native/issues/174",
+      "upstream": "https://github.com/ggml-org/llama.cpp/issues/31734",
+      "apple_markers": [
+        {"library": "libllamadart.dylib", "text": "llamadart F16 GEMM F32 accumulation"}
+      ]
     }
   ]
 }

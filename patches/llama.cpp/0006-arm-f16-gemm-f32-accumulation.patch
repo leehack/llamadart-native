@@ -1,0 +1,18 @@
+--- a/ggml/src/ggml-cpu/llamafile/sgemm.cpp
++++ b/ggml/src/ggml-cpu/llamafile/sgemm.cpp
+@@ -3900,4 +3900,4 @@
+     assert(m >= 0);
+     assert(n >= 0);
+-    assert(k >= 0);
++    GGML_ASSERT(k >= 0 && "llamadart F16 GEMM F32 accumulation");
+     assert(lda >= k);
+@@ -4065,6 +4065,7 @@
+ #elif defined(__ARM_FEATURE_FP16_VECTOR_ARITHMETIC) && !defined(_MSC_VER)
+         if (n < 8)
+             return false;
+         if (Btype == GGML_TYPE_F16) {
+-            tinyBLAS<8, float16x8_t, float16x8_t, ggml_fp16_t, ggml_fp16_t, float> tb{ params,
++            // F16 products and partial sums can overflow before the F32 result is stored.
++            tinyBLAS<4, float32x4_t, float32x4_t, ggml_fp16_t, ggml_fp16_t, float> tb{ params,
+                 k, (const ggml_fp16_t *)A, lda,
+                 (const ggml_fp16_t *)B, ldb,

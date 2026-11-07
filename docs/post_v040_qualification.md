@@ -70,6 +70,10 @@ status name and all its commands remain. Android/dispatch v0.4.1 rows remain
 because those jobs have no separate pinned row. The original v0.4.0 comparison
 and limitations above describe the earlier investigation, not the current pin.
 
+Retired in November 2026 (llamadart-native#178): no supported `llamadart`
+core loads a native older than v0.7.0, so `validate_wrapper.yml` no longer
+builds the post-v0.4.0, v0.4.1, v0.5.0 or v0.6.0 rows described here.
+
 `tools/ci_scope.py` uses a small explicit non-native allowlist. Native tests,
 packaging, common build files, submodules, workflow changes and unknown/new paths
 select all native lanes. Git rename detection is disabled for classification so

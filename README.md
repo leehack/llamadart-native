@@ -25,7 +25,7 @@ The Dart API/runtime stays in the main `llamadart` repository.
   - Pins every build to one resolved `llama.cpp` commit and publishes a source
     tag whose submodule entry identifies that exact commit.
 - `Auto Stable Native Release` (`.github/workflows/auto_native_release.yml`)
-  - Daily schedule plus an optional manual detection run.
+  - Manual detection run only; every upstream bump needs wrapper work first.
   - Resolves the latest stable upstream `ggml-org/llama.cpp`
     `vMAJOR.MINOR.PATCH` release tag and fails closed on any other shape.
   - Dispatches `Native Build & Release` only for an exact unbuilt stable
@@ -54,9 +54,10 @@ suffix and is always explicit.
 
 When changing the upstream `llama.cpp` version:
 
-1. `Auto Stable Native Release` detects a new stable upstream tag daily and
-   dispatches `Native Build & Release` for it automatically. Run it manually to
-   pick the change up sooner.
+1. Once `main` builds and qualifies the new stable upstream tag, run
+   `Auto Stable Native Release` manually; it dispatches `Native Build & Release`
+   for that tag. It has no schedule because every upstream bump so far has
+   needed wrapper, patch or ISA-audit work before it could publish.
 2. For a policy-compliant nightly `bNNNN` ref or wrapper-only rebuild tag,
    dispatch `Native Build & Release` manually with an independently resolved
    exact `llama_cpp_tag`/`llama_cpp_commit`, an exact `native_release_tag`,
@@ -216,7 +217,7 @@ Assets are suffixed with platform/arch, for example:
   against the slice binary's imports, and that its framework Info.plist
   declares the slice binary's platform and deployment minimum.
 - `scripts/generate_assets_manifest.sh`: builds `assets.json` + checksums.
-- `scripts/auto_release_dispatch.py`: decides whether daily discovery authorizes
+- `scripts/auto_release_dispatch.py`: decides whether a discovery run authorizes
   one exact native release dispatch and emits its immutable inputs.
 - `scripts/verify_release_provenance.py`: verifies exact-source checkout, source
   tag, and manifest provenance contracts.

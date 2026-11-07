@@ -199,6 +199,27 @@ class AndroidCpuIsaTest(unittest.TestCase):
             self.assertEqual(audit.main(), 0)
             validate_sources.assert_not_called()
 
+    def test_cli_enables_fhm_decoding_without_granting_scalable_exceptions(self):
+        args = ["audit", "--objdump", "objdump", "--readelf", "readelf",
+                "--llama-source", "absent", "--kleidiai-source", "absent", "test.so"]
+
+        def decode(command, **kwargs):
+            if command[0] == "readelf":
+                return symbol("ggml_vec_dot_f16", 0x132500)
+            # NDK 28.2 emits these as <unknown> without explicit +fp16fml,
+            # even with +v9.4a. These are the observed FHM instruction words.
+            enabled = any("+fp16fml" in argument for argument in command)
+            low = "fmlal v4.4s, v17.4h, v16.4h" if enabled else "<unknown>"
+            high = "fmlal2 v7.4s, v17.4h, v16.4h" if enabled else "<unknown>"
+            return disassembly(f"132500: 4e30ee24 {low}\n132504: 6e30ce27 {high}")
+
+        with mock.patch("sys.argv", args), \
+                mock.patch.object(audit.subprocess, "check_output", side_effect=decode), \
+                mock.patch.object(audit, "validate_sources") as validate_sources, \
+                contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(audit.main(), 0)
+            validate_sources.assert_not_called()
+
     def test_cli_scalable_artifact_requires_dispatch_source_audit(self):
         args = ["audit", "--objdump", "objdump", "--readelf", "readelf",
                 "--llama-source", "absent", "--kleidiai-source", "absent", "test.so"]

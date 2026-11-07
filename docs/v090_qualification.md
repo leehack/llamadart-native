@@ -5,11 +5,13 @@ Stable upstream v0.9.0, `cd959bae99ff4bed22bef2604f45241c09bbb8c8`
 `8642541b255bfb5dc39cd351a178be09013a55d6` plus 150 commits. Its native release
 identity is the stable tag `v0.9.0`, which `latest` selects.
 
-This change moves the production submodule to v0.9.0 and adds a `v0.9.0` row
-to every lane in `validate_wrapper.yml`. Native `v0.9.0` is not published:
-the 2026-11-05 automatic dispatch failed at the CPU ISA audits
-([v090_android_isa_qualification.md](v090_android_isa_qualification.md)), and
-the next scheduled dispatch after this change reaches `main` publishes it.
+This change moves the production submodule to v0.9.0 and adds it as the
+pinned `LLAMADART_UPSTREAMS` row of `validate_wrapper.yml`, next to the v0.7.0
+and v0.8.0 rows. Native `v0.9.0` is not published: the 2026-11-05 automatic
+dispatch failed at the CPU ISA audits
+([v090_android_isa_qualification.md](v090_android_isa_qualification.md)).
+Merging this change publishes nothing; `auto_native_release.yml` runs only on
+manual dispatch.
 
 ## Wrapper
 
@@ -27,30 +29,37 @@ Evidence, 2026-11-06, Apple M4 Max, macOS arm64, Metal on, Release,
 `LLAMADART_BUILD_TESTS=ON`, `LLAMADART_BUILD_TTS_SMOKE=ON`: native CTest
 84/84; `tools/validate_exports.py` with `--forbid-import __cxa_atexit` passes
 (92 required exports); `tools/llama_cpp_patches.py check-apple` passes on
-`libllamadart.dylib`.
+`libllamadart.dylib`. With patches 0005 and 0006 (2026-11-07, preset
+`macos-arm64-full`, `LLAMADART_BUILD_TESTS=ON`): CTest 85/85, including
+`llamadart_f16_dot_accumulation_test`; the same export and `check-apple`
+checks pass.
 
 ## Carried patches
 
-`tools/llama_cpp_patches.py apply --strict` succeeds on v0.9.0 and applies only
-0001 and 0002. `manifest --upstream` lists only those two, so a v0.9.0
-`assets.json` lists only them. `series.json` is unchanged.
+Reviewed 2026-11-07 against v0.9.0 and upstream `master`
+`f7591a6a01f9273de03331732bdc0b39721168be` (b12190).
+`tools/llama_cpp_patches.py apply --strict` succeeds on both and applies 0001,
+0002, 0005 and 0006, the four that `manifest --upstream` lists. Every patch also
+passes `git apply --check` on both. `series.json` is unchanged.
 
-- 0001 (Adreno 750, #79) is still needed: upstream PR #29165 is still an open
-  draft, and the matvec reduction selection it guards is unchanged.
-- 0002 (buffer device address, leehack/llamadart#782) is still needed: v0.9.0
-  still takes `bufferDeviceAddress` from `VkPhysicalDeviceVulkan12Features`
-  without checking for the entry point.
-- 0003 (#114) stays retired, as on v0.8.0: its `upstream_fix` is in
-  `src/llama-context.cpp`.
-- 0004 (#154) is retired on v0.9.0: upstream #31360 (`c9daee1`) is in v0.9.0,
-  and `unary.metal` contains its `upstream_fix` text. The patch is not applied
-  and `check-apple` does not require its marker. Its `required_text`, the
-  v0.8.0 `inline constexpr` form, no longer occurs in v0.9.0.
-  `metal_os_floor.yml` checks the unpatched v0.9.0 kernels on the oldest
-  runners.
+| Patch | v0.9.0 | Upstream | Status |
+| --- | --- | --- | --- |
+| 0001 Adreno 750 matvec (#79) | Applied | [#29165](https://github.com/ggml-org/llama.cpp/pull/29165) open draft; `use_subgroups` selection unchanged on `master` | Keep |
+| 0002 buffer device address (leehack/llamadart#782) | Applied | No fix: `master` still takes `bufferDeviceAddress` from `VkPhysicalDeviceVulkan12Features` without checking the entry point; upstream supports Vulkan 1.2 and later only | Keep |
+| 0003 embedding-mode reserve (#114) | Not applied: `upstream_fix` present ([#31086](https://github.com/ggml-org/llama.cpp/pull/31086)) | Fixed since v0.8.0 | Needed only by the v0.7.0 row |
+| 0004 Metal unary cast (#154) | Not applied: `upstream_fix` present, `required_text` absent ([#31360](https://github.com/ggml-org/llama.cpp/pull/31360)) | Fixed after v0.8.0 | Needed only by the v0.8.0 row |
+| 0005 ARM F16 dot (#174) | Applied | [#31734](https://github.com/ggml-org/llama.cpp/issues/31734) open, no fix; non-SVE NEON `ggml_vec_dot_f16` still accumulates in `float16x8_t` | Keep |
+| 0006 ARM F16 GEMM (#174) | Applied | Same issue; llamafile still uses `tinyBLAS<8, float16x8_t, …>` | Keep |
 
-Delete 0004 once no `validate_wrapper.yml` row builds v0.8.0, and 0003 once
-none builds v0.7.0 or older.
+v0.7.0 needs 0001–0003, 0005 and 0006 (0004 does not fit it, since it predates
+the regression). v0.8.0 needs 0001, 0002 and 0004–0006. Deleting 0003 means
+dropping the v0.7.0 `LLAMADART_UPSTREAMS` row (cores 0.15–0.17); deleting 0004
+means dropping the v0.8.0 row (core 0.18). Both are support-policy decisions
+for the maintainer.
+
+`check-apple` does not require the 0004 marker on v0.9.0, and
+`metal_os_floor.yml` checks the unpatched v0.9.0 Metal kernels on the oldest
+runners.
 
 ## Consumer ABI delta from v0.8.0
 
@@ -70,8 +79,8 @@ neither.
 
 ## Remaining gates
 
-- Hosted `v0.9.0` and `pinned` rows of every lane in `validate_wrapper.yml`,
-  `validate_linux_release_rows.yml` and `metal_os_floor.yml`.
+- Hosted `v0.9.0` rows of every lane in `validate_wrapper.yml`, and
+  `validate_linux_release_rows.yml` and `metal_os_floor.yml` at the pin.
 - Android ISA: [v090_android_isa_qualification.md](v090_android_isa_qualification.md).
 - Model, family and device qualification stays with the consumer release; this
   document claims none of it.

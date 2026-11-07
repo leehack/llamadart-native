@@ -17,6 +17,23 @@ these hold:
 The v0.7.0 embedding-mode reservation repair and its exact baseline/candidate
 evidence are documented in [v070_native_contracts.md](../../docs/v070_native_contracts.md).
 
+## Exception for native #174
+
+The maintainer approved a narrow exception to the first two eligibility
+conditions above for patches 0005 and 0006 only. Disabling FP16 vector
+arithmetic or llamafile is a build workaround that slows unrelated kernels
+(llamafile off costs Q4_0/Q8_0 prefill too), and the F16 dot repair is more
+than a few lines.
+
+Published ARM64 artifacts return nonfinite results for finite F16 dot
+products. Patch 0005 changes only the non-SVE NEON `ggml_vec_dot_f16`
+(FMLAL/FMLAL2 with FP16 FML, conversion and F32 FMA otherwise); patch 0006
+switches the FP16 llamafile GEMM tile to F32 accumulation. Neither changes ISA
+flags, ABI, variants or cache defaults. Performance cost, checks and
+publication gates are in
+[native174_f16_dot_accumulation.md](../../docs/native174_f16_dot_accumulation.md).
+This exception does not extend eligibility to other patches.
+
 ## Files
 
 - `series.json` lists the patches in the order they apply. Each entry has the
@@ -100,6 +117,6 @@ none. `llama_cpp_commit` remains the upstream commit the patches apply to.
 4. Describe the patch, its evidence and what removes it in the document of the
    rebuild that introduces it under `docs/`.
 
-Remove a patch when no built upstream needs it any more: the pinned upstream
-and every `validate_wrapper.yml` row contain the fix, or the defect no longer
-reproduces without it.
+Remove a patch when no built upstream needs it any more: every
+`LLAMADART_UPSTREAMS` row of `validate_wrapper.yml`, the pinned one included,
+contains the fix, or the defect no longer reproduces without it.
