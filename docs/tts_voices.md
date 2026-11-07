@@ -80,15 +80,14 @@ move this check with it.
 
 ## Sampling and suppress tokens
 
-The wrapper's TTS sampler now applies the GGUF's
+Chatterbox needs the talker sampler to apply the GGUF's
 `tokenizer.ggml.suppress_tokens` as `-inf` logit biases, as upstream
-`common_sampler` does. Without it Chatterbox draws text tokens: with seeds 2,
-3 and 5 its first token was GPT-2 `<|endoftext|>` (an end-of-generation token),
-which ends the utterance with no audio. Upstream `llama-tts` gave 61 to 72
-frames for seeds 1 to 8 with the same settings. The Qwen3-TTS converter also
-suppresses 1023 codec control tokens, so Qwen3-TTS now samples as upstream does
-too; its smoke and transcription still pass, but a fixed seed may not repeat
-the PCM of earlier wrappers. Soprano writes no suppress tokens.
+`common_sampler` does; [#180](https://github.com/leehack/llamadart-native/pull/180)
+adds that. Its converter suppresses every text token. Without the bias
+Chatterbox draws them: with seeds 2, 3 and 5 its first token was GPT-2
+`<|endoftext|>` (an end-of-generation token), which ends the utterance with no
+audio. Upstream `llama-tts` gave 61 to 72 frames for seeds 1 to 8 with the same
+settings.
 
 The Chatterbox GGUFs embed upstream's defaults in `general.sampling.*`: Turbo
 `top_k 1000`, `top_p 0.95`, `min_p 0`, `temp 0.8`; Multilingual `top_k 0`,

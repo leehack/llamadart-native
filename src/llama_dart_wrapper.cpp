@@ -179,31 +179,12 @@ static const char *llama_dart_tts_find_voice(const llama_dart_tts *tts,
 }
 
 static llama_sampler *
-llama_dart_tts_sampler_init(const llama_vocab *vocab,
-                            const llama_dart_tts_request &request,
+llama_dart_tts_sampler_init(const llama_dart_tts_request &request,
                             uint32_t seed) {
   llama_sampler *sampler =
       llama_sampler_chain_init(llama_sampler_chain_default_params());
   if (sampler == nullptr) {
     return nullptr;
-  }
-  // The GGUF's suppress tokens, which upstream common_sampler applies: the
-  // Chatterbox converter suppresses every text token, so that the backbone
-  // samples speech tokens only, and the Qwen3-TTS one the codec's control
-  // tokens.
-  int32_t n_suppress = 0;
-  const llama_token *suppress =
-      llama_vocab_get_suppress_tokens(vocab, &n_suppress);
-  if (suppress != nullptr && n_suppress > 0) {
-    std::vector<llama_logit_bias> bias;
-    bias.reserve(static_cast<size_t>(n_suppress));
-    for (int32_t i = 0; i < n_suppress; ++i) {
-      bias.push_back({suppress[i], -INFINITY});
-    }
-    llama_sampler_chain_add(
-        sampler, llama_sampler_init_logit_bias(llama_vocab_n_tokens(vocab),
-                                               static_cast<int32_t>(bias.size()),
-                                               bias.data()));
   }
   llama_sampler_chain_add(sampler, llama_sampler_init_top_k(request.top_k));
   llama_sampler_chain_add(sampler,
@@ -2367,8 +2348,7 @@ static enum llama_dart_tts_status llama_dart_tts_start_impl(
   std::random_device random_seed;
   const uint32_t seed =
       llama_dart_tts_resolve_seed(request->seed, [&] { return random_seed(); });
-  tts->sampler = llama_dart_tts_sampler_init(
-      llama_model_get_vocab(llama_get_model(tts->llama)), *request, seed);
+  tts->sampler = llama_dart_tts_sampler_init(*request, seed);
   if (tts->sampler == nullptr) {
     return llama_dart_tts_fail(tts, LLAMA_DART_TTS_STATUS_UPSTREAM_ERROR,
                                "sampler initialization failed");

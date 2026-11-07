@@ -994,8 +994,8 @@ LLAMADART_API const char * llama_dart_tts_last_error(
 // sequence_id is not below n_seq_max / 2 is INVALID_ARGUMENT. Without
 // kv_unified each of the two sequences holds n_ctx / n_seq_max positions.
 //
-// All backbone samplers apply the GGUF's tokenizer.ggml.suppress_tokens, as
-// upstream common_sampler does: Chatterbox suppresses its text tokens.
+// Chatterbox relies on the talker sampler's GGUF suppress tokens to exclude
+// its text tokens.
 //
 // POCKET_TTS generates from the hidden state with the sampling settings of
 // its weights: request top_k, top_p, min_p and temperature are validated but
