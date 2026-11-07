@@ -14,19 +14,19 @@ permissions:
 
 env:
   # Qualification only: never moves the production submodule or release channel.
-  LLAMADART_QUALIFICATION_SHA: 73ab7599b553c03f6f5d2db24a18ad76f2eb36a3
-  LLAMADART_V041_QUALIFICATION_SHA: b29c606e28a01b1bc8c1351026a0fa6e616bf6c4
-  LLAMADART_V050_QUALIFICATION_SHA: 7fe450e19305b828c199d602c23a8337aaa1f03b
-  LLAMADART_V060_QUALIFICATION_SHA: d81235049384534c167caea52b85a694f6103d14
-  LLAMADART_V070_QUALIFICATION_SHA: 620d2225cc436ab0b001e3200e590e3b286ef9ab
-  # Stable v0.8.0, the 0.17.1 runtime upgrade candidate (llamadart-native#112).
-  LLAMADART_V080_QUALIFICATION_SHA: 8642541b255bfb5dc39cd351a178be09013a55d6
+  # One row per upstream release a supported llamadart core ships. The row whose
+  # commit is the submodule pin builds that checkout as is (tools/ci_scope.py).
+  LLAMADART_UPSTREAMS: >-
+    {"v0.7.0": "620d2225cc436ab0b001e3200e590e3b286ef9ab",
+    "v0.8.0": "8642541b255bfb5dc39cd351a178be09013a55d6"}
 
 jobs:
   changes:
     runs-on: ubuntu-latest
     outputs:
       native: ${{ steps.scope.outputs.native }}
+      upstreams: ${{ steps.scope.outputs.upstreams }}
+      pinned: ${{ steps.scope.outputs.pinned }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -47,15 +47,16 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        upstream: [post-v0.4.0, v0.4.1, v0.5.0, v0.6.0, v0.7.0, v0.8.0]
+        upstream: ${{ fromJSON(needs.changes.outputs.upstreams) }}
     steps:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
           submodules: recursive
       - name: Select candidate upstream
+        if: matrix.upstream != needs.changes.outputs.pinned
         env:
-          LLAMADART_QUALIFICATION_SHA: ${{ matrix.upstream == 'v0.8.0' && env.LLAMADART_V080_QUALIFICATION_SHA || matrix.upstream == 'v0.7.0' && env.LLAMADART_V070_QUALIFICATION_SHA || matrix.upstream == 'v0.6.0' && env.LLAMADART_V060_QUALIFICATION_SHA || matrix.upstream == 'v0.5.0' && env.LLAMADART_V050_QUALIFICATION_SHA || matrix.upstream == 'v0.4.1' && env.LLAMADART_V041_QUALIFICATION_SHA || env.LLAMADART_QUALIFICATION_SHA }}
+          LLAMADART_QUALIFICATION_SHA: ${{ fromJSON(env.LLAMADART_UPSTREAMS)[matrix.upstream] }}
         run: |
           git -C third_party/llama.cpp fetch --depth=1 origin "$LLAMADART_QUALIFICATION_SHA"
           git -C third_party/llama.cpp checkout --detach "$LLAMADART_QUALIFICATION_SHA"
@@ -114,16 +115,16 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        upstream: [pinned, v0.5.0, v0.6.0, v0.7.0, v0.8.0]
+        upstream: ${{ fromJSON(needs.changes.outputs.upstreams) }}
     steps:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
           submodules: recursive
       - name: Select candidate upstream
-        if: matrix.upstream != 'pinned'
+        if: matrix.upstream != needs.changes.outputs.pinned
         env:
-          LLAMADART_QUALIFICATION_SHA: ${{ matrix.upstream == 'v0.8.0' && env.LLAMADART_V080_QUALIFICATION_SHA || matrix.upstream == 'v0.7.0' && env.LLAMADART_V070_QUALIFICATION_SHA || matrix.upstream == 'v0.6.0' && env.LLAMADART_V060_QUALIFICATION_SHA || matrix.upstream == 'v0.5.0' && env.LLAMADART_V050_QUALIFICATION_SHA || env.LLAMADART_QUALIFICATION_SHA }}
+          LLAMADART_QUALIFICATION_SHA: ${{ fromJSON(env.LLAMADART_UPSTREAMS)[matrix.upstream] }}
         run: |
           git -C third_party/llama.cpp fetch --depth=1 origin "$LLAMADART_QUALIFICATION_SHA"
           git -C third_party/llama.cpp checkout --detach "$LLAMADART_QUALIFICATION_SHA"
@@ -182,7 +183,7 @@ jobs:
       # The release takes the Android core libraries from this configuration,
       # and no other pull request lane compiles the wrapper with the NDK.
       - name: Build the wrapper and check the bundle's exception runtime
-        if: matrix.upstream == 'pinned'
+        if: matrix.upstream == needs.changes.outputs.pinned
         run: |
           set -euo pipefail
           export ANDROID_NDK_HOME="${ANDROID_SDK_ROOT}/ndk/28.2.13676358"
@@ -204,15 +205,16 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        upstream: [post-v0.4.0, v0.4.1, v0.5.0, v0.6.0, v0.7.0, v0.8.0]
+        upstream: ${{ fromJSON(needs.changes.outputs.upstreams) }}
     steps:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
           submodules: recursive
       - name: Select candidate upstream
+        if: matrix.upstream != needs.changes.outputs.pinned
         env:
-          LLAMADART_QUALIFICATION_SHA: ${{ matrix.upstream == 'v0.8.0' && env.LLAMADART_V080_QUALIFICATION_SHA || matrix.upstream == 'v0.7.0' && env.LLAMADART_V070_QUALIFICATION_SHA || matrix.upstream == 'v0.6.0' && env.LLAMADART_V060_QUALIFICATION_SHA || matrix.upstream == 'v0.5.0' && env.LLAMADART_V050_QUALIFICATION_SHA || matrix.upstream == 'v0.4.1' && env.LLAMADART_V041_QUALIFICATION_SHA || env.LLAMADART_QUALIFICATION_SHA }}
+          LLAMADART_QUALIFICATION_SHA: ${{ fromJSON(env.LLAMADART_UPSTREAMS)[matrix.upstream] }}
         run: |
           git -C third_party/llama.cpp fetch --depth=1 origin "$LLAMADART_QUALIFICATION_SHA"
           git -C third_party/llama.cpp checkout --detach "$LLAMADART_QUALIFICATION_SHA"
@@ -253,7 +255,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        upstream: [pinned, post-v0.4.0, v0.5.0, v0.6.0, v0.7.0, v0.8.0]
+        upstream: ${{ fromJSON(needs.changes.outputs.upstreams) }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -264,10 +266,10 @@ jobs:
         with:
           arch: arm64
       - name: Select candidate upstream
-        env:
-          LLAMADART_QUALIFICATION_SHA: ${{ matrix.upstream == 'v0.8.0' && env.LLAMADART_V080_QUALIFICATION_SHA || matrix.upstream == 'v0.7.0' && env.LLAMADART_V070_QUALIFICATION_SHA || matrix.upstream == 'v0.6.0' && env.LLAMADART_V060_QUALIFICATION_SHA || matrix.upstream == 'v0.5.0' && env.LLAMADART_V050_QUALIFICATION_SHA || env.LLAMADART_QUALIFICATION_SHA }}
-        if: matrix.upstream != 'pinned'
+        if: matrix.upstream != needs.changes.outputs.pinned
         shell: bash
+        env:
+          LLAMADART_QUALIFICATION_SHA: ${{ fromJSON(env.LLAMADART_UPSTREAMS)[matrix.upstream] }}
         run: |
           git -C third_party/llama.cpp fetch --depth=1 origin "$LLAMADART_QUALIFICATION_SHA"
           git -C third_party/llama.cpp checkout --detach "$LLAMADART_QUALIFICATION_SHA"
@@ -297,7 +299,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        upstream: [pinned, v0.5.0, v0.6.0, v0.7.0, v0.8.0]
+        upstream: ${{ fromJSON(needs.changes.outputs.upstreams) }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -308,10 +310,10 @@ jobs:
         with:
           arch: arm64
       - name: Select candidate upstream
-        if: matrix.upstream != 'pinned'
+        if: matrix.upstream != needs.changes.outputs.pinned
         shell: bash
         env:
-          LLAMADART_QUALIFICATION_SHA: ${{ matrix.upstream == 'v0.8.0' && env.LLAMADART_V080_QUALIFICATION_SHA || matrix.upstream == 'v0.7.0' && env.LLAMADART_V070_QUALIFICATION_SHA || matrix.upstream == 'v0.6.0' && env.LLAMADART_V060_QUALIFICATION_SHA || matrix.upstream == 'v0.5.0' && env.LLAMADART_V050_QUALIFICATION_SHA || env.LLAMADART_QUALIFICATION_SHA }}
+          LLAMADART_QUALIFICATION_SHA: ${{ fromJSON(env.LLAMADART_UPSTREAMS)[matrix.upstream] }}
         run: |
           git -C third_party/llama.cpp fetch --depth=1 origin "$LLAMADART_QUALIFICATION_SHA"
           git -C third_party/llama.cpp checkout --detach "$LLAMADART_QUALIFICATION_SHA"
@@ -352,17 +354,17 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        upstream: [pinned, v0.7.0, v0.8.0]
+        upstream: ${{ fromJSON(needs.changes.outputs.upstreams) }}
     steps:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
           submodules: recursive
       - name: Select candidate upstream
-        if: matrix.upstream != 'pinned'
+        if: matrix.upstream != needs.changes.outputs.pinned
         shell: bash
         env:
-          LLAMADART_QUALIFICATION_SHA: ${{ matrix.upstream == 'v0.8.0' && env.LLAMADART_V080_QUALIFICATION_SHA || matrix.upstream == 'v0.7.0' && env.LLAMADART_V070_QUALIFICATION_SHA || env.LLAMADART_QUALIFICATION_SHA }}
+          LLAMADART_QUALIFICATION_SHA: ${{ fromJSON(env.LLAMADART_UPSTREAMS)[matrix.upstream] }}
         run: |
           git -C third_party/llama.cpp fetch --depth=1 origin "$LLAMADART_QUALIFICATION_SHA"
           git -C third_party/llama.cpp checkout --detach "$LLAMADART_QUALIFICATION_SHA"
@@ -397,7 +399,6 @@ jobs:
   linux-artifact-contract:
     needs: changes
     if: needs.changes.outputs.native == 'true'
-    name: ${{ matrix.upstream == 'pinned' && format('linux-artifact-contract ({0})', matrix.arch) || format('linux-artifact-contract ({0}, {1})', matrix.arch, matrix.upstream) }}
     # Same image and compilers as the release's Linux builds (native_release.yml).
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -405,35 +406,37 @@ jobs:
       fail-fast: false
       matrix:
         arch: [x64, arm64]
-        upstream: [pinned, post-v0.4.0, v0.6.0, v0.7.0, v0.8.0]
+        upstream: ${{ fromJSON(needs.changes.outputs.upstreams) }}
     steps:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
           submodules: recursive
       - name: Select candidate upstream
-        if: matrix.upstream != 'pinned'
+        if: matrix.upstream != needs.changes.outputs.pinned
         env:
-          LLAMADART_QUALIFICATION_SHA: ${{ matrix.upstream == 'v0.8.0' && env.LLAMADART_V080_QUALIFICATION_SHA || matrix.upstream == 'v0.7.0' && env.LLAMADART_V070_QUALIFICATION_SHA || matrix.upstream == 'v0.6.0' && env.LLAMADART_V060_QUALIFICATION_SHA || matrix.upstream == 'v0.5.0' && env.LLAMADART_V050_QUALIFICATION_SHA || env.LLAMADART_QUALIFICATION_SHA }}
+          LLAMADART_QUALIFICATION_SHA: ${{ fromJSON(env.LLAMADART_UPSTREAMS)[matrix.upstream] }}
         run: |
           git -C third_party/llama.cpp fetch --depth=1 origin "$LLAMADART_QUALIFICATION_SHA"
           git -C third_party/llama.cpp checkout --detach "$LLAMADART_QUALIFICATION_SHA"
           test "$(git -C third_party/llama.cpp rev-parse HEAD)" = "$LLAMADART_QUALIFICATION_SHA"
       - name: Install Linux build and emulation dependencies
+        env:
+          PINNED: ${{ matrix.upstream == needs.changes.outputs.pinned }}
         run: |
           if [ "${{ matrix.arch }}" = "arm64" ]; then
             sudo python3 tools/prioritize_ubuntu_archive.py
           fi
           sudo apt-get update
           sudo apt-get install -y ninja-build
-          if [ "${{ matrix.arch }}" = "x64" ] && [ "${{ matrix.upstream }}" = "pinned" ]; then
+          if [ "${{ matrix.arch }}" = "x64" ] && [ "$PINNED" = true ]; then
             sudo apt-get install -y clang lld
           fi
           if [ "${{ matrix.arch }}" = "arm64" ]; then
             sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu qemu-user llvm
           fi
       - name: Verify mixed-compiler static retention
-        if: matrix.arch == 'x64' && matrix.upstream == 'pinned'
+        if: matrix.arch == 'x64' && matrix.upstream == needs.changes.outputs.pinned
         run: |
           command -v gcc clang++ cmake readelf ld.lld
           python3 -m unittest discover -s tests -p test_linux_static_destructors.py
@@ -471,22 +474,21 @@ jobs:
   wrapper-contract:
     needs: changes
     if: needs.changes.outputs.native == 'true'
-    name: ${{ matrix.upstream == 'pinned' && 'wrapper-contract' || format('wrapper-contract ({0})', matrix.upstream) }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
-        upstream: [pinned, post-v0.4.0, v0.6.0, v0.7.0, v0.8.0]
+        upstream: ${{ fromJSON(needs.changes.outputs.upstreams) }}
     steps:
       - uses: actions/checkout@v7
         with:
           submodules: recursive
           persist-credentials: false
-      - name: Select the candidate upstream release
-        if: matrix.upstream != 'pinned'
+      - name: Select candidate upstream
+        if: matrix.upstream != needs.changes.outputs.pinned
         env:
-          LLAMADART_QUALIFICATION_SHA: ${{ matrix.upstream == 'v0.8.0' && env.LLAMADART_V080_QUALIFICATION_SHA || matrix.upstream == 'v0.7.0' && env.LLAMADART_V070_QUALIFICATION_SHA || matrix.upstream == 'v0.6.0' && env.LLAMADART_V060_QUALIFICATION_SHA || matrix.upstream == 'v0.5.0' && env.LLAMADART_V050_QUALIFICATION_SHA || env.LLAMADART_QUALIFICATION_SHA }}
+          LLAMADART_QUALIFICATION_SHA: ${{ fromJSON(env.LLAMADART_UPSTREAMS)[matrix.upstream] }}
         run: |
           git -C third_party/llama.cpp fetch --depth=1 origin "$LLAMADART_QUALIFICATION_SHA"
           git -C third_party/llama.cpp checkout --detach "$LLAMADART_QUALIFICATION_SHA"
@@ -539,7 +541,7 @@ jobs:
         run: ctest --test-dir build/wrapper-contract --output-on-failure
       - name: Check that the build identity is reproducible and follows its inputs
         env:
-          UPSTREAM: ${{ matrix.upstream }}
+          PINNED: ${{ matrix.upstream == needs.changes.outputs.pinned }}
         run: |
           stamp() {
             sed -n 's/^#define LLAMA_DART_BUILD_IDENTITY "\(.*\)"$/\1/p' \
@@ -550,7 +552,7 @@ jobs:
           test -n "$first"
           # A candidate upstream moves the llama.cpp gitlink, so only the
           # pinned checkout is clean.
-          if [ "$UPSTREAM" = pinned ]; then
+          if [ "$PINNED" = true ]; then
             grep -Eq ';owner=[0-9a-f]{40};' <<<"$first"
           fi
           cmake -S . -B build/identity-copy -G Ninja -DCMAKE_BUILD_TYPE=Debug \
@@ -592,23 +594,22 @@ jobs:
   msvc-mtmd-link-contract:
     needs: changes
     if: needs.changes.outputs.native == 'true'
-    name: ${{ matrix.upstream == 'pinned' && 'msvc-mtmd-link-contract' || format('msvc-mtmd-link-contract ({0})', matrix.upstream) }}
     runs-on: windows-latest
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
-        upstream: [pinned, post-v0.4.0, v0.6.0, v0.7.0, v0.8.0]
+        upstream: ${{ fromJSON(needs.changes.outputs.upstreams) }}
     steps:
       - uses: actions/checkout@v7
         with:
           submodules: recursive
           persist-credentials: false
       - name: Select candidate upstream
-        if: matrix.upstream != 'pinned'
+        if: matrix.upstream != needs.changes.outputs.pinned
         shell: bash
         env:
-          LLAMADART_QUALIFICATION_SHA: ${{ matrix.upstream == 'v0.8.0' && env.LLAMADART_V080_QUALIFICATION_SHA || matrix.upstream == 'v0.7.0' && env.LLAMADART_V070_QUALIFICATION_SHA || matrix.upstream == 'v0.6.0' && env.LLAMADART_V060_QUALIFICATION_SHA || matrix.upstream == 'v0.5.0' && env.LLAMADART_V050_QUALIFICATION_SHA || env.LLAMADART_QUALIFICATION_SHA }}
+          LLAMADART_QUALIFICATION_SHA: ${{ fromJSON(env.LLAMADART_UPSTREAMS)[matrix.upstream] }}
         run: |
           git -C third_party/llama.cpp fetch --depth=1 origin "$LLAMADART_QUALIFICATION_SHA"
           git -C third_party/llama.cpp checkout --detach "$LLAMADART_QUALIFICATION_SHA"
@@ -676,7 +677,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        upstream: [pinned, v0.6.0, v0.7.0, v0.8.0]
+        upstream: ${{ fromJSON(needs.changes.outputs.upstreams) }}
         build: [release, address-sanitizer]
         include:
           # The shipped configuration: Release with link-time optimization.
@@ -701,9 +702,9 @@ jobs:
           submodules: recursive
           persist-credentials: false
       - name: Select candidate upstream
-        if: matrix.upstream != 'pinned'
+        if: matrix.upstream != needs.changes.outputs.pinned
         env:
-          LLAMADART_QUALIFICATION_SHA: ${{ matrix.upstream == 'v0.8.0' && env.LLAMADART_V080_QUALIFICATION_SHA || matrix.upstream == 'v0.7.0' && env.LLAMADART_V070_QUALIFICATION_SHA || env.LLAMADART_V060_QUALIFICATION_SHA }}
+          LLAMADART_QUALIFICATION_SHA: ${{ fromJSON(env.LLAMADART_UPSTREAMS)[matrix.upstream] }}
         run: |
           git -C third_party/llama.cpp fetch --depth=1 origin "$LLAMADART_QUALIFICATION_SHA"
           git -C third_party/llama.cpp checkout --detach "$LLAMADART_QUALIFICATION_SHA"

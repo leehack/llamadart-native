@@ -43,8 +43,8 @@ python3 tools/build.py windows --arch x64 --backend vulkan
    rebuild number, such as `v0.2.0-1` for upstream `v0.2.0`.
    Nightly rebuilds use the same compact suffix, such as `b10545-1` for
    upstream `b10545`; `bNNNN-llamadart.N` remains read-only legacy syntax.
-3. For an exact stable upstream release, let `Auto Stable Native Release`
-   dispatch it. Scheduled detection publishes nothing itself; it dispatches
+3. For an exact stable upstream release, run `Auto Stable Native Release`
+   manually once `main` qualifies it. Detection publishes nothing itself; it dispatches
    `Native Build & Release` at most once per detector run, with the exact
    upstream ref/commit, the identical native tag, `smoke_policy=required`,
    `publish_release=true`, and a retry-stable `auto-stable/<tag>/<digest>`
