@@ -24,10 +24,6 @@ The wrapper builds against v0.9.0 without source changes, and every
 - `MTMD_GEN_AUDIO_TYPE_CHATTERBOX` maps to `LLAMA_DART_TTS_MODEL_TYPE_UNKNOWN`,
   so the TTS entry points report it unsupported. Chatterbox and the new
   predefined-voice API are not wrapped.
-- The TTS talker sampler now applies the GGUF's suppress tokens. A fixed
-  Qwen3-TTS seed can give different PCM from v0.8.0 wrappers where a codec
-  control token reached the sampled candidates; with the ggml-org 1.7B Base
-  Q4_K_M GGUF, 40 seed and sampling combinations gave identical PCM.
 
 Evidence, 2026-11-06, Apple M4 Max, macOS arm64, Metal on, Release,
 `LLAMADART_BUILD_TESTS=ON`, `LLAMADART_BUILD_TTS_SMOKE=ON`: native CTest
@@ -37,6 +33,16 @@ Evidence, 2026-11-06, Apple M4 Max, macOS arm64, Metal on, Release,
 `macos-arm64-full`, `LLAMADART_BUILD_TESTS=ON`): CTest 85/85, including
 `llamadart_f16_dot_accumulation_test`; the same export and `check-apple`
 checks pass.
+
+## TTS sampler behavior
+
+Separately from the v0.9.0 build, the TTS talker sampler applies the GGUF's
+suppress tokens, which earlier wrappers did not. A fixed Qwen3-TTS seed gives
+the same PCM as before at default settings, `top_k 1` and `temp 0`, which
+the ggml-org 1.7B Base Q4_K_M GGUF confirmed over 40 seed and sampling
+combinations. At high temperature with `top_k 0` (for example `temp 2.5`), PCM
+can differ even when no control token is drawn, because `dist` renormalizes
+without the suppressed mass.
 
 ## Carried patches
 
