@@ -33,10 +33,13 @@ public-model failure is established.
 Both patches change build-tree copies only.
 
 - 0005: under NEON, FMA, IEEE F16, FP16 vector arithmetic and no SVE,
-  `ggml_vec_dot_f16` multiplies, accumulates and reduces in F32 with four
-  low/high accumulator pairs (the original 32-element unroll), an eight-element
-  tail and a scalar tail. With `__ARM_FEATURE_FP16_FML` it uses FMLAL/FMLAL2;
-  otherwise it converts and uses F32 FMA.
+  `ggml_vec_dot_f16` keeps upstream's F16 multiply-adds (four `float16x8_t`
+  accumulators over 32-element steps) for at most 64 steps, so 64 products
+  per lane, then reduces them in F16 in upstream's order and adds the eight
+  lanes into F32. Elements past the last full step add in double, as
+  upstream. A nonfinite result is computed again with F32 products and sums
+  (FMLAL/FMLAL2 with `__ARM_FEATURE_FP16_FML`, conversion and F32 FMA
+  otherwise), which replaces it.
 - 0006: the FP16 llamafile tile keeps its F16 multiply-adds, but each lane
   sums at most 64 products (512 K elements) before the sum is added into an
   F32 accumulator (FMLAL/FMLAL2 by one with FP16 FML, conversion and F32 add
@@ -44,6 +47,19 @@ Both patches change build-tree copies only.
   F32 sum, so a tile with any nonfinite result is computed again by
   `tinyBLAS<4, float32x4_t, ...>` (F16 loads, F32 accumulation), which
   overwrites it.
+
+### Dot contract (0005)
+
+- Overflow: for finite F16 inputs no result is nonfinite. A result whose F16
+  sums overflowed, or that had a nonfinite input, comes from the F32
+  recompute and is bit-identical to the first version of 0005. NaN and
+  infinite inputs still give NaN or infinity.
+- Precision: a finite result for `n` < 2080 (one block plus the scalar tail)
+  is bit-identical to unpatched upstream. Longer rows add each block's F16
+  sums into F32, so F16 rounding no longer compounds across blocks; within a
+  block it is upstream's, so results are not F32-accurate.
+- Cost: one finiteness check per dot product; a recomputed one costs the F16
+  pass plus the F32 pass.
 
 ### GEMM contract (0006)
 
@@ -105,11 +121,31 @@ measured on that hardware.
   that reaches the next row. It reports every failing check. The macOS
   release lanes also run it built for `armv8.2-a+fp16+dotprod` to cover the
   conversion branch.
-- Without the patches it fails on Apple silicon: 16 checks with 0005 alone
-  (GEMM overflow and block cases, eight-query ordinary attention); without
-  0006's flush, recompute or tail block, 1 to 202 checks.
-  A `n - n % 4` tail mutation of 0005 fails 15 checks through the padding. Zero-length and
-  strided query tensors are not covered.
+- For 0005, on a module with FP16 vector arithmetic and no SVE, the test
+  models the patched single-column dot (upstream's F16 multiply-adds,
+  reduction order and 64-step block, then F32 lanes and the double tail) and
+  requires a bit-exact match wherever the model is finite; elsewhere it
+  requires the exact sum. Its 0005 cases: lane sums exact in F16 within one
+  block but not with a 65th step (a longer block), a product of 2048 that
+  absorbs later products of 1 (F16 rounding, reduction order, a shorter
+  block), one overflowing lane in each half, accumulator and block,
+  overflows of opposite sign that meet as NaN in the F32 lanes or in the F16
+  reduction (a finiteness check that misses NaN), product overflow at widths
+  around the recompute's eight-element and scalar tails, rows without NaN
+  padding (an over-read the recompute would hide), and NaN and infinite
+  inputs.
+- On Apple silicon (FMLAL and conversion builds) it fails 32 checks without
+  0005, 19 with the first 0005 (bit-identity only), and 2 to 43 with each of
+  23 mutants of the new 0005: no flush, blocks of 32, 63, 65 or 128 steps, a
+  flush that overwrites instead of adding, no recompute, recompute always,
+  finiteness checks of infinity, NaN, the low half or one lane only, a
+  dropped scalar tail, partial block or high half, over-reads, a reordered
+  F16 reduction or a dropped accumulator, and a recompute that skips a tail,
+  drops its high half or returns NaN. Moving the recompute's eight-element
+  loop into its scalar tail is equivalent and survives. Without
+  0006's flush, recompute or tail block it failed 1 to 202 checks when 0006
+  landed; those GEMM cases are unchanged. Zero-length and strided query
+  tensors are not covered.
 - `tools/linux_cpu_variant_smoke.c` runs the single-column magnitude sweep on
   each selected Linux arm64 CPU module and rejects nonfinite matmul output.
 - Always-active guards (`n >= 0` in 0005, `k >= 0` in 0006) carry the
