@@ -82,6 +82,37 @@ double blocked_f16_dot(const std::vector<double> &k, const std::vector<double> &
   return sum;
 }
 
+// The F32 recompute of a nonfinite row, in the order of the first version of
+// 0005: fused F32 multiply-adds in four accumulators of eight lanes per
+// 32-element step, then single steps of eight into accumulator 0, the
+// accumulators added in order, the low and high four lanes added, the four
+// results added pairwise, and a double tail.
+float f32_recompute_dot(const std::vector<double> &k, const std::vector<double> &q) {
+  const int n = static_cast<int>(k.size());
+  const int np = n - n % dot_step;
+  const int np8 = n - n % 8;
+  float acc[4][8] = {};
+  int i = 0;
+  for (; i < np8; ++i) {
+    float &lane = i < np ? acc[(i % dot_step) / 8][i % 8] : acc[0][i % 8];
+    lane = std::fmaf(static_cast<float>(k[i]), static_cast<float>(q[i]), lane);
+  }
+  for (int j = 1; j < 4; ++j) {
+    for (int lane = 0; lane < 8; ++lane) {
+      acc[0][lane] += acc[j][lane];
+    }
+  }
+  float halves[4];
+  for (int lane = 0; lane < 4; ++lane) {
+    halves[lane] = acc[0][lane] + acc[0][4 + lane];
+  }
+  double sum = (halves[0] + halves[1]) + (halves[2] + halves[3]);
+  for (; i < n; ++i) {
+    sum += k[i] * q[i];
+  }
+  return static_cast<float>(sum);
+}
+
 class Graph {
  public:
   explicit Graph(ggml_backend_t backend) : backend_(backend) {
@@ -141,8 +172,8 @@ bool check_result(float actual, double expected, double tolerance,
 // it is built. NaN padding after each weight row fails any read past the row,
 // unless a nonfinite result is recomputed: without padding such a read takes
 // the next row's finite values instead. One F16 column must match
-// blocked_f16_dot exactly where that is finite; everything else must match
-// the exact sum.
+// blocked_f16_dot exactly where that is finite and f32_recompute_dot exactly
+// where it is not; everything else must match the exact sum.
 void values_case(ggml_backend_t backend, const std::vector<float> &key_values,
                  const std::vector<float> &query_values, ggml_type weight_type,
                  const char *name, int cols = 1, int padding = 8) {
@@ -184,10 +215,9 @@ void values_case(ggml_backend_t backend, const std::vector<float> &key_values,
   double tolerance = 1e-7 + 2e-6 * absolute_sum;
   if (cols == 1 && weight_type == GGML_TYPE_F16 && f16_sums) {
     const double blocked = blocked_f16_dot(actual_k, actual_q);
-    if (std::isfinite(blocked)) {
-      expected = static_cast<float>(blocked);
-      tolerance = 0.0;
-    }
+    expected = std::isfinite(blocked) ? static_cast<float>(blocked)
+                                      : f32_recompute_dot(actual_k, actual_q);
+    tolerance = 0.0;
   }
   if (weight_type == GGML_TYPE_F16) {
     ggml_backend_tensor_set(padded, half_keys.data(), 0, half_keys.size() * sizeof(ggml_fp16_t));
@@ -265,15 +295,43 @@ void dot_case(ggml_backend_t backend, int width, float magnitude, Pattern patter
 }
 
 // One F16 multiply-add of 256 * 256 = 65536 overflows the lane at `index`
-// (step index / 32, position index % 32); a second index takes -65536. All
-// other products are 1, so every exact result is finite.
+// (step index / 32, position index % 32); a second index takes -65536, and
+// `negative` makes the first -65536 as well. All other products are 1, so
+// every exact result is finite.
 void lane_overflow_case(ggml_backend_t backend, int width, int index, const char *name,
-                        int negative_index = -1) {
+                        int negative_index = -1, bool negative = false) {
   std::vector<float> keys(width, 1.0f), queries(width, 1.0f);
-  keys[index] = queries[index] = 256.0f;
+  keys[index] = 256.0f;
+  queries[index] = negative ? -256.0f : 256.0f;
   if (negative_index >= 0) {
     keys[negative_index] = 256.0f;
     queries[negative_index] = -256.0f;
+  }
+  values_case(backend, keys, queries, GGML_TYPE_F16, name);
+}
+
+// Products of mixed binary exponents with fractions that F32 sums round, so a
+// changed order of the F32 additions changes the result. The lane `i % 8`
+// takes the exponent. Each element past the last full step is 3 * 2^-11: under
+// half an ulp of the row's sum (about 10^5 at width 4133), but five of them
+// are not, so a tail summed in float differs from one summed in double.
+// `overflow_index` >= 0 adds a product of 65536 there.
+void spread_case(ggml_backend_t backend, int width, int overflow_index, const char *name) {
+  constexpr int exponents[8] = {5, -7, 3, -9, 6, -6, 2, -10};
+  const int np = width - width % dot_step;
+  std::vector<float> keys(width), queries(width);
+  for (int i = 0; i < width; ++i) {
+    if (i >= np) {
+      keys[i] = 0x3p-8f;
+      queries[i] = 0x1p-3f;
+      continue;
+    }
+    const int exponent = exponents[i % 8];
+    keys[i] = (1.0f + ((7 * i + 3) % 11) / 16.0f) * std::ldexp(1.0f, exponent / 2);
+    queries[i] = (1.0f + ((5 * i + 1) % 13) / 32.0f) * std::ldexp(1.0f, exponent - exponent / 2);
+  }
+  if (overflow_index >= 0) {
+    keys[overflow_index] = queries[overflow_index] = 256.0f;
   }
   values_case(backend, keys, queries, GGML_TYPE_F16, name);
 }
@@ -490,6 +548,13 @@ int main() {
     }
     lane_overflow_case(backend, width, 0, "short-split-overflow", dot_step + 4);
     lane_overflow_case(backend, width, 0, "short-split-overflow", dot_step + 16);
+    for (int index : {7, dot_step + 31, width - 3}) {
+      lane_overflow_case(backend, width, index, "short-negative-overflow", -1, true);
+    }
+    spread_case(backend, 64, -1, "spread");
+    spread_case(backend, width, -1, "spread-tail");
+    spread_case(backend, width, 11, "spread-recompute");
+    spread_case(backend, width + 3, dot_step + 20, "spread-recompute-tail");
   }
   {
     constexpr int width = 2 * dot_block + dot_step + 5;
@@ -506,6 +571,12 @@ int main() {
                        (dot_block_steps + 6) * dot_step + 4);
     lane_overflow_case(backend, width, 3 * dot_step, "split-overflow-f16",
                        4 * dot_step + 16);
+    for (int index : {3 * dot_step, 2 * dot_block + 31}) {
+      lane_overflow_case(backend, width, index, "negative-overflow", -1, true);
+    }
+    spread_case(backend, width, -1, "spread-blocks");
+    spread_case(backend, width + 3, -1, "spread-blocks-tail");
+    spread_case(backend, width, 5 * dot_step + 3, "spread-blocks-recompute");
   }
   // Upstream's other F16 dot paths assert a finite sum in debug builds.
   if (f16_sums) {

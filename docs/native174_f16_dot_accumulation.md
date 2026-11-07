@@ -139,11 +139,16 @@ at 0.79 or 0.87.
   models the patched single-column dot (upstream's F16 multiply-adds,
   reduction order and 64-step block, then F32 lanes and the double tail) and
   requires a bit-exact match wherever the model is finite; elsewhere it
-  requires the exact sum. Its 0005 cases: lane sums exact in F16 within one
+  requires a bit-exact match to the first 0005's F32 recompute (fused
+  multiply-adds in four accumulators, then the accumulators, halves and pairs
+  added in order, and a double tail). Its 0005 cases: lane sums exact in F16 within one
   block but not with a 65th step (a longer block), a product of 2048 that
   absorbs later products of 1 (F16 rounding, reduction order, a shorter
   block), one overflowing lane in each half, accumulator and block of one-
-  and multi-block rows,
+  and multi-block rows, the same overflow in the negative direction (a check
+  that sees only positive overflow), mixed-exponent non-integer rows whose F32
+  rounding makes the order of the sums visible, finite (F32 lane order, a block
+  tail summed in float) or recomputed (accumulator order),
   overflows of opposite sign that meet as NaN in the F32 lanes or in the F16
   reduction (a finiteness check that misses NaN), product overflow at widths
   around the recompute's eight-element and scalar tails, rows without NaN
