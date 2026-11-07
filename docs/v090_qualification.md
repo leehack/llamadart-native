@@ -24,6 +24,10 @@ The wrapper builds against v0.9.0 without source changes, and every
 - `MTMD_GEN_AUDIO_TYPE_CHATTERBOX` maps to `LLAMA_DART_TTS_MODEL_TYPE_UNKNOWN`,
   so the TTS entry points report it unsupported. Chatterbox and the new
   predefined-voice API are not wrapped.
+- The TTS talker sampler now applies the GGUF's suppress tokens. A fixed
+  Qwen3-TTS seed can give different PCM from v0.8.0 wrappers where a codec
+  control token reached the sampled candidates; with the ggml-org 1.7B Base
+  Q4_K_M GGUF, 40 seed and sampling combinations gave identical PCM.
 
 Evidence, 2026-11-06, Apple M4 Max, macOS arm64, Metal on, Release,
 `LLAMADART_BUILD_TESTS=ON`, `LLAMADART_BUILD_TTS_SMOKE=ON`: native CTest

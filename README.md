@@ -517,6 +517,12 @@ runs one code-predictor call under a different seed first. Each task therefore
 starts the RNG from its own seed, and a repeated request and seed repeat the
 PCM. `LLAMA_DEFAULT_SEED` draws one random seed per task for both samplers.
 
+The talker sampler gives the GGUF's `tokenizer.ggml.suppress_tokens` a `-inf`
+bias, as upstream `common_sampler` does. For Qwen3-TTS these are the codec's
+control tokens, which code2wav rejects as out-of-range codes, failing the
+synthesis. Earlier wrappers did not apply them, so a fixed seed can give
+different PCM where a control token reached the sampled candidates.
+
 The local smoke target is opt-in because it requires large model artifacts:
 
 ```bash
