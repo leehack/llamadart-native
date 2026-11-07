@@ -28,8 +28,9 @@ therefore does not literally cover it.
 Published ARM64 artifacts return nonfinite results for finite F16 dot products.
 The internal kernel cannot be repaired in wrapper `src/`; globally disabling
 FP16 arithmetic would change unrelated kernels and undo optimized CPU variant
-performance. Patch 0005 changes only the non-SVE NEON F16 dot implementation,
-without changing ISA flags, ABI, variants or cache defaults. Qualification,
+performance. Patch 0005 changes only the non-SVE NEON F16 dot implementation:
+compiler-advertised FP16 FML uses widening FMLAL/FMLAL2, with conversion/F32-FMA
+otherwise. It changes no ISA flags, ABI, variants or cache defaults. Qualification,
 performance risk and retirement gates are in
 [native174_f16_dot_accumulation.md](../../docs/native174_f16_dot_accumulation.md).
 This exception does not extend eligibility to other patches.

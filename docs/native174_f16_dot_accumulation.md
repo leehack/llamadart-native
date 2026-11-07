@@ -20,10 +20,13 @@ operator cases against actual public `v0.8.0-3` macOS ARM64 and Linux ARM64
 failures or proof of a new release regression. Severity remains P2.
 
 The carried branch requires NEON, FMA, IEEE F16, FP16 vector arithmetic and
-no SVE. Global SIMD mappings, ABI, ISA flags, CPU variant selection and cache
-defaults are unchanged. FHM intrinsics are deferred: this conversion/F32-FMA
-candidate adds no instruction-family or toolchain requirement. Other F16
-kernels, including separate llamafile GEMM, are outside the repair.
+no SVE. When the compiler defines `__ARM_FEATURE_FP16_FML`, it uses
+FMLAL/FMLAL2 to accumulate the low/high F16 halves directly into F32.
+Otherwise it retains the conversion/F32-FMA path. The fast path uses only
+the existing compiler-advertised capability; it adds no ISA flags or runtime
+dispatch. Global SIMD mappings, ABI, CPU variant selection and cache defaults
+are unchanged. Other F16 kernels, including separate llamafile GEMM, are
+outside the repair.
 
 Patch 0005 requests the explicit, issue-specific policy exception described
 in [the patch policy](../patches/llama.cpp/README.md#proposed-exception-for-native-174).
@@ -37,12 +40,26 @@ exception in the PR; publication is a separate decision.
 `llamadart_f16_dot_accumulation_test` uses production ggml graph/backend APIs,
 with one CPU thread and checks that remain active in Release. It covers
 operator magnitudes, vector/tail boundaries and synthetic ordinary/flash
-attention. These tests must be compiled and run before claiming corrected
-behavior. Attention failure/restoration is unverified until then. Zero-length kernel
-execution and noncontiguous/strided tensor paths are not covered by this
-candidate test; the width sweep begins at one.
+attention. Run it against each exact candidate/control platform before
+claiming corrected behavior there. A candidate pass alone does not establish
+causal attention failure/restoration. Zero-length kernel execution and
+noncontiguous/strided tensor paths are not covered by this candidate test;
+the width sweep begins at one.
 The Linux compatibility smoke retains its original matrix shape and rejects
 nonfinite results/errors explicitly.
+
+Local M4 Max CPU source builds pass the full numerical test for both the
+conversion-only `5fcce7c` and FHM `acebd230` candidates; the original control
+fails. With one hash-bound cached GGUF, the conversion-only build's median
+decode throughput was 1.6–1.9% lower than the original, with FA off/on. This
+does not measure FHM model performance, model quality or an affected public
+model.
+
+Across 27 rotated direct-dot runs at lengths 64/128/256, the FHM build's median
+latency was 27–46% lower than conversion-only, but still 19–25% higher than the
+original. The first length-64 run had a broad outlier; retain the full ranges
+and provenance in the PR evidence. These kernel measurements do not establish
+FHM whole-model performance or other-platform qualification.
 
 Source-only Python patch checks cover exact application, markers, mismatch
 skip/strict failure and pristine upstream preservation. Android and Apple
