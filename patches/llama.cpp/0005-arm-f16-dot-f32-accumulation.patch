@@ -6,7 +6,7 @@
 +    GGML_ASSERT(n >= 0 && "llamadart F16 dot F32 accumulation");
      assert(nrc == 1);
      GGML_UNUSED(nrc);
-@@ -272,5 +273,38 @@
+@@ -272,5 +273,48 @@
  
  
 -#if defined(GGML_SIMD)
@@ -25,15 +25,25 @@
 +        for (int j = 0; j < 4; ++j) {
 +            const float16x8_t vx = vld1q_f16((const __fp16 *) (x + i + 8*j));
 +            const float16x8_t vy = vld1q_f16((const __fp16 *) (y + i + 8*j));
++#if defined(__ARM_FEATURE_FP16_FML)
++            sum_lo[j] = vfmlalq_low_f16(sum_lo[j], vx, vy);
++            sum_hi[j] = vfmlalq_high_f16(sum_hi[j], vx, vy);
++#else
 +            sum_lo[j] = vfmaq_f32(sum_lo[j], vcvt_f32_f16(vget_low_f16(vx)), vcvt_f32_f16(vget_low_f16(vy)));
 +            sum_hi[j] = vfmaq_f32(sum_hi[j], vcvt_f32_f16(vget_high_f16(vx)), vcvt_f32_f16(vget_high_f16(vy)));
++#endif
 +        }
 +    }
 +    for (; i < np8; i += 8) {
 +        const float16x8_t vx = vld1q_f16((const __fp16 *) (x + i));
 +        const float16x8_t vy = vld1q_f16((const __fp16 *) (y + i));
++#if defined(__ARM_FEATURE_FP16_FML)
++        sum_lo[0] = vfmlalq_low_f16(sum_lo[0], vx, vy);
++        sum_hi[0] = vfmlalq_high_f16(sum_hi[0], vx, vy);
++#else
 +        sum_lo[0] = vfmaq_f32(sum_lo[0], vcvt_f32_f16(vget_low_f16(vx)), vcvt_f32_f16(vget_low_f16(vy)));
 +        sum_hi[0] = vfmaq_f32(sum_hi[0], vcvt_f32_f16(vget_high_f16(vx)), vcvt_f32_f16(vget_high_f16(vy)));
++#endif
 +    }
 +    for (int j = 1; j < 4; ++j) {
 +        sum_lo[0] = vaddq_f32(sum_lo[0], sum_lo[j]);
