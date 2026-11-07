@@ -171,8 +171,10 @@ static int run_finite_dot_cases(ggml_backend_dev_t device) {
       ggml_backend_tensor_get(out, &actual, 0, sizeof(actual));
       const double error = fabs((double)actual - reference);
       // Patch 0005 keeps upstream's F16 multiply-adds and reduction: at most
-      // four F16 roundings, each within 2^-11 of the absolute sum, for 64 elements.
-      if (!isfinite(actual) || !isfinite(error) || error > 1e-7 + 0x1p-9 * absolute_sum) {
+      // four F16 roundings, each within 2^-11 of the absolute sum, for 64
+      // elements. The F32 control runs no patched code.
+      const double tolerance = 1e-7 + (f32_control ? 2e-6 : 0x1p-9) * absolute_sum;
+      if (!isfinite(actual) || !isfinite(error) || error > tolerance) {
         fprintf(stderr, "finite dot case %d mag %.0f expected %.17g got %.9g\n",
                 test_case, magnitude, reference, actual);
         status = 1;
