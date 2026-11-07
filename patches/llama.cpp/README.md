@@ -71,7 +71,8 @@ library lacks the `text` of an `android_markers` entry. It reads the built
 library, so it does not matter why the patch is missing. The release runs it
 on every Android bundle and `validate_wrapper.yml` on the pinned upstream, so
 a patch that upstream has outgrown fails the pull request that moves the
-upstream, or the release, the automatic stable release included. Check then
+upstream, or the manually dispatched release (`native_release.yml`, or
+`auto_native_release.yml` for a new stable upstream tag). Check then
 whether upstream fixed the defect, and refresh the patch or delete it.
 
 For that reason every patch must have at least one marker, and so must change
