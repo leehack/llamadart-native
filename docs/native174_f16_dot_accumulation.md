@@ -148,7 +148,8 @@ at 0.79 or 0.87.
   reduction (a finiteness check that misses NaN), product overflow at widths
   around the recompute's eight-element and scalar tails, rows without NaN
   padding (an over-read the recompute would hide), and NaN and infinite
-  inputs.
+  inputs (only there: upstream's other paths assert a finite sum in debug
+  builds).
 - On Apple silicon (FMLAL and conversion builds) it fails 36 checks without
   0005, 19 with the first 0005 (bit-identity only), and 1 to 40 with each of
   29 mutants of the new 0005: no flush, an in-line block of 65 or 128 steps,

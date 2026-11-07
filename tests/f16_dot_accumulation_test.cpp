@@ -507,10 +507,13 @@ int main() {
     lane_overflow_case(backend, width, 3 * dot_step, "split-overflow-f16",
                        4 * dot_step + 16);
   }
-  for (int width : {2 * dot_step + 5, 2 * dot_block + dot_step + 5}) {
-    for (int index : {9, width - 3}) {
-      nonfinite_input_case(backend, width, index, NAN, "nan-input");
-      nonfinite_input_case(backend, width, index, INFINITY, "inf-input");
+  // Upstream's other F16 dot paths assert a finite sum in debug builds.
+  if (f16_sums) {
+    for (int width : {2 * dot_step + 5, 2 * dot_block + dot_step + 5}) {
+      for (int index : {9, width - 3}) {
+        nonfinite_input_case(backend, width, index, NAN, "nan-input");
+        nonfinite_input_case(backend, width, index, INFINITY, "inf-input");
+      }
     }
   }
   dot_case(backend, 256, 128.0f, Pattern::cancellation, GGML_TYPE_F16, "hidden-overflow");
