@@ -42,7 +42,11 @@ The resulting `libggml-cpu.so` SHA-256 was
 This CPU artifact check does not claim full Vulkan/OpenCL packaging or hardware
 execution coverage.
 
-`Validate Wrapper` retains prior candidate lanes and adds exact v0.4.1 lanes:
+Retired in November 2026 (llamadart-native#178): no supported `llamadart`
+core loads a native older than v0.7.0, so `validate_wrapper.yml` no longer
+builds the post-v0.4.0, v0.4.1, v0.5.0 or v0.6.0 rows described here.
+
+`Validate Wrapper` retained prior candidate lanes and added exact v0.4.1 lanes:
 
 - Android release ARMv8.2 CPU artifact build and source/instruction validation.
 - Compiled selector and Q4/Q8 scalar-reference compute under QEMU `cortex-a53`

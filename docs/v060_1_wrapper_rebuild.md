@@ -429,8 +429,8 @@ libllamadart do the catching, which is what they are about.
 
 In `validate_wrapper.yml`:
 
-- `wrapper-contract` runs every test on Linux x64 against the pinned,
-  post-v0.4.0 and v0.6.0 upstreams and reads lavapipe through the wrapper
+- `wrapper-contract` runs every test on Linux x64 against each qualified
+  upstream and reads lavapipe through the wrapper
   (`llvmpipe`, API 1.4, loader 1.3, subgroup size 8, with
   `GGML_VK_VISIBLE_DEVICES=0`).
 - `windows-arm64-kleidiai` runs every test that needs no backend, with
