@@ -12,6 +12,8 @@
 
 namespace {
 
+int failures = 0;
+
 void require(bool condition, const char *message) {
   if (!condition) {
     std::fprintf(stderr, "FAIL: %s\n", message);
@@ -57,7 +59,7 @@ class Graph {
   ggml_backend_buffer_t buffer_ = nullptr;
 };
 
-void check_result(float actual, double expected, double tolerance,
+bool check_result(float actual, double expected, double tolerance,
                   const char *name, int width) {
   const double error = std::fabs(static_cast<double>(actual) - expected);
   if (!std::isfinite(actual) || !std::isfinite(expected) ||
@@ -65,8 +67,10 @@ void check_result(float actual, double expected, double tolerance,
     std::fprintf(stderr,
                  "FAIL: %s width=%d expected=%.17g actual=%.9g tolerance=%.9g\n",
                  name, width, expected, actual, tolerance);
-    std::exit(1);
+    ++failures;
+    return false;
   }
+  return true;
 }
 
 enum class Pattern { positive, cancellation, large_product, maximum, subnormal };
@@ -172,7 +176,10 @@ void attention_case(ggml_backend_t backend, bool flash, float magnitude) {
   std::vector<float> actual(values);
   ggml_backend_tensor_get(out, actual.data(), 0, actual.size() * sizeof(float));
   for (int i = 0; i < values; ++i) {
-    check_result(actual[i], expected[i], 1e-3, flash ? "flash-attention" : "attention", width);
+    if (!check_result(actual[i], expected[i], 1e-3,
+                      flash ? "flash-attention" : "attention", width)) {
+      break;
+    }
   }
 }
 
@@ -229,6 +236,10 @@ int main() {
 #if defined(LLAMADART_TEST_CPU_BACKEND)
   ggml_backend_unload(reg);
 #endif
+  if (failures != 0) {
+    std::fprintf(stderr, "FAIL: %d checks\n", failures);
+    return 1;
+  }
   std::printf("PASS: finite F16 dot, tails, controls and ordinary/flash attention\n");
   return 0;
 }
