@@ -92,8 +92,8 @@ conversion tile (+270% time) because its accumulators exceed the register file.
 ## Before publication
 
 These gates hold before any release carries the patches, including the
-`v0.9.0` release that the daily stable detector publishes once its ISA audit
-passes on `main`:
+`v0.9.0` release, which a maintainer dispatches manually once the v0.9.0 pin
+is on `main`:
 
 - Run the test against each published CPU module: Android variants on a
   device, Linux variants, Apple.
