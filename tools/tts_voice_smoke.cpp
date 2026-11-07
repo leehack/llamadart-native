@@ -168,9 +168,11 @@ static bool list_voices(mtmd_context *mtmd, uint32_t bit, std::vector<std::strin
     if (llama_dart_tts_get_voice_count(mtmd, bit, &count) != LLAMA_DART_TTS_STATUS_OK || count <= 0) {
         return fail("the projector lists no predefined voice");
     }
+#if LLAMADART_MTMD_HAS_GEN_VOICES
     if (count != mtmd_gen_audio_get_info(mtmd).n_voices) {
         return fail("the wrapper's voice count differs from upstream's");
     }
+#endif
     for (int32_t i = 0; i < count; ++i) {
         size_t length = 0;
         if (llama_dart_tts_get_voice_name(mtmd, bit, i, nullptr, 0, &length) != LLAMA_DART_TTS_STATUS_OK ||
