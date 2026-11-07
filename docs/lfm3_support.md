@@ -40,6 +40,8 @@ The generator differs from Qwen3-TTS in ways an allowlist entry cannot cover:
 - Its prompt must be the model's `tts` chat template, ending in
   `<|audio_start|>`. The wrapper renders `request.text` with llama.cpp's
   `common_chat_get_tts_prompt`, `request.language` and the voice.
+  `llama_dart_tts_get_voice_name` lists the voices, `female` and `male`
+  ([tts_voices.md](tts_voices.md)).
 - Frames come from the hidden state. The text head is not sampled, so a text
   end-of-generation token cannot end the speech; the end-of-audio code does.
 - Upstream ignores a speaker reference with a warning; the wrapper refuses it.
