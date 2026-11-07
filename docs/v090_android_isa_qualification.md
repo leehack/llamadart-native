@@ -87,6 +87,27 @@ and the 12 quantized matmuls against the scalar reference in each run:
 Each QEMU row also passed with `GGML_KLEIDIAI_SME=1`. The `sve256` row executes
 the two SVE Q8_0 kernels that v0.8.0 added. No lane had run them before.
 
+### With patches 0005 and 0006
+
+Re-checked 2026-11-07 on v0.9.0 with `main`'s patch series. The source pair is
+unchanged because the audit fingerprints the unpatched submodule, not the
+patched copies. Patch 0005 adds FMLAL/FMLAL2 (FHM) to `ggml_vec_dot_f16` only
+where the compiler defines `__ARM_FEATURE_FP16_FML`: FP16 on ARMv8.4 or later.
+
+| Module | Toolchain | Audit | FMLAL/FMLAL2 |
+| --- | --- | --- | --- |
+| Android `armv8.2_2` | NDK 28.2, macOS arm64 | PASS: 266,016 instructions; 3,130 scalable in the 22 functions | 0 |
+| Android `armv8.6_1` | same | PASS: 269,285 instructions; 3,130 scalable in the 22 functions | 10, all in `ggml_vec_dot_f16` |
+| Linux baseline, `linux_armv8.2_2`, `linux_armv8.6_1` | `ubuntu:24.04` arm64 container, GCC 13.3, `tools/check_linux_arm64_cpu_variants.sh` | PASS for all three; QEMU selects the expected module on `cortex-a53`, `cortex-a72`, `neoverse-n1`, `neoverse-v1` and `neoverse-n2`, and the finite F16 dot check passes on each | 0, 0 and 10 (`fhm=10/0`) |
+
+`validate_linux_arm64_cpu_isa.py` allows the `fhm` family only for a variant
+with FP16 on ARMv8.4 or later, so `linux_armv8.6_1` passes and an FMLAL in
+`linux_armv8.2_2` would fail. `validate_android_cpu_isa.py` checks only SVE/SME
+containment; it decodes with `+fp16fml` so FMLAL is not an `<unknown>` word, and
+CI and the release run it on `android_armv8.2_2` only. Applying the Linux family
+policy to the two Android modules above also passes, with `fhm` allowed only for
+`armv8.6_1`.
+
 ## Remaining gates
 
 - Hosted `android-arm64-isa`, `kleidiai-dispatch-emulated`,
