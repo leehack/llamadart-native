@@ -19,9 +19,7 @@ import sys
 
 # Bind complete source subtree pairs, not independent hash sets: a new caller
 # or a different KleidiAI combination invalidates the dispatch audit.
-# Candidate audit evidence: docs/post_v040_qualification.md,
-# docs/v041_android_isa_qualification.md, docs/v050_android_isa_qualification.md
-# docs/v060_android_isa_qualification.md, docs/v070_android_isa_qualification.md,
+# Candidate audit evidence: docs/v070_android_isa_qualification.md,
 # docs/v080_android_isa_qualification.md and docs/v090_android_isa_qualification.md.
 V070_SOURCE_PAIR = (
     "b571df853210d243a83b1ec34a6936f147916f0369d792f8bb0d17f37fc7894b",
@@ -36,26 +34,6 @@ V090_SOURCE_PAIR = (
     "fd5b9ca98d07b81671eca377c258da74e72173f92f3cab0acdf6c17ab870bd9d",
 )
 SOURCE_PAIRS = frozenset({
-    (  # llama.cpp v0.4.0 / KleidiAI v1.24.0
-        "c4dc92a7d95ebfad7f5f55e75be2ae773b7d95faf72a9581c9479c42bc41bca0",
-        "64189fc613c1c4c3aaeeb6bb12b38d85dd6728cafd2261a5a88f1b77b10fe59c",
-    ),
-    (  # Exact upstream 73ab7599b553c03f6f5d2db24a18ad76f2eb36a3, same KleidiAI
-        "dcb0f04ebb9654b1fe5ac7cc45737c79e62b116a2063ceda81a7ec1ddb1b20e2",
-        "64189fc613c1c4c3aaeeb6bb12b38d85dd6728cafd2261a5a88f1b77b10fe59c",
-    ),
-    (  # llama.cpp v0.4.1 b29c606e28a01b1bc8c1351026a0fa6e616bf6c4
-        "bf7ae6d2ea861ce6cd4b56afce154a45461df79b46c02e340d1adfe0075467b5",
-        "64189fc613c1c4c3aaeeb6bb12b38d85dd6728cafd2261a5a88f1b77b10fe59c",
-    ),
-    (  # llama.cpp v0.5.0 7fe450e19305b828c199d602c23a8337aaa1f03b
-        "68d5bc369749e78545f50dd5107368ec7ee1874619794795cd142b0043c747f6",
-        "64189fc613c1c4c3aaeeb6bb12b38d85dd6728cafd2261a5a88f1b77b10fe59c",
-    ),
-    (  # llama.cpp v0.6.0 d81235049384534c167caea52b85a694f6103d14
-        "adc8d989599211a4b789b2c595b2ae52335c5a390e6c4972171c46589aa05e7e",
-        "64189fc613c1c4c3aaeeb6bb12b38d85dd6728cafd2261a5a88f1b77b10fe59c",
-    ),
     V070_SOURCE_PAIR,  # llama.cpp v0.7.0 / KleidiAI v1.31.0
     V080_SOURCE_PAIR,  # llama.cpp v0.8.0 8642541b255bfb5dc39cd351a178be09013a55d6 / KleidiAI v1.32.0
     V090_SOURCE_PAIR,  # llama.cpp v0.9.0 cd959bae99ff4bed22bef2604f45241c09bbb8c8 / KleidiAI v1.32.0
@@ -87,7 +65,7 @@ kai_run_rhs_pack_kxn_bf16p2vlx2b_f32_x32_sme
 
 # KleidiAI 1.31 moves BF16 packing into a sized assembly function. The two
 # Q4_K kernels are reachable only through the SME2 + FP16 table. Do not grant
-# these exceptions to legacy source pairs or accept legacy ranges for v0.7.0.
+# these exceptions to older source pairs or accept older ranges for v0.7.0.
 DISPATCHED_FUNCTIONS_V070 = (DISPATCHED_FUNCTIONS - {
     "kai_run_lhs_pack_bf16p2vlx2_f32_sme",
 }) | frozenset("""

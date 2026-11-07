@@ -85,7 +85,8 @@ enum class Pattern {
   block_maximum,
   // As block_maximum but each lane sums to 65536, which overflows in F16.
   block_overflow,
-  // Lane sums stay exact in F16 within a block but not over two blocks.
+  // Each lane sums 64 products to 2047, exact in F16; a 65th product of 32
+  // gives the odd 2079, which F16 cannot hold.
   block_exact,
 };
 
@@ -129,7 +130,7 @@ void dot_case(ggml_backend_t backend, int width, float magnitude,
       qv = 2048.0f / gemm_block_steps -
            (pattern == Pattern::block_maximum && last_step ? 1.0f : 0.0f);
     } else if (pattern == Pattern::block_exact) {
-      kv = 2048.0f / gemm_block_steps - 1.0f;
+      kv = (i % gemm_block) / 8 == 1 ? 31.0f : 32.0f;
       qv = 1.0f;
     }
     for (int r = 0; r < rows; ++r) {
@@ -163,8 +164,11 @@ void dot_case(ggml_backend_t backend, int width, float magnitude,
 }
 
 // Sixteen weight rows times twelve query columns with exact integer products.
-// In the K tail after one GEMM block, rows 5-6 times columns 8-9 overflow F16:
-// part of the 4x6 tile at rows 4-7 and columns 6-11, which alone is redone in F32.
+// In the K tail after one GEMM block, lane 0 overflows F16 for rows 5-6 times
+// columns 8-9 and lane 1 for rows 1 and 7 times columns 2 and 11. The 4x6 tiles
+// sit at rows 4i..4i+3 and columns 6j..6j+5, so tile (4-7, 0-5) overflows only
+// in its last row (7, 2), tile (0-3, 6-11) only in its last column (1, 11), and
+// the finiteness check must see every cell to redo each tile in F32.
 void gemm_tile_case(ggml_backend_t backend) {
   constexpr int rows = 16;
   constexpr int cols = 12;
@@ -182,10 +186,14 @@ void gemm_tile_case(ggml_backend_t backend) {
   std::vector<ggml_fp16_t> keys(static_cast<size_t>(stride) * rows, ggml_fp32_to_fp16(NAN));
   std::vector<float> queries(static_cast<size_t>(width) * cols);
   auto key = [](int r, int i) {
-    return i >= gemm_block && (r == 5 || r == 6) ? 4096.0f : 1.0f + r % 3;
+    const int lane = i - gemm_block;
+    const bool large = (lane == 0 && (r == 5 || r == 6)) || (lane == 1 && (r == 1 || r == 7));
+    return large ? 4096.0f : 1.0f + r % 3;
   };
   auto query = [](int c, int i) {
-    return i >= gemm_block ? (c == 8 || c == 9 ? 16.0f : 1.0f) : 1.0f + c % 4;
+    const int lane = i - gemm_block;
+    const bool large = (lane == 0 && (c == 8 || c == 9)) || (lane == 1 && (c == 2 || c == 11));
+    return large ? 16.0f : i >= gemm_block ? 1.0f : 1.0f + c % 4;
   };
   for (int r = 0; r < rows; ++r) {
     for (int i = 0; i < width; ++i) {

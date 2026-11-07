@@ -95,10 +95,11 @@ measured on that hardware.
   overflow, 8/16/32-column GEMM cases, F32 controls, and ordinary and flash
   attention over 16 keys for one and eight queries with an unsaturated
   softmax. For 0006 it adds GEMM blocks whose F16 lane sums end exactly at
-  65504 and at 65536 (overflow), sums that are exact in F16 within one block
-  but not across two (catches a longer or missing block), block tails, and an
-  overflow confined to part of one tile away from the origin (catches a
-  partial finiteness check or a misplaced recompute). Weight rows are followed
+  65504 and at 65536 (overflow), lane sums of 2047 that are exact in F16 within
+  one block but not with a 65th product (catches a longer block), block tails,
+  and overflow confined to single cells of tiles away from the origin, among
+  them only the last row and only the last column of a tile (catches a partial
+  finiteness check or a misplaced recompute). Weight rows are followed
   by NaN padding, so a read past the row fails; in 0006 the recompute hides an
   over-read that reaches only the padding, and the attention case catches one
   that reaches the next row. It reports every failing check. The macOS

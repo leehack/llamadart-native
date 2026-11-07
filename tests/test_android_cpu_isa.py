@@ -100,23 +100,16 @@ class AndroidCpuIsaTest(unittest.TestCase):
             self.assertNotEqual(original, audit.tree_digest(root))
 
     def test_exact_reviewed_source_pairs_are_required(self):
-        expected = frozenset((ggml, "64189fc613c1c4c3aaeeb6bb12b38d85dd6728cafd2261a5a88f1b77b10fe59c")
-                             for ggml in (
-                                 "c4dc92a7d95ebfad7f5f55e75be2ae773b7d95faf72a9581c9479c42bc41bca0",
-                                 "dcb0f04ebb9654b1fe5ac7cc45737c79e62b116a2063ceda81a7ec1ddb1b20e2",
-                                 "bf7ae6d2ea861ce6cd4b56afce154a45461df79b46c02e340d1adfe0075467b5",
-                                 "68d5bc369749e78545f50dd5107368ec7ee1874619794795cd142b0043c747f6",
-                                 "adc8d989599211a4b789b2c595b2ae52335c5a390e6c4972171c46589aa05e7e",
-                             )) | frozenset({(
-                                 "b571df853210d243a83b1ec34a6936f147916f0369d792f8bb0d17f37fc7894b",
-                                 "deb324dbcf8c952ec149433ab58cbed0b2ab2374a557f0a4eea575b2da761377",
-                             ), (
-                                 "0b14cd6eac9832e7e50cee546495581c0067e7bca5c0db1dee6c3f7c0f7cf1f3",
-                                 "fd5b9ca98d07b81671eca377c258da74e72173f92f3cab0acdf6c17ab870bd9d",
-                             ), (
-                                 "fead7601e3b35651ee62764c76f28b50ee564160b543ff79be6fcc81837216c4",
-                                 "fd5b9ca98d07b81671eca377c258da74e72173f92f3cab0acdf6c17ab870bd9d",
-                             )})
+        expected = frozenset({(
+            "b571df853210d243a83b1ec34a6936f147916f0369d792f8bb0d17f37fc7894b",
+            "deb324dbcf8c952ec149433ab58cbed0b2ab2374a557f0a4eea575b2da761377",
+        ), (
+            "0b14cd6eac9832e7e50cee546495581c0067e7bca5c0db1dee6c3f7c0f7cf1f3",
+            "fd5b9ca98d07b81671eca377c258da74e72173f92f3cab0acdf6c17ab870bd9d",
+        ), (
+            "fead7601e3b35651ee62764c76f28b50ee564160b543ff79be6fcc81837216c4",
+            "fd5b9ca98d07b81671eca377c258da74e72173f92f3cab0acdf6c17ab870bd9d",
+        )})
         self.assertEqual(audit.SOURCE_PAIRS, expected)
         for ggml, kai in expected:
             with self.subTest(ggml=ggml):
@@ -144,7 +137,7 @@ class AndroidCpuIsaTest(unittest.TestCase):
                            audit.V080_SOURCE_PAIR: audit.DISPATCHED_FUNCTIONS_V080,
                            audit.V090_SOURCE_PAIR: audit.DISPATCHED_FUNCTIONS_V080}
         for pair in audit.SOURCE_PAIRS:
-            allowed = allowed_by_pair.get(pair, audit.DISPATCHED_FUNCTIONS)
+            allowed = allowed_by_pair[pair]
             for artifact_ranges in (audit.DISPATCHED_FUNCTIONS, audit.DISPATCHED_FUNCTIONS_V070,
                                     audit.DISPATCHED_FUNCTIONS_V080):
                 names = sorted(artifact_ranges)

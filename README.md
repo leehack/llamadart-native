@@ -520,8 +520,10 @@ PCM. `LLAMA_DEFAULT_SEED` draws one random seed per task for both samplers.
 The talker sampler gives the GGUF's `tokenizer.ggml.suppress_tokens` a `-inf`
 bias, as upstream `common_sampler` does. For Qwen3-TTS these are the codec's
 control tokens, which code2wav rejects as out-of-range codes, failing the
-synthesis. Earlier wrappers did not apply them, so a fixed seed can give
-different PCM where a control token reached the sampled candidates.
+synthesis. Earlier wrappers did not apply them. A fixed seed still gives the same PCM
+at default settings, `top_k 1` and `temp 0`; at high temperature with `top_k 0`
+(for example `temp 2.5`) PCM can differ even when no control token is drawn,
+because `dist` renormalizes without the suppressed mass.
 
 The local smoke target is opt-in because it requires large model artifacts:
 
