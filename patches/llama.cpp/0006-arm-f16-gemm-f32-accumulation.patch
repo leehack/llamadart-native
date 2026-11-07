@@ -1,18 +1,74 @@
 --- a/ggml/src/ggml-cpu/llamafile/sgemm.cpp
 +++ b/ggml/src/ggml-cpu/llamafile/sgemm.cpp
-@@ -3900,4 +3900,4 @@
+@@ -622,6 +622,64 @@
+     }
+ 
++#if defined(__ARM_FEATURE_FP16_VECTOR_ARITHMETIC) && !defined(_MSC_VER)
++    // F16 sums overflow past 65504. Each lane sums at most 64 products in F16
++    // before they are added in F32, and a tile with a nonfinite result is
++    // redone by the F32 tile, so an F16 overflow never reaches C.
++    template <int, typename, typename, typename, typename, typename>
++    friend class tinyBLAS;
++
++    template <int RM, int RN>
++    inline void gemm_bloc_f16(int64_t ii, int64_t jj) {
++        float32x4_t Cs[RN][RM] = {};
++        for (int64_t l0 = 0; l0 < k; l0 += 64 * KN) {
++            const int64_t l1 = l0 + 64 * KN < k ? l0 + 64 * KN : k;
++            float16x8_t Cv[RN][RM] = {};
++            for (int64_t l = l0; l < l1; l += KN) {
++                float16x8_t Av[RM];
++                for (int64_t i = 0; i < RM; ++i) {
++                    Av[i] = load<float16x8_t>(A + lda * (ii + i) + l);
++                }
++                for (int64_t j = 0; j < RN; ++j) {
++                    float16x8_t Bv = load<float16x8_t>(B + ldb * (jj + j) + l);
++                    for (int64_t i = 0; i < RM; ++i) {
++                        Cv[j][i] = vfmaq_f16(Cv[j][i], Av[i], Bv);
++                    }
++                }
++            }
++            for (int64_t j = 0; j < RN; ++j) {
++                for (int64_t i = 0; i < RM; ++i) {
++#if defined(__ARM_FEATURE_FP16_FML)
++                    const float16x8_t one = vdupq_n_f16(1.0f);
++                    Cs[j][i] = vfmlalq_high_f16(vfmlalq_low_f16(Cs[j][i], Cv[j][i], one), Cv[j][i], one);
++#else
++                    Cs[j][i] = vaddq_f32(Cs[j][i], vaddq_f32(vcvt_f32_f16(vget_low_f16(Cv[j][i])),
++                                                             vcvt_high_f32_f16(Cv[j][i])));
++#endif
++                }
++            }
++        }
++        bool finite = true;
++        for (int64_t j = 0; j < RN; ++j) {
++            for (int64_t i = 0; i < RM; ++i) {
++                const float c = vaddvq_f32(Cs[j][i]);
++                C[ldc * (jj + j) + (ii + i)] = c;
++                finite &= isfinite(c);
++            }
++        }
++        if (finite) {
++            return;
++        }
++        tinyBLAS<4, float32x4_t, float32x4_t, TA, TB, TC> f32{params, k, A, lda, B, ldb, C, ldc};
++        f32.template gemm_bloc<RM, RN>(ii, jj);
++    }
++#endif
++
+     template <int RM, int RN>
+     inline void gemm_bloc(int64_t ii, int64_t jj) {
++#if defined(__ARM_FEATURE_FP16_VECTOR_ARITHMETIC) && !defined(_MSC_VER)
++        if constexpr (std::is_same_v<D, float16x8_t>) {
++            return gemm_bloc_f16<RM, RN>(ii, jj);
++        }
++#endif
+         D Cv[RN][RM] = {};
+         for (int64_t l = 0; l + KN <= k; l += KN) {
+@@ -3900,5 +3958,5 @@
      assert(m >= 0);
      assert(n >= 0);
 -    assert(k >= 0);
 +    GGML_ASSERT(k >= 0 && "llamadart F16 GEMM F32 accumulation");
      assert(lda >= k);
-@@ -4065,6 +4065,7 @@
- #elif defined(__ARM_FEATURE_FP16_VECTOR_ARITHMETIC) && !defined(_MSC_VER)
-         if (n < 8)
-             return false;
-         if (Btype == GGML_TYPE_F16) {
--            tinyBLAS<8, float16x8_t, float16x8_t, ggml_fp16_t, ggml_fp16_t, float> tb{ params,
-+            // F16 products and partial sums can overflow before the F32 result is stored.
-+            tinyBLAS<4, float32x4_t, float32x4_t, ggml_fp16_t, ggml_fp16_t, float> tb{ params,
-                 k, (const ggml_fp16_t *)A, lda,
-                 (const ggml_fp16_t *)B, ldb,
+     assert(ldb >= k);

@@ -8,6 +8,7 @@
 #include "llama_dart_speculative_internal.h"
 #include "llama_dart_tts_eval_internal.h"
 #include "llama_dart_tts_internal.h"
+#include "llama_dart_tts_sampler_internal.h"
 #include "llama_dart_tts_seed_internal.h"
 #include "llama_dart_tts_types_internal.h"
 
@@ -179,22 +180,14 @@ static const char *llama_dart_tts_find_voice(const llama_dart_tts *tts,
 }
 
 static llama_sampler *
-llama_dart_tts_sampler_init(const llama_dart_tts_request &request,
+llama_dart_tts_sampler_init(const llama_vocab *vocab,
+                            const llama_dart_tts_request &request,
                             uint32_t seed) {
-  llama_sampler *sampler =
-      llama_sampler_chain_init(llama_sampler_chain_default_params());
-  if (sampler == nullptr) {
-    return nullptr;
-  }
-  llama_sampler_chain_add(sampler, llama_sampler_init_top_k(request.top_k));
-  llama_sampler_chain_add(sampler,
-                          llama_sampler_init_top_p(request.top_p, 1));
-  llama_sampler_chain_add(sampler,
-                          llama_sampler_init_min_p(request.min_p, 1));
-  llama_sampler_chain_add(
-      sampler, llama_sampler_init_temp(request.temperature));
-  llama_sampler_chain_add(sampler, llama_sampler_init_dist(seed));
-  return sampler;
+  int32_t n_suppress = 0;
+  const llama_token *suppress =
+      llama_vocab_get_suppress_tokens(vocab, &n_suppress);
+  return llama_dart_tts_sampler_chain_init(
+      request, seed, llama_vocab_n_tokens(vocab), suppress, n_suppress);
 }
 
 static bool llama_dart_tts_prime_code_predictor(llama_dart_tts *tts,
@@ -2348,7 +2341,8 @@ static enum llama_dart_tts_status llama_dart_tts_start_impl(
   std::random_device random_seed;
   const uint32_t seed =
       llama_dart_tts_resolve_seed(request->seed, [&] { return random_seed(); });
-  tts->sampler = llama_dart_tts_sampler_init(*request, seed);
+  tts->sampler = llama_dart_tts_sampler_init(
+      llama_model_get_vocab(llama_get_model(tts->llama)), *request, seed);
   if (tts->sampler == nullptr) {
     return llama_dart_tts_fail(tts, LLAMA_DART_TTS_STATUS_UPSTREAM_ERROR,
                                "sampler initialization failed");

@@ -28,7 +28,8 @@ than a few lines.
 Published ARM64 artifacts return nonfinite results for finite F16 dot
 products. Patch 0005 changes only the non-SVE NEON `ggml_vec_dot_f16`
 (FMLAL/FMLAL2 with FP16 FML, conversion and F32 FMA otherwise); patch 0006
-switches the FP16 llamafile GEMM tile to F32 accumulation. Neither changes ISA
+makes the FP16 llamafile GEMM tile add its F16 sums into F32 every 512 K
+elements and redo in F32 any tile with a nonfinite result. Neither changes ISA
 flags, ABI, variants or cache defaults. Performance cost, checks and
 publication gates are in
 [native174_f16_dot_accumulation.md](../../docs/native174_f16_dot_accumulation.md).

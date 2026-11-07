@@ -37,9 +37,26 @@ Both patches change build-tree copies only.
   low/high accumulator pairs (the original 32-element unroll), an eight-element
   tail and a scalar tail. With `__ARM_FEATURE_FP16_FML` it uses FMLAL/FMLAL2;
   otherwise it converts and uses F32 FMA.
-- 0006: the FP16 branch of `llamafile_sgemm` instantiates
-  `tinyBLAS<4, float32x4_t, float32x4_t, ggml_fp16_t, ggml_fp16_t, float>`,
-  which loads F16 and accumulates in F32, instead of the F16 tile.
+- 0006: the FP16 llamafile tile keeps its F16 multiply-adds, but each lane
+  sums at most 64 products (512 K elements) before the sum is added into an
+  F32 accumulator (FMLAL/FMLAL2 by one with FP16 FML, conversion and F32 add
+  otherwise). An F16 overflow leaves an `inf` or NaN that survives into the
+  F32 sum, so a tile with any nonfinite result is computed again by
+  `tinyBLAS<4, float32x4_t, ...>` (F16 loads, F32 accumulation), which
+  overwrites it.
+
+### GEMM contract (0006)
+
+- Overflow: for finite F16 inputs no output is nonfinite. A tile that
+  overflowed in F16, or had a nonfinite input, is bit-identical to the F32
+  tile that the first version of 0006 used for every tile.
+- Precision: a tile that needs no recompute sums every 512 K elements in F16,
+  in upstream's order. For `k` ≤ 512 its result is bit-identical to the
+  unpatched tile; for longer rows the F16 rounding no longer compounds across
+  blocks. It is not F32-accurate: each multiply-add rounds to F16, so results
+  below the F16 subnormal range become zero.
+- Cost: a redone tile costs the F16 pass plus the F32 pass. With every tile
+  overflowing, F16 GEMM takes 1.4 times as long as with the F32 tile alone.
 
 ISA flags, runtime dispatch, ABI, CPU variant selection and cache defaults are
 unchanged. Both patches exceed the policy's "few lines" condition; the
@@ -48,22 +65,26 @@ maintainer approved the
 
 ## Performance
 
-Apple M4 Max, CPU only, `GGML_NATIVE=OFF`, against the original kernels:
+Apple M4 Max, CPU only, `GGML_NATIVE=OFF`. Kernel costs are against the
+unpatched kernels; model throughput is against the shipped `v0.8.0-3` macOS
+library (Qwen2.5-0.5B-Instruct, 8 threads, F16 KV, median of 3 interleaved
+rounds' ratios):
 
 | Case | Cost |
 | --- | --- |
-| F16 mat-vec 4096x4096, 1 thread: FMLAL / conversion path | +13% / +78% time |
-| F16 GEMM 4096x4096, 32–512 columns, 1 or 8 threads (0006) | +125–160% time |
-| Same with `GGML_LLAMAFILE=OFF` instead of 0006 | +201–248% time; Q4_0/Q8_0 GEMM +50–58% |
-| Llama-3.2-1B Q4_K_M pp512, F16 KV, 8 threads, FA off / on | -4.7% / -1.5% tokens/s |
-| Same, 1 thread, FA off | -4.0% tokens/s |
-| LFM2-VL-450M Q4_0 pp512, F16 KV, 8 threads, FA off | -3.0% tokens/s |
-| Same models with `GGML_LLAMAFILE=OFF` instead of 0006, FA off | -7.4% to -9.1% tokens/s |
+| F16 mat-vec 4096x4096, 1 thread (0005): FMLAL / conversion path | +13% / +78% time |
+| F16 GEMM 4096x4096, 32–512 columns, 1 or 8 threads (0006): FMLAL / conversion flush | +8–13% / +12–14% time |
+| Same with every tile overflowing (all redone in F32) | +257% time |
+| F16-weight model pp512, FA off / on | 0.91 / 0.94 tokens/s |
+| F16-weight model tg128 and tg64 at depth 1024 (decode does not reach the tile) | 0.96–1.02 (noise) |
+| Q8_0 model pp512, FA off / on | 0.98 / 1.01 tokens/s |
+| Qwen3-TTS cancel latency (core `tts` pack, CPU), median / p90 / max | 16 / 40 / 49 ms against 15 / 32 / 48 ms |
 
-F16-weight models pay the GEMM cost on most of their prefill: the
-`linux_armv8.2_2` F16 prefill gain over the armv8.0 baseline came from the F16
-tile and is expected to largely go away (not yet measured there). A widening FMLAL tile was slower than the
-conversion tile (+270% time) because its accumulators exceed the register file.
+The first version of 0006 accumulated every tile in F32: F16 GEMM +125–163%
+time, F16-weight pp512 at 0.44 of `v0.8.0-3` and a median TTS cancel latency
+of 65 ms. Blocks of 16 or 32 products per lane, instead of 64, gave pp512
+at 0.79 or 0.87. `linux_armv8.2_2` runs the conversion flush; it is not yet
+measured on that hardware.
 
 ## Checks
 
@@ -73,11 +94,19 @@ conversion tile (+270% time) because its accumulators exceed the register file.
   F16-max and product-overflow inputs, a cancellation whose F16 partial sums
   overflow, 8/16/32-column GEMM cases, F32 controls, and ordinary and flash
   attention over 16 keys for one and eight queries with an unsaturated
-  softmax. Weight rows are followed by NaN padding, so a read past the row
-  fails. It reports every failing check. The macOS release lanes also run it
-  built for `armv8.2-a+fp16+dotprod` to cover the conversion branch.
-- Without the patches it fails on Apple silicon: 30 checks with neither, and
-  the seven GEMM checks plus eight-query ordinary attention with 0005 alone.
+  softmax. For 0006 it adds GEMM blocks whose F16 lane sums end exactly at
+  65504 and at 65536 (overflow), sums that are exact in F16 within one block
+  but not across two (catches a longer or missing block), block tails, and an
+  overflow confined to part of one tile away from the origin (catches a
+  partial finiteness check or a misplaced recompute). Weight rows are followed
+  by NaN padding, so a read past the row fails; in 0006 the recompute hides an
+  over-read that reaches only the padding, and the attention case catches one
+  that reaches the next row. It reports every failing check. The macOS
+  release lanes also run it built for `armv8.2-a+fp16+dotprod` to cover the
+  conversion branch.
+- Without the patches it fails on Apple silicon: 16 checks with 0005 alone
+  (GEMM overflow and block cases, eight-query ordinary attention); without
+  0006's flush, recompute or tail block, 1 to 202 checks.
   A `n - n % 4` tail mutation of 0005 fails 15 checks through the padding. Zero-length and
   strided query tensors are not covered.
 - `tools/linux_cpu_variant_smoke.c` runs the single-column magnitude sweep on
