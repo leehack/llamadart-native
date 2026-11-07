@@ -77,7 +77,7 @@ comparison; a successful retry alone cannot explain the earlier failure.
 
 ## ARM64 upgrade qualification
 
-`Validate Wrapper` checks pinned and exact post-v0.4.0 Windows ARM64 builds,
+`Validate Wrapper` checks Windows ARM64 builds of every qualified upstream,
 the actual Android ARMv8.2 artifact, and compiled Kleidi selectors plus quantized
 matrix computation under non-SVE QEMU profiles. QEMU is deterministic CPU
 compatibility evidence, not physical-device or GPU-performance evidence.
@@ -88,8 +88,8 @@ build `llamadart_kleidiai_dispatch_test`; it links the actual CPU module.
 The Android artifact check is `tools/validate_android_cpu_isa.py --help`.
 The Linux arm64 variant check is `tools/check_linux_arm64_cpu_variants.sh`.
 Version-specific source and function-range evidence for v0.7.0 lives in
-`docs/v070_android_isa_qualification.md`; its candidate lanes retain the older
-qualified releases as separate regression inputs.
+`docs/v070_android_isa_qualification.md`. The qualified upstreams are the
+`LLAMADART_UPSTREAMS` rows of `validate_wrapper.yml`.
 
 ## Runtime Packaging Model
 
@@ -158,9 +158,9 @@ qualified releases as separate regression inputs.
   floor.
 
   `validate_linux_release_rows.yml` runs the release's Linux job bodies without
-  their upload, weekly and on pull requests that change their inputs, plus
-  CUDA and HIP at the v0.8.0 candidate. `tests/test_linux_release_rows.py` fails
-  when it stops matching `native_release.yml`.
+  their upload, weekly and on pull requests that change their inputs,
+  including the one that moves the pin. `tests/test_linux_release_rows.py`
+  fails when it stops matching `native_release.yml`.
   `tests/test_runner_pins.py` fails when any of these jobs, or the Android
   `build-android` and `android-vulkan-shaders` jobs, leaves `ubuntu-24.04`.
 - Windows ARM64 uses the `Visual Studio 18 2026` generator (CMake >= 4.2) with

@@ -63,7 +63,8 @@ newer upstream stable release instead of inventing a different suffix.
 
 ## Orchestration and approval
 
-- Scheduled automation detects unbuilt stable upstream candidates daily. It may
+- The stable detector runs only on manual dispatch, after `main` qualifies the
+  upstream release, and detects unbuilt stable upstream candidates. It may
   dispatch the native release workflow, and only for an exact upstream-aligned
   stable `vMAJOR.MINOR.PATCH` release that has no corresponding native release.
   Every other discovery result stops without a dispatch.
@@ -74,7 +75,7 @@ newer upstream stable release instead of inventing a different suffix.
 - The automatic caller correlation identifier is
   `auto-stable/<native-tag>/<sha256-prefix>`, derived only from the upstream
   ref, upstream commit, and native tag. It is therefore identical on a retried
-  dispatch and on every later scheduled run for the same release, so all
+  dispatch and on every later detector run for the same release, so all
   attempts at one release correlate to a single central operation. The
   publication transaction itself stays bound to its own workflow run, so a new
   dispatch still cannot take over a previous run's partial state.

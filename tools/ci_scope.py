@@ -40,6 +40,26 @@ def changed_paths(base, head='HEAD'):
     return output.decode('utf-8', errors='surrogateescape').rstrip('\0').split('\0') if output else []
 
 
+def pinned_llama_cpp(head='HEAD'):
+    return subprocess.check_output(
+        ['git', 'rev-parse', f'{head}:third_party/llama.cpp'], text=True).strip()
+
+
+def upstream_rows(upstreams, pinned_commit):
+    """Return the qualified upstream names and the one the submodule pins.
+
+    Every lane builds each row once: the pinned row builds the checkout as is,
+    so a pin that is not exactly one row would leave it unqualified or built twice.
+    """
+    rows = json.loads(upstreams)
+    pinned = [name for name, commit in rows.items() if commit == pinned_commit]
+    if len(pinned) != 1:
+        raise ValueError(
+            f'third_party/llama.cpp pins {pinned_commit}, which must be exactly one '
+            f'LLAMADART_UPSTREAMS row: {rows}')
+    return list(rows), pinned[0]
+
+
 def validate_results(needs):
     scope = needs.get('changes', {})
     if scope.get('result') != 'success':
@@ -63,12 +83,13 @@ def main():
     args = parser.parse_args()
     if args.check_results:
         return 0 if validate_results(json.loads(os.environ['NEEDS_JSON'])) else 1
+    upstreams, pinned = upstream_rows(os.environ['LLAMADART_UPSTREAMS'], pinned_llama_cpp())
     # An unavailable diff fails the classifier, never silently skips work.
     paths = changed_paths(os.environ.get('BASE_SHA', ''))
     value = str(native_required(paths)).lower()
-    print(json.dumps({'native': value, 'paths': paths}))
+    print(json.dumps({'native': value, 'upstreams': upstreams, 'pinned': pinned, 'paths': paths}))
     with Path(os.environ['GITHUB_OUTPUT']).open('a') as out:
-        out.write(f'native={value}\n')
+        out.write(f'native={value}\nupstreams={json.dumps(upstreams)}\npinned={pinned}\n')
     return 0
 
 

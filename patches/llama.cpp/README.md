@@ -118,6 +118,6 @@ none. `llama_cpp_commit` remains the upstream commit the patches apply to.
 4. Describe the patch, its evidence and what removes it in the document of the
    rebuild that introduces it under `docs/`.
 
-Remove a patch when no built upstream needs it any more: the pinned upstream
-and every `validate_wrapper.yml` row contain the fix, or the defect no longer
-reproduces without it.
+Remove a patch when no built upstream needs it any more: every
+`LLAMADART_UPSTREAMS` row of `validate_wrapper.yml`, the pinned one included,
+contains the fix, or the defect no longer reproduces without it.

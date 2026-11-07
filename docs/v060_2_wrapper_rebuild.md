@@ -178,9 +178,9 @@ ctest --test-dir build/v060 --output-on-failure
 `tests/test_llama_cpp_patches.py` covers the patch tool on its own sources and,
 with the submodule checked out, requires the carried series to fit it. The
 `android-vulkan-shaders` lane of `validate_wrapper.yml` compiles the patched
-`ggml-vulkan.cpp` with the release NDK against the pinned, `v0.5.0` and
-`v0.6.0` upstreams, which both patches fit, and on the pinned one validates
-the bundle, markers included. No lane runs ggml-vulkan on a device.
+`ggml-vulkan.cpp` with the release NDK against each qualified upstream, which
+both patches fit, and on the pinned one validates the bundle, markers
+included. No lane runs ggml-vulkan on a device.
 
 ## Linux host shutdown
 
