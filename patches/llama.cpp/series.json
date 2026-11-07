@@ -49,6 +49,14 @@
       "apple_markers": [
         {"library": "libllamadart.dylib", "text": "llamadart F16 dot F32 accumulation"}
       ]
+    },
+    {
+      "file": "0006-arm-f16-gemm-f32-accumulation.patch",
+      "tracking": "https://github.com/leehack/llamadart-native/issues/174",
+      "upstream": "https://github.com/ggml-org/llama.cpp/issues/31734",
+      "apple_markers": [
+        {"library": "libllamadart.dylib", "text": "llamadart F16 GEMM F32 accumulation"}
+      ]
     }
   ]
 }

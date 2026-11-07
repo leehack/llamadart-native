@@ -17,21 +17,20 @@ these hold:
 The v0.7.0 embedding-mode reservation repair and its exact baseline/candidate
 evidence are documented in [v070_native_contracts.md](../../docs/v070_native_contracts.md).
 
-## Proposed exception for native #174
+## Exception for native #174
 
-Patch 0005 requests a narrow exception to the first two eligibility conditions
-above; accepting this change requires explicit maintainer approval of that
-exception. Disabling optimized FP16 arithmetic is a build workaround, and this
-localized correctness branch is more than a few lines. The ordinary policy
-therefore does not literally cover it.
+The maintainer approved a narrow exception to the first two eligibility
+conditions above for patches 0005 and 0006 only. Disabling FP16 vector
+arithmetic or llamafile is a build workaround that slows unrelated kernels
+(llamafile off costs Q4_0/Q8_0 prefill too), and the F16 dot repair is more
+than a few lines.
 
-Published ARM64 artifacts return nonfinite results for finite F16 dot products.
-The internal kernel cannot be repaired in wrapper `src/`; globally disabling
-FP16 arithmetic would change unrelated kernels and undo optimized CPU variant
-performance. Patch 0005 changes only the non-SVE NEON F16 dot implementation:
-compiler-advertised FP16 FML uses widening FMLAL/FMLAL2, with conversion/F32-FMA
-otherwise. It changes no ISA flags, ABI, variants or cache defaults. Qualification,
-performance risk and retirement gates are in
+Published ARM64 artifacts return nonfinite results for finite F16 dot
+products. Patch 0005 changes only the non-SVE NEON `ggml_vec_dot_f16`
+(FMLAL/FMLAL2 with FP16 FML, conversion and F32 FMA otherwise); patch 0006
+switches the FP16 llamafile GEMM tile to F32 accumulation. Neither changes ISA
+flags, ABI, variants or cache defaults. Performance cost, checks and
+publication gates are in
 [native174_f16_dot_accumulation.md](../../docs/native174_f16_dot_accumulation.md).
 This exception does not extend eligibility to other patches.
 

@@ -5,6 +5,7 @@
 #include "ggml-cpu.h"
 #endif
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -60,13 +61,13 @@ class Graph {
 };
 
 bool check_result(float actual, double expected, double tolerance,
-                  const char *name, int width) {
+                  const char *name, int width, int cols) {
   const double error = std::fabs(static_cast<double>(actual) - expected);
   if (!std::isfinite(actual) || !std::isfinite(expected) ||
       !std::isfinite(error) || error > tolerance) {
     std::fprintf(stderr,
-                 "FAIL: %s width=%d expected=%.17g actual=%.9g tolerance=%.9g\n",
-                 name, width, expected, actual, tolerance);
+                 "FAIL: %s width=%d cols=%d expected=%.17g actual=%.9g tolerance=%.9g\n",
+                 name, width, cols, expected, actual, tolerance);
     ++failures;
     return false;
   }
@@ -75,17 +76,25 @@ bool check_result(float actual, double expected, double tolerance,
 
 enum class Pattern { positive, cancellation, large_product, maximum, subnormal };
 
+// Sixteen identical weight rows times `cols` identical query columns. One
+// column takes the vector dot kernel; eight or more take llamafile GEMM where
+// it is built. NaN padding after each weight row fails any read past `width`.
 void dot_case(ggml_backend_t backend, int width, float magnitude,
-              Pattern pattern, ggml_type weight_type, const char *name) {
+              Pattern pattern, ggml_type weight_type, const char *name, int cols = 1) {
+  constexpr int rows = 16;
+  constexpr int padding = 8;
+  const int stride = width + padding;
   Graph graph(backend);
-  auto *k = ggml_new_tensor_2d(graph.ctx, weight_type, width, 1);
-  auto *q = ggml_new_tensor_2d(graph.ctx, GGML_TYPE_F32, width, 1);
+  auto *padded = ggml_new_tensor_2d(graph.ctx, weight_type, stride, rows);
+  auto *k = ggml_view_2d(graph.ctx, padded, width, rows, padded->nb[1], 0);
+  auto *q = ggml_new_tensor_2d(graph.ctx, GGML_TYPE_F32, width, cols);
   auto *out = ggml_mul_mat(graph.ctx, k, q);
   ggml_mul_mat_set_prec(out, GGML_PREC_F32);
   graph.allocate(out);
 
-  std::vector<float> keys(width), queries(width);
-  std::vector<ggml_fp16_t> half_keys(width);
+  std::vector<float> keys(static_cast<size_t>(stride) * rows, NAN);
+  std::vector<ggml_fp16_t> half_keys(keys.size(), ggml_fp32_to_fp16(NAN));
+  std::vector<float> queries(static_cast<size_t>(width) * cols);
   double reference = 0.0;
   double absolute_sum = 0.0;
   for (int i = 0; i < width; ++i) {
@@ -102,38 +111,47 @@ void dot_case(ggml_backend_t backend, int width, float magnitude,
       kv = ggml_fp16_to_fp32(static_cast<ggml_fp16_t>(1 + i % 7));
       qv = i % 2 == 0 ? 1.0f : -1.0f;
     }
-    half_keys[i] = ggml_fp32_to_fp16(kv);
-    keys[i] = kv;
-    queries[i] = qv;
-    const double actual_k = weight_type == GGML_TYPE_F16
-                                ? ggml_fp16_to_fp32(half_keys[i]) : keys[i];
+    for (int r = 0; r < rows; ++r) {
+      keys[static_cast<size_t>(r) * stride + i] = kv;
+      half_keys[static_cast<size_t>(r) * stride + i] = ggml_fp32_to_fp16(kv);
+    }
+    for (int c = 0; c < cols; ++c) {
+      queries[static_cast<size_t>(c) * width + i] = qv;
+    }
+    const double actual_k = weight_type == GGML_TYPE_F16 ? rounded_f16(kv) : kv;
     // The F16 CPU type trait rounds the F32 query before its dot product.
-    const double actual_q = weight_type == GGML_TYPE_F16
-                                ? rounded_f16(queries[i]) : queries[i];
+    const double actual_q = weight_type == GGML_TYPE_F16 ? rounded_f16(qv) : qv;
     const double product = actual_k * actual_q;
     reference += product;
     absolute_sum += std::fabs(product);
   }
   if (weight_type == GGML_TYPE_F16) {
-    ggml_backend_tensor_set(k, half_keys.data(), 0, half_keys.size() * sizeof(ggml_fp16_t));
+    ggml_backend_tensor_set(padded, half_keys.data(), 0, half_keys.size() * sizeof(ggml_fp16_t));
   } else {
-    ggml_backend_tensor_set(k, keys.data(), 0, keys.size() * sizeof(float));
+    ggml_backend_tensor_set(padded, keys.data(), 0, keys.size() * sizeof(float));
   }
   ggml_backend_tensor_set(q, queries.data(), 0, queries.size() * sizeof(float));
   graph.compute();
-  float actual = 0.0f;
-  ggml_backend_tensor_get(out, &actual, 0, sizeof(actual));
-  check_result(actual, reference, 1e-7 + 2e-6 * absolute_sum, name, width);
+  std::vector<float> actual(static_cast<size_t>(rows) * cols);
+  ggml_backend_tensor_get(out, actual.data(), 0, actual.size() * sizeof(float));
+  for (float value : actual) {
+    if (!check_result(value, reference, 1e-7 + 2e-6 * absolute_sum, name, width, cols)) {
+      break;
+    }
+  }
 }
 
-void attention_case(ggml_backend_t backend, bool flash, float magnitude) {
-  constexpr int width = 64;
-  constexpr int values = 64;
+// Each key score is 128 * (128 + r / 8): the first half of its products sums
+// to 2^21 and the second half cancels it, so F16 partial sums overflow while
+// the softmax over the 16 keys stays far from saturated.
+void attention_case(ggml_backend_t backend, bool flash, int queries_count) {
+  constexpr int width = 256;
+  constexpr int keys_count = 16;
   Graph graph(backend);
-  auto *q = ggml_new_tensor_2d(graph.ctx, GGML_TYPE_F32, width, 1);
-  auto *k = ggml_new_tensor_2d(graph.ctx, GGML_TYPE_F16, width, 2);
+  auto *q = ggml_new_tensor_2d(graph.ctx, GGML_TYPE_F32, width, queries_count);
+  auto *k = ggml_new_tensor_2d(graph.ctx, GGML_TYPE_F16, width, keys_count);
   auto *v = ggml_new_tensor_2d(graph.ctx, GGML_TYPE_F16,
-                               flash ? values : 2, flash ? 2 : values);
+                               flash ? width : keys_count, flash ? keys_count : width);
   const float scale = 1.0f / std::sqrt(static_cast<float>(width));
   ggml_tensor *out;
   if (flash) {
@@ -147,37 +165,50 @@ void attention_case(ggml_backend_t backend, bool flash, float magnitude) {
   }
   graph.allocate(out);
 
-  std::vector<float> queries(width);
-  std::vector<ggml_fp16_t> keys(2 * width), value_data(2 * values);
-  double score = 0.0;
-  for (int i = 0; i < width; ++i) {
-    queries[i] = magnitude * (1.0f + 0.1f * ((i * 3) % 5));
-    keys[i] = ggml_fp32_to_fp16(magnitude * (1.0f + 0.1f * (i % 5)));
-    keys[width + i] = ggml_fp32_to_fp16(0.0f);
-    score += static_cast<double>(ggml_fp16_to_fp32(keys[i])) * rounded_f16(queries[i]);
+  std::vector<float> queries(static_cast<size_t>(width) * queries_count, 128.0f);
+  std::vector<ggml_fp16_t> keys(static_cast<size_t>(width) * keys_count);
+  std::vector<ggml_fp16_t> value_data(static_cast<size_t>(width) * keys_count);
+  std::vector<double> logits(keys_count);
+  double max_logit = -INFINITY;
+  for (int r = 0; r < keys_count; ++r) {
+    double score = 0.0;
+    for (int i = 0; i < width; ++i) {
+      const float kv = i < width / 2 ? 128.0f : i < width - 1 ? -128.0f : 0.125f * r;
+      keys[static_cast<size_t>(r) * width + i] = ggml_fp32_to_fp16(kv);
+      score += static_cast<double>(kv) * 128.0;
+    }
+    logits[r] = score * scale;
+    max_logit = std::max(max_logit, logits[r]);
   }
-  const double probability0 = 1.0 / (1.0 + std::exp(-score * scale));
-  const double probability1 = 1.0 - probability0;
-  std::vector<double> expected(values);
-  for (int i = 0; i < values; ++i) {
-    const float v0 = 1.0f + (i % 7) * 0.125f;
-    const float v1 = 2.0f + (i % 5) * 0.25f;
-    value_data[flash ? i : 2 * i] = ggml_fp32_to_fp16(v0);
-    value_data[flash ? values + i : 2 * i + 1] = ggml_fp32_to_fp16(v1);
+  std::vector<double> probabilities(keys_count);
+  double denominator = 0.0;
+  for (int r = 0; r < keys_count; ++r) {
+    probabilities[r] = std::exp(logits[r] - max_logit);
+    denominator += probabilities[r];
+  }
+  std::vector<double> expected(width, 0.0);
+  for (int r = 0; r < keys_count; ++r) {
+    probabilities[r] /= denominator;
     // Ordinary F16 V matmul also rounds its probability input to F16.
-    const double p0 = flash ? probability0 : rounded_f16(static_cast<float>(probability0));
-    const double p1 = flash ? probability1 : rounded_f16(static_cast<float>(probability1));
-    expected[i] = v0 * p0 + v1 * p1;
+    const double p = flash ? probabilities[r] : rounded_f16(static_cast<float>(probabilities[r]));
+    for (int i = 0; i < width; ++i) {
+      const float value = 1.0f + ((i + r) % 7) * 0.125f;
+      value_data[flash ? static_cast<size_t>(r) * width + i
+                       : static_cast<size_t>(i) * keys_count + r] = ggml_fp32_to_fp16(value);
+      expected[i] += value * p;
+    }
   }
   ggml_backend_tensor_set(q, queries.data(), 0, queries.size() * sizeof(float));
   ggml_backend_tensor_set(k, keys.data(), 0, keys.size() * sizeof(ggml_fp16_t));
   ggml_backend_tensor_set(v, value_data.data(), 0, value_data.size() * sizeof(ggml_fp16_t));
   graph.compute();
-  std::vector<float> actual(values);
+  std::vector<float> actual(static_cast<size_t>(width) * queries_count);
   ggml_backend_tensor_get(out, actual.data(), 0, actual.size() * sizeof(float));
-  for (int i = 0; i < values; ++i) {
-    if (!check_result(actual[i], expected[i], 1e-3,
-                      flash ? "flash-attention" : "attention", width)) {
+  // Flash attention accumulates V in F16 on one of its CPU paths.
+  const double tolerance = flash ? 4e-3 : 1e-3;
+  for (size_t j = 0; j < actual.size(); ++j) {
+    if (!check_result(actual[j], expected[j % width], tolerance,
+                      flash ? "flash-attention" : "attention", width, queries_count)) {
       break;
     }
   }
@@ -228,9 +259,16 @@ int main() {
   dot_case(backend, 32, 0.0f, Pattern::large_product, GGML_TYPE_F16, "large-product");
   dot_case(backend, 64, 0.0f, Pattern::maximum, GGML_TYPE_F16, "maximum-finite");
   dot_case(backend, 64, 100.0f, Pattern::positive, GGML_TYPE_F32, "f32-control");
-  for (float magnitude : {0.0f, 1.0f, 80.0f, 100.0f}) {
-    attention_case(backend, false, magnitude);
-    attention_case(backend, true, magnitude);
+  dot_case(backend, 256, 128.0f, Pattern::cancellation, GGML_TYPE_F16, "hidden-overflow");
+  for (int cols : {8, 16, 32}) {
+    dot_case(backend, 64, 100.0f, Pattern::positive, GGML_TYPE_F16, "gemm-positive", cols);
+    dot_case(backend, 256, 128.0f, Pattern::cancellation, GGML_TYPE_F16, "gemm-hidden-overflow", cols);
+  }
+  dot_case(backend, 32, 0.0f, Pattern::large_product, GGML_TYPE_F16, "gemm-large-product", 8);
+  dot_case(backend, 64, 100.0f, Pattern::positive, GGML_TYPE_F32, "gemm-f32-control", 8);
+  for (int queries_count : {1, 8}) {
+    attention_case(backend, false, queries_count);
+    attention_case(backend, true, queries_count);
   }
   ggml_backend_free(backend);
 #if defined(LLAMADART_TEST_CPU_BACKEND)
@@ -240,6 +278,6 @@ int main() {
     std::fprintf(stderr, "FAIL: %d checks\n", failures);
     return 1;
   }
-  std::printf("PASS: finite F16 dot, tails, controls and ordinary/flash attention\n");
+  std::printf("PASS: finite F16 dot and GEMM, tails, controls and ordinary/flash attention\n");
   return 0;
 }

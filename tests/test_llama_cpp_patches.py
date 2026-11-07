@@ -383,12 +383,20 @@ class CarriedSeriesTests(unittest.TestCase):
 
     @unittest.skipUnless((UPSTREAM / "CMakeLists.txt").is_file(),
                          "third_party/llama.cpp is not checked out")
-    def test_f16_dot_patch_applies_only_to_the_exact_source_and_preserves_upstream(self) -> None:
-        name = "0005-arm-f16-dot-f32-accumulation.patch"
+    def test_f16_accumulation_patches_apply_only_to_the_exact_source_and_preserve_upstream(
+            self) -> None:
+        for name, marker, context in (
+                ("0005-arm-f16-dot-f32-accumulation.patch",
+                 "llamadart F16 dot F32 accumulation", "void ggml_vec_dot_f16("),
+                ("0006-arm-f16-gemm-f32-accumulation.patch",
+                 "llamadart F16 GEMM F32 accumulation", "tinyBLAS<8, float16x8_t")):
+            with self.subTest(patch=name):
+                self.check_exact_source_patch(name, marker, context)
+
+    def check_exact_source_patch(self, name: str, marker: str, context: str) -> None:
         entry = next(entry for entry in patches.load_series() if entry["file"] == name)
         patch_text = (patches.PATCHES_DIR / name).read_text(encoding="utf-8")
         parsed = patches.parse_patch(name, patch_text)
-        self.assertEqual("ggml/src/ggml-cpu/vec.cpp", parsed.path)
         original = (UPSTREAM / parsed.path).read_text(encoding="utf-8")
         with tempfile.TemporaryDirectory() as directory:
             fixture = Path(directory)
@@ -402,12 +410,11 @@ class CarriedSeriesTests(unittest.TestCase):
                 json.dumps({"patches": [entry]}), encoding="utf-8")
             result = patches.apply_series(fixture / "upstream", patch_dir)
             self.assertEqual([parsed.path], list(result))
-            marker = "llamadart F16 dot F32 accumulation"
             self.assertNotIn(marker, original)
             self.assertIn(marker, result[parsed.path])
             self.assertEqual(original, source.read_text(encoding="utf-8"))
-            source.write_text(original.replace("void ggml_vec_dot_f16(",
-                                               "void changed_vec_dot_f16("), encoding="utf-8")
+            source.write_text(original.replace(context, "changed_" + context),
+                              encoding="utf-8")
             rejected = source.read_text(encoding="utf-8")
             applied, skipped = patches.apply_available(fixture / "upstream", patch_dir)
             self.assertEqual({}, applied)
@@ -466,7 +473,7 @@ class CarriedSeriesTests(unittest.TestCase):
                 [sys.executable, str(ROOT / "tools/llama_cpp_patches.py"),
                  "manifest", "--upstream", directory], capture_output=True, text=True)
         self.assertEqual(0, result.returncode, result.stderr)
-        self.assertEqual(["0001", "0002", "0003", "0004", "0005"],
+        self.assertEqual(["0001", "0002", "0003", "0004", "0005", "0006"],
                          [e["file"][:4] for e in json.loads(result.stdout)])
 
     @unittest.skipUnless((UPSTREAM / "CMakeLists.txt").is_file(),
