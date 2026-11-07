@@ -279,8 +279,9 @@ void lane_overflow_case(ggml_backend_t backend, int width, int index, const char
 }
 
 // A NaN or infinite input stays nonfinite, in the F16 steps and in the tail.
-void nonfinite_input_case(ggml_backend_t backend, int index, float value, const char *name) {
-  std::vector<float> keys(64 + 5, 1.0f), queries(64 + 5, 1.0f);
+void nonfinite_input_case(ggml_backend_t backend, int width, int index, float value,
+                          const char *name) {
+  std::vector<float> keys(width, 1.0f), queries(width, 1.0f);
   keys[index] = value;
   values_case(backend, keys, queries, GGML_TYPE_F16, name);
 }
@@ -480,6 +481,17 @@ int main() {
     dot_case(backend, width, 0.0f, Pattern::f16_rounding, GGML_TYPE_F16, "f16-rounding");
   }
   {
+    // Rows of one block: acc0 lane 7 (high half) of the first step and acc3
+    // lane 7 of the second; overflows of opposite sign in acc0 lanes 0 and 4,
+    // and in acc0 and acc2 lane 0.
+    constexpr int width = 2 * dot_step + 5;
+    for (int index : {7, dot_step + 31}) {
+      lane_overflow_case(backend, width, index, "short-lane-overflow");
+    }
+    lane_overflow_case(backend, width, 0, "short-split-overflow", dot_step + 4);
+    lane_overflow_case(backend, width, 0, "short-split-overflow", dot_step + 16);
+  }
+  {
     constexpr int width = 2 * dot_block + dot_step + 5;
     // The first block's acc0 lane 0, the second's acc0 lane 7 (high half),
     // the last step of the first block in acc2 lane 4, and the final partial
@@ -495,9 +507,11 @@ int main() {
     lane_overflow_case(backend, width, 3 * dot_step, "split-overflow-f16",
                        4 * dot_step + 16);
   }
-  for (int index : {9, 66}) {
-    nonfinite_input_case(backend, index, NAN, "nan-input");
-    nonfinite_input_case(backend, index, INFINITY, "inf-input");
+  for (int width : {2 * dot_step + 5, 2 * dot_block + dot_step + 5}) {
+    for (int index : {9, width - 3}) {
+      nonfinite_input_case(backend, width, index, NAN, "nan-input");
+      nonfinite_input_case(backend, width, index, INFINITY, "inf-input");
+    }
   }
   dot_case(backend, 256, 128.0f, Pattern::cancellation, GGML_TYPE_F16, "hidden-overflow");
   for (int cols : {8, 16, 32}) {

@@ -33,13 +33,14 @@ public-model failure is established.
 Both patches change build-tree copies only.
 
 - 0005: under NEON, FMA, IEEE F16, FP16 vector arithmetic and no SVE,
-  `ggml_vec_dot_f16` keeps upstream's F16 multiply-adds (four `float16x8_t`
-  accumulators over 32-element steps) for at most 64 steps, so 64 products
-  per lane, then reduces them in F16 in upstream's order and adds the eight
-  lanes into F32. Elements past the last full step add in double, as
-  upstream. A nonfinite result is computed again with F32 products and sums
-  (FMLAL/FMLAL2 with `__ARM_FEATURE_FP16_FML`, conversion and F32 FMA
-  otherwise), which replaces it.
+  `ggml_vec_dot_f16` keeps upstream's code for rows of one block (at most
+  2048 elements, so 64 products per lane): F16 multiply-adds in four
+  `float16x8_t` accumulators, the F16 reduction, then F32 and a double tail.
+  If the reduced F16 sums hold an infinity or NaN, the row is computed again
+  with F32 products and sums (FMLAL/FMLAL2 with `__ARM_FEATURE_FP16_FML`,
+  conversion and F32 FMA otherwise). Longer rows run out of line: each block
+  is summed the same way and added into F32, and a nonfinite F32 sum is
+  recomputed the same way.
 - 0006: the FP16 llamafile tile keeps its F16 multiply-adds, but each lane
   sums at most 64 products (512 K elements) before the sum is added into an
   F32 accumulator (FMLAL/FMLAL2 by one with FP16 FML, conversion and F32 add
@@ -50,16 +51,17 @@ Both patches change build-tree copies only.
 
 ### Dot contract (0005)
 
-- Overflow: for finite F16 inputs no result is nonfinite. A result whose F16
-  sums overflowed, or that had a nonfinite input, comes from the F32
-  recompute and is bit-identical to the first version of 0005. NaN and
-  infinite inputs still give NaN or infinity.
+- Overflow: for finite F16 inputs no result is nonfinite. A row whose F16
+  sums overflowed, or with a NaN or infinite input before its scalar tail,
+  comes from the F32 recompute and is bit-identical to the first version of
+  0005. NaN and infinite inputs still give NaN or infinity; in the scalar
+  tail they propagate as upstream.
 - Precision: a finite result for `n` < 2080 (one block plus the scalar tail)
   is bit-identical to unpatched upstream. Longer rows add each block's F16
   sums into F32, so F16 rounding no longer compounds across blocks; within a
   block it is upstream's, so results are not F32-accurate.
-- Cost: one finiteness check per dot product; a recomputed one costs the F16
-  pass plus the F32 pass.
+- Cost: a finiteness check of the reduced F16 vector per row; a recomputed
+  row costs the F16 pass plus the F32 pass.
 
 ### GEMM contract (0006)
 
@@ -81,26 +83,38 @@ maintainer approved the
 
 ## Performance
 
-Apple M4 Max, CPU only, `GGML_NATIVE=OFF`. Kernel costs are against the
-unpatched kernels; model throughput is against the shipped `v0.8.0-3` macOS
-library (Qwen2.5-0.5B-Instruct, 8 threads, F16 KV, median of 3 interleaved
-rounds' ratios):
+Model throughput, CPU only: Qwen2.5-0.5B-Instruct, 8 threads, F16 KV, ratio
+to the same llama.cpp `v0.9.0` build without 0005 and 0006, median over
+interleaved rounds (5 on Apple M4 Max, 3 on Google Cloud `t2a` and `c4a`):
+
+| Host, module | F16 pp512, FA off / on | F16 tg128, tg64 at depth 1024 | Q8_0 pp512, FA off / on | Q8_0 tg |
+| --- | --- | --- | --- | --- |
+| M4 Max, macOS arm64 | 0.92 / 0.94 | 0.99–1.00 | 0.98 / 1.00 | 0.99–1.00 |
+| Neoverse-N1, `linux_armv8.2_2` | 1.47 / 1.47 | 0.98–0.99 | 1.05 / 1.00 | 0.99–1.01 |
+| Neoverse-V2, `linux_armv8.2_2` | 1.56 / 1.54 | 0.98–1.00 | 1.09 / 1.00 | 0.99–1.01 |
+| Neoverse-V2, `linux_armv8.6_1` | 0.98 / 0.99 | 0.99–1.02 | 0.98 / 1.00 | 1.00–1.01 |
+
+0006 alone gives the same F16 pp512 on M4 and `linux_armv8.2_2`; 0005 costs
+about 2% of `linux_armv8.6_1` prefill, where llamafile is compiled out and
+every F16 matmul runs `ggml_vec_dot_f16`. The first version of 0005 ran at
+0.50–0.53 for F16 decode on `linux_armv8.2_2` and 0.75 for F16 prefill on
+`linux_armv8.6_1`.
+
+Kernels on M4 Max, one thread, time against the unpatched kernels:
 
 | Case | Cost |
 | --- | --- |
-| F16 mat-vec 4096x4096, 1 thread (0005): FMLAL / conversion path | +13% / +78% time |
-| F16 GEMM 4096x4096, 32–512 columns, 1 or 8 threads (0006): FMLAL / conversion flush | +8–13% / +12–14% time |
-| Same with every tile overflowing (all redone in F32) | +257% time |
-| F16-weight model pp512, FA off / on | 0.91 / 0.94 tokens/s |
-| F16-weight model tg128 and tg64 at depth 1024 (decode does not reach the tile) | 0.96–1.02 (noise) |
-| Q8_0 model pp512, FA off / on | 0.98 / 1.01 tokens/s |
-| Qwen3-TTS cancel latency (core `tts` pack, CPU), median / p90 / max | 16 / 40 / 49 ms against 15 / 32 / 48 ms |
+| F16 mat-vec, rows of 64 / 128 / 256 / 4096 elements (0005): FMLAL / conversion build | +4% / +12% / +2% / −3%; +2% / +5% / +1% / −3% |
+| Same, 4096x4096 with every row overflowing (all recomputed) | 2.1 / 2.75 times |
+| First 0005, 4096x4096 | +14% / +78% |
+| F16 GEMM 4096x4096, 32–512 columns, 1 or 8 threads (0006): FMLAL / conversion flush | +8–13% / +12–14% |
+| Same with every tile overflowing (all redone in F32) | +257% |
+| Qwen3-TTS cancel latency (core `tts` pack, CPU, 0006), median / p90 / max | 16 / 40 / 49 ms against 15 / 32 / 48 ms |
 
 The first version of 0006 accumulated every tile in F32: F16 GEMM +125–163%
 time, F16-weight pp512 at 0.44 of `v0.8.0-3` and a median TTS cancel latency
 of 65 ms. Blocks of 16 or 32 products per lane, instead of 64, gave pp512
-at 0.79 or 0.87. `linux_armv8.2_2` runs the conversion flush; it is not yet
-measured on that hardware.
+at 0.79 or 0.87.
 
 ## Checks
 
@@ -128,24 +142,25 @@ measured on that hardware.
   requires the exact sum. Its 0005 cases: lane sums exact in F16 within one
   block but not with a 65th step (a longer block), a product of 2048 that
   absorbs later products of 1 (F16 rounding, reduction order, a shorter
-  block), one overflowing lane in each half, accumulator and block,
+  block), one overflowing lane in each half, accumulator and block of one-
+  and multi-block rows,
   overflows of opposite sign that meet as NaN in the F32 lanes or in the F16
   reduction (a finiteness check that misses NaN), product overflow at widths
   around the recompute's eight-element and scalar tails, rows without NaN
   padding (an over-read the recompute would hide), and NaN and infinite
   inputs.
-- On Apple silicon (FMLAL and conversion builds) it fails 32 checks without
-  0005, 19 with the first 0005 (bit-identity only), and 2 to 43 with each of
-  23 mutants of the new 0005: no flush, blocks of 32, 63, 65 or 128 steps, a
-  flush that overwrites instead of adding, no recompute, recompute always,
-  finiteness checks of infinity, NaN, the low half or one lane only, a
-  dropped scalar tail, partial block or high half, over-reads, a reordered
-  F16 reduction or a dropped accumulator, and a recompute that skips a tail,
-  drops its high half or returns NaN. Moving the recompute's eight-element
-  loop into its scalar tail is equivalent and survives. Without
-  0006's flush, recompute or tail block it failed 1 to 202 checks when 0006
-  landed; those GEMM cases are unchanged. Zero-length and strided query
-  tensors are not covered.
+- On Apple silicon (FMLAL and conversion builds) it fails 36 checks without
+  0005, 19 with the first 0005 (bit-identity only), and 1 to 40 with each of
+  29 mutants of the new 0005: no flush, an in-line block of 65 or 128 steps,
+  blocks of 32, 63, 65 or 128 steps, a flush that overwrites instead of
+  adding, no recompute, recompute always, finiteness checks of infinity only,
+  the low half or one lane, a dropped scalar tail, partial block or high half,
+  over-reads, a reordered F16 reduction or a dropped accumulator, and a
+  recompute that skips a tail, drops its high half or returns NaN. Moving the
+  recompute's eight-element loop into its scalar tail is equivalent and
+  survives. Without 0006's flush, recompute or tail block it failed 1 to 202
+  checks when 0006 landed; those GEMM cases are unchanged. Zero-length and
+  strided query tensors are not covered.
 - `tools/linux_cpu_variant_smoke.c` runs the single-column magnitude sweep on
   each selected Linux arm64 CPU module and rejects nonfinite matmul output.
 - Always-active guards (`n >= 0` in 0005, `k >= 0` in 0006) carry the
@@ -164,8 +179,7 @@ is on `main`:
 - Run the test against each published CPU module: Android variants on a
   device, Linux variants, Apple.
 - Compare prefill/decode throughput on an Android device for each variant with
-  the previous release, F16 KV with FA off and on, and an F16-weight model on
-  `linux_armv8.2_2`.
+  the previous release, F16 KV with FA off and on.
 
 Retire a patch when the pinned upstream and every compatibility lane carry a
 verified upstream repair; then add its `upstream_fix` text.
