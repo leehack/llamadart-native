@@ -389,7 +389,7 @@ class CarriedSeriesTests(unittest.TestCase):
                 ("0005-arm-f16-dot-f32-accumulation.patch",
                  "llamadart F16 dot F32 accumulation", "void ggml_vec_dot_f16("),
                 ("0006-arm-f16-gemm-f32-accumulation.patch",
-                 "llamadart F16 GEMM F32 accumulation", "tinyBLAS<8, float16x8_t")):
+                 "llamadart F16 GEMM F32 accumulation", "        D Cv[RN][RM] = {};")):
             with self.subTest(patch=name):
                 self.check_exact_source_patch(name, marker, context)
 

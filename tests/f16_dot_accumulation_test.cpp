@@ -74,7 +74,20 @@ bool check_result(float actual, double expected, double tolerance,
   return true;
 }
 
-enum class Pattern { positive, cancellation, large_product, maximum, subnormal };
+// Patch 0006 sums each F16 GEMM lane over at most this many K elements (eight
+// lanes, so 64 products per lane) before adding it in F32.
+constexpr int gemm_block = 512;
+constexpr int gemm_block_steps = gemm_block / 8;
+
+enum class Pattern {
+  positive, cancellation, large_product, maximum, subnormal,
+  // Every lane of every GEMM block sums exactly to 65504, the F16 maximum.
+  block_maximum,
+  // As block_maximum but each lane sums to 65536, which overflows in F16.
+  block_overflow,
+  // Lane sums stay exact in F16 within a block but not over two blocks.
+  block_exact,
+};
 
 // Sixteen identical weight rows times `cols` identical query columns. One
 // column takes the vector dot kernel; eight or more take llamafile GEMM where
@@ -110,6 +123,14 @@ void dot_case(ggml_backend_t backend, int width, float magnitude,
     } else if (pattern == Pattern::subnormal) {
       kv = ggml_fp16_to_fp32(static_cast<ggml_fp16_t>(1 + i % 7));
       qv = i % 2 == 0 ? 1.0f : -1.0f;
+    } else if (pattern == Pattern::block_maximum || pattern == Pattern::block_overflow) {
+      const bool last_step = (i % gemm_block) / 8 == gemm_block_steps - 1;
+      kv = 32.0f;
+      qv = 2048.0f / gemm_block_steps -
+           (pattern == Pattern::block_maximum && last_step ? 1.0f : 0.0f);
+    } else if (pattern == Pattern::block_exact) {
+      kv = 2048.0f / gemm_block_steps - 1.0f;
+      qv = 1.0f;
     }
     for (int r = 0; r < rows; ++r) {
       keys[static_cast<size_t>(r) * stride + i] = kv;
@@ -137,6 +158,58 @@ void dot_case(ggml_backend_t backend, int width, float magnitude,
   for (float value : actual) {
     if (!check_result(value, reference, 1e-7 + 2e-6 * absolute_sum, name, width, cols)) {
       break;
+    }
+  }
+}
+
+// Sixteen weight rows times twelve query columns with exact integer products.
+// In the K tail after one GEMM block, rows 5-6 times columns 8-9 overflow F16:
+// part of the 4x6 tile at rows 4-7 and columns 6-11, which alone is redone in F32.
+void gemm_tile_case(ggml_backend_t backend) {
+  constexpr int rows = 16;
+  constexpr int cols = 12;
+  constexpr int width = gemm_block + 8;
+  constexpr int padding = 8;
+  constexpr int stride = width + padding;
+  Graph graph(backend);
+  auto *padded = ggml_new_tensor_2d(graph.ctx, GGML_TYPE_F16, stride, rows);
+  auto *k = ggml_view_2d(graph.ctx, padded, width, rows, padded->nb[1], 0);
+  auto *q = ggml_new_tensor_2d(graph.ctx, GGML_TYPE_F32, width, cols);
+  auto *out = ggml_mul_mat(graph.ctx, k, q);
+  ggml_mul_mat_set_prec(out, GGML_PREC_F32);
+  graph.allocate(out);
+
+  std::vector<ggml_fp16_t> keys(static_cast<size_t>(stride) * rows, ggml_fp32_to_fp16(NAN));
+  std::vector<float> queries(static_cast<size_t>(width) * cols);
+  auto key = [](int r, int i) {
+    return i >= gemm_block && (r == 5 || r == 6) ? 4096.0f : 1.0f + r % 3;
+  };
+  auto query = [](int c, int i) {
+    return i >= gemm_block ? (c == 8 || c == 9 ? 16.0f : 1.0f) : 1.0f + c % 4;
+  };
+  for (int r = 0; r < rows; ++r) {
+    for (int i = 0; i < width; ++i) {
+      keys[static_cast<size_t>(r) * stride + i] = ggml_fp32_to_fp16(key(r, i));
+    }
+  }
+  for (int c = 0; c < cols; ++c) {
+    for (int i = 0; i < width; ++i) {
+      queries[static_cast<size_t>(c) * width + i] = query(c, i);
+    }
+  }
+  ggml_backend_tensor_set(padded, keys.data(), 0, keys.size() * sizeof(ggml_fp16_t));
+  ggml_backend_tensor_set(q, queries.data(), 0, queries.size() * sizeof(float));
+  graph.compute();
+  std::vector<float> actual(static_cast<size_t>(rows) * cols);
+  ggml_backend_tensor_get(out, actual.data(), 0, actual.size() * sizeof(float));
+  for (int c = 0; c < cols; ++c) {
+    for (int r = 0; r < rows; ++r) {
+      double expected = 0.0;
+      for (int i = 0; i < width; ++i) {
+        expected += static_cast<double>(key(r, i)) * query(c, i);
+      }
+      check_result(actual[static_cast<size_t>(c) * rows + r], expected, 0.0, "gemm-tile",
+                   width, cols);
     }
   }
 }
@@ -265,6 +338,16 @@ int main() {
     dot_case(backend, 256, 128.0f, Pattern::cancellation, GGML_TYPE_F16, "gemm-hidden-overflow", cols);
   }
   dot_case(backend, 32, 0.0f, Pattern::large_product, GGML_TYPE_F16, "gemm-large-product", 8);
+  for (int width : {gemm_block, 2 * gemm_block + 8}) {
+    dot_case(backend, width, 0.0f, Pattern::block_maximum, GGML_TYPE_F16,
+             "gemm-block-maximum", 8);
+    dot_case(backend, width, 0.0f, Pattern::block_overflow, GGML_TYPE_F16,
+             "gemm-block-overflow", 8);
+  }
+  for (int width : {8, gemm_block - 8, gemm_block, gemm_block + 8, 4 * gemm_block + 8}) {
+    dot_case(backend, width, 0.0f, Pattern::block_exact, GGML_TYPE_F16, "gemm-block-exact", 8);
+  }
+  gemm_tile_case(backend);
   dot_case(backend, 64, 100.0f, Pattern::positive, GGML_TYPE_F32, "gemm-f32-control", 8);
   for (int queries_count : {1, 8}) {
     attention_case(backend, false, queries_count);
