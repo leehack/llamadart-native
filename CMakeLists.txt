@@ -313,6 +313,19 @@ target_include_directories(llamadart_lib PRIVATE
 
 if (LLAMADART_BUILD_TESTS)
     enable_testing()
+    add_executable(llamadart_f16_dot_accumulation_test tests/f16_dot_accumulation_test.cpp)
+    target_compile_features(llamadart_f16_dot_accumulation_test PRIVATE cxx_std_17)
+    target_link_libraries(llamadart_f16_dot_accumulation_test PRIVATE ggml ggml-base)
+    if (GGML_BACKEND_DL)
+        target_compile_definitions(llamadart_f16_dot_accumulation_test PRIVATE
+            LLAMADART_TEST_CPU_BACKEND="$<TARGET_FILE:ggml-cpu>")
+        add_dependencies(llamadart_f16_dot_accumulation_test ggml-cpu)
+    else()
+        target_link_libraries(llamadart_f16_dot_accumulation_test PRIVATE ggml-cpu)
+    endif()
+    add_test(NAME llamadart_f16_dot_accumulation_test COMMAND llamadart_f16_dot_accumulation_test)
+    set_tests_properties(llamadart_f16_dot_accumulation_test PROPERTIES TIMEOUT 30)
+
     add_library(llamadart_owner_creation_gate SHARED tests/owner_creation_gate.cpp)
     target_compile_features(llamadart_owner_creation_gate PRIVATE cxx_std_17)
     target_include_directories(llamadart_owner_creation_gate PRIVATE
