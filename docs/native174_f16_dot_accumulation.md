@@ -5,8 +5,8 @@ F16 before being returned as F32. Tracking:
 [native #174](https://github.com/leehack/llamadart-native/issues/174),
 [upstream #31734](https://github.com/ggml-org/llama.cpp/issues/31734)
 (open, unfixed in llama.cpp `v0.9.0` and `master` as of 2026-11-07).
-Published artifacts stay affected until a release carrying both patches
-replaces them.
+Native `v0.9.0` (published 2026-11-08) carries both patches and fixes #174;
+`v0.8.0-3` and earlier stay affected.
 
 ## Defect
 
@@ -178,9 +178,8 @@ at 0.79 or 0.87.
 
 ## Before publication
 
-These gates hold before any release carries the patches, including the
-`v0.9.0` release, which a maintainer dispatches manually once the v0.9.0 pin
-is on `main`. The final re-gate ran at `bee747a5` (2026-11-07; `a604639`
+These gates hold before any release carries the patches; they held for
+`v0.9.0`, the first. The final re-gate ran at `bee747a5` (2026-11-07; `a604639`
 changes only the test, the smoke tool and this document) against the same
 build without 0005 and 0006 ("unpatched") and `v0.8.0-3`, medians over 3
 interleaved rounds:
@@ -196,6 +195,14 @@ interleaved rounds:
   the previous release, F16 KV with FA off and on. Run on the S25 and Pixel 6
   with F16 and Q8_0 weights. S25 `android_armv8.2_2` Q8_0 pp512 with FA off
   recovered from 0.77 of `v0.8.0-3` before #182 to 0.97 (1.00 of unpatched).
+  Besides the accepted costs below, medians under 0.97 of both baselines:
+  S25 `armv8.2_2` F16 FA-on tg128 (0.95 of `v0.8.0-3`, 0.96 of unpatched) and
+  Pixel 6 `armv8.2_2` F16 FA-off pp512 (0.96 of both; rounds 0.42–1.09); and,
+  from one round on variants without FP16 vector arithmetic, where the patches
+  do not run, S25 `armv8.0_1` F16 FA-off pp512 and tg64 at depth 1024 (0.72 and
+  0.74 of `v0.8.0-3`, 0.90 and 0.83 of unpatched), Pixel 6 `armv8.2_1` F16
+  FA-off tg64 at depth 1024 (0.95, 0.96) and `armv8.0_1` Q8_0 FA-on tg128
+  (0.96, 0.95).
   Linux in the #182 audit: 0.97 or more of unpatched everywhere, F16 pp512 on
   `linux_armv8.2_2` 1.47–1.49.
 - Qwen3-TTS cancel on `t2a` (`linux_armv8.2_2`): all 36 samples, two runs
