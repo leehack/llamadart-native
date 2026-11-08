@@ -180,12 +180,38 @@ at 0.79 or 0.87.
 
 These gates hold before any release carries the patches, including the
 `v0.9.0` release, which a maintainer dispatches manually once the v0.9.0 pin
-is on `main`:
+is on `main`. The final re-gate ran at `bee747a5` (2026-11-07; `a604639`
+changes only the test, the smoke tool and this document) against the same
+build without 0005 and 0006 ("unpatched") and `v0.8.0-3`, medians over 3
+interleaved rounds:
 
 - Run the test against each published CPU module: Android variants on a
-  device, Linux variants, Apple.
+  device, Linux variants, Apple. It passes on macOS arm64; on all seven
+  Android variants across a Galaxy S25, Pixel 6, Pixel 9 Pro, Pixel 11 and
+  Galaxy S26 (24 variant and device pairs; each device skips the variants its
+  CPU cannot run); and, in the #182 audit, on Google Cloud `linux_armv8.2_2`
+  (Neoverse-N1, -V2) and `linux_armv8.6_1` (Neoverse-V2). Unpatched and
+  `v0.8.0-3` fail on macOS and on Android `armv8.2_2` and `armv8.6_1`.
 - Compare prefill/decode throughput on an Android device for each variant with
-  the previous release, F16 KV with FA off and on.
+  the previous release, F16 KV with FA off and on. Run on the S25 and Pixel 6
+  with F16 and Q8_0 weights. S25 `android_armv8.2_2` Q8_0 pp512 with FA off
+  recovered from 0.77 of `v0.8.0-3` before #182 to 0.97 (1.00 of unpatched).
+  Linux in the #182 audit: 0.97 or more of unpatched everywhere, F16 pp512 on
+  `linux_armv8.2_2` 1.47–1.49.
+- Qwen3-TTS cancel on `t2a` (`linux_armv8.2_2`): all 36 samples, two runs
+  each of the patched build and `v0.8.0-3`, within the 500 ms budget; the
+  patched build's worst is 222 ms against 195 ms.
+
+The maintainer accepted the two costs below 0.97 for `v0.9.0`:
+
+- macOS arm64 (M4 Max) F16 pp512, FA off and on: 0.92–0.95 of `v0.8.0-3` and
+  0.90–0.95 of unpatched over two runs. This is 0006's cost: without 0006 the
+  build runs at full speed (0.99–1.05 of `v0.8.0-3`) but fails 21 checks, with
+  GEMM returning `inf` and eight-query attention NaN.
+- Galaxy S25 `android_armv8.6_1`, Q8_0, FA off, pp512: 0.96 of unpatched and
+  0.95 of `v0.8.0-3` over 6 rounds. It comes from 0005's F16 KV dot in
+  prefill; decode stays at 0.99–1.04, and with FA on pp512 is 1.03 of
+  `v0.8.0-3`.
 
 Retire a patch when the pinned upstream and every compatibility lane carry a
 verified upstream repair; then add its `upstream_fix` text.
