@@ -355,31 +355,23 @@ class CarriedSeriesTests(unittest.TestCase):
         self.assertLess(added, applied)
         self.assertLess(applied, cmake.index("add_library(llamadart_lib SHARED"))
 
-    def carried_after(self, context_source: str | None, newline: str = "\n") -> list[str]:
+    def carried_after(self, unary_source: str | None, newline: str = "\n") -> list[str]:
         with tempfile.TemporaryDirectory() as directory:
-            if context_source is not None:
-                source = Path(directory) / "src/llama-context.cpp"
-                source.parent.mkdir()
-                source.write_bytes(context_source.replace("\n", newline).encode())
+            if unary_source is not None:
+                source = Path(directory) / self.UNARY
+                source.parent.mkdir(parents=True)
+                source.write_bytes(unary_source.replace("\n", newline).encode())
             return [entry["file"] for entry in patches.manifest_entries(
                 patches.PATCHES_DIR, Path(directory))]
 
-    def test_the_embedding_reserve_patch_is_retired_only_where_upstream_has_the_fix(self) -> None:
-        entry = next(entry for entry in patches.load_series()
-                     if entry["file"] == "0003-embedding-mode-scheduler-reserve.patch")
-        # v0.8.0 (upstream ggml-org/llama.cpp#31086) toggles embeddings like this.
-        self.assertEqual("    if (cparams.embeddings != value) {\n"
-                         "        sched_need_reserve = true;\n"
-                         "    }\n", entry.get("upstream_fix"))
-        fixed = ("void llama_context::set_embeddings(bool value) {\n"
-                 + entry["upstream_fix"] + "    cparams.embeddings = value;\n}\n")
-        unfixed = ("void llama_context::set_embeddings(bool value) {\n"
-                   "    cparams.embeddings = value;\n}\n")
-        patch = "0003-embedding-mode-scheduler-reserve.patch"
-        self.assertNotIn(patch, self.carried_after(fixed))
-        self.assertNotIn(patch, self.carried_after(fixed, "\r\n"), "a CRLF checkout")
-        self.assertIn(patch, self.carried_after(unfixed))
-        self.assertIn(patch, self.carried_after(None), "a missing source retires nothing")
+    def test_the_metal_patch_is_retired_only_where_upstream_has_the_fix(self) -> None:
+        fixed = self.metal_patch_entry()["upstream_fix"]
+        unfixed = "constexpr specialization\n"
+        self.assertNotIn(self.METAL_PATCH, self.carried_after(fixed))
+        self.assertNotIn(self.METAL_PATCH, self.carried_after(fixed, "\r\n"), "a CRLF checkout")
+        self.assertIn(self.METAL_PATCH, self.carried_after(unfixed))
+        self.assertIn(self.METAL_PATCH, self.carried_after(None),
+                      "a missing source retires nothing")
 
     @unittest.skipUnless((UPSTREAM / "CMakeLists.txt").is_file(),
                          "third_party/llama.cpp is not checked out")
@@ -473,7 +465,7 @@ class CarriedSeriesTests(unittest.TestCase):
                 [sys.executable, str(ROOT / "tools/llama_cpp_patches.py"),
                  "manifest", "--upstream", directory], capture_output=True, text=True)
         self.assertEqual(0, result.returncode, result.stderr)
-        self.assertEqual(["0001", "0002", "0003", "0004", "0005", "0006"],
+        self.assertEqual(["0001", "0002", "0004", "0005", "0006"],
                          [e["file"][:4] for e in json.loads(result.stdout)])
 
     @unittest.skipUnless((UPSTREAM / "CMakeLists.txt").is_file(),

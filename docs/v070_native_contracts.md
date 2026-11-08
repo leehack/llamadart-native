@@ -89,7 +89,7 @@ with extraction on crashes the same way when it is turned off.
 `set_embeddings()` re-reserves only pooled contexts, which is why pooled
 EmbeddingGemma passes.
 
-The carried `0003-embedding-mode-scheduler-reserve.patch` marks the scheduler
+The carried `0003-embedding-mode-scheduler-reserve.patch` (since retired) marks the scheduler
 for reservation whenever embedding extraction changes, including pooling
 NONE, so the next decode reserves for the current mode's graph. The
 unchanged-mode path is untouched. A debug log provides the mandatory Android

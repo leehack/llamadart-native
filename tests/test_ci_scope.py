@@ -112,9 +112,8 @@ class ScopeTests(unittest.TestCase):
         workflow=(ROOT/'.github/workflows/validate_wrapper.yml').read_text()
         table=re.search(r"^  LLAMADART_UPSTREAMS: >-\n((?:    .*\n)+)",workflow,re.MULTILINE)[1]
         rows=json.loads(table)
-        # Shipped llamadart cores still load these lines, so they keep their rows.
-        self.assertLessEqual({'v0.7.0':'620d2225cc436ab0b001e3200e590e3b286ef9ab',
-                              'v0.8.0':'8642541b255bfb5dc39cd351a178be09013a55d6'}.items(),rows.items())
+        # Shipped llamadart cores still load this line, so it keeps its row.
+        self.assertLessEqual({'v0.8.0':'8642541b255bfb5dc39cd351a178be09013a55d6'}.items(),rows.items())
         upstream_rows(table,pinned_llama_cpp())
         self.assertNotIn("'pinned'",workflow)
         self.assertEqual(workflow.count('QUALIFICATION_SHA:'),len(JOBS))

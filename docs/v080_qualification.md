@@ -6,8 +6,8 @@ v0.7.0 `620d2225cc436ab0b001e3200e590e3b286ef9ab` plus 291. Its native
 release identity is the stable tag `v0.8.0`, which `latest` selects.
 
 Native `v0.8.0` was published on 2026-10-30 and the production submodule is
-at v0.8.0 (`update-llama-submodule`, 8005b57). `validate_wrapper.yml` keeps a
-`v0.7.0` row of every native lane, so patch 0003 stays until that row goes.
+at v0.8.0 (`update-llama-submodule`, 8005b57). Patch 0003 and the
+`v0.7.0` row of `validate_wrapper.yml` were later retired.
 
 The first scheduled dispatch, on 2026-10-29, failed in every build job
 compiling the wrapper against the v0.8.0 `mtmd` API and published nothing; the
@@ -45,8 +45,8 @@ All three apply strictly to v0.8.0; 0001 and 0002 are applied.
   b11870) makes `set_embeddings` re-reserve on every toggle. Its
   `upstream_fix` text is that condition, so a v0.8.0 build does not apply it,
   its Android marker is not required and `assets.json` does not list it.
-  v0.7.0 lacks the text and still applies it. Delete the patch once no
-  `validate_wrapper.yml` row builds v0.7.0 or older.
+  v0.7.0 lacked the text, so the patch was kept until the v0.7.0 row
+  went; it has since been deleted.
 
   Evidence, 2026-10-29, Apple M4 Max, macOS arm64, CPU/Accelerate, Metal and
   KleidiAI off, Release:

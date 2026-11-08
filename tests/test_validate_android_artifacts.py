@@ -104,15 +104,11 @@ class ExceptionRuntimeTests(unittest.TestCase):
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertIn('__cxa_throw: defined by libggml-base.so', result.stdout)
 
-    def test_tool_requires_the_embedding_reservation_repair_until_upstream_has_it(self):
+    def test_tool_requires_the_f16_dot_repair_marker(self):
         result = self.run_tool(shared_runtime(),
-                               omitted_marker='llamadart re-reserves embedding mode')
-        required = {entry['file'] for entry in patches.required_series()}
-        if '0003-embedding-mode-scheduler-reserve.patch' not in required:
-            self.assertEqual(0, result.returncode, result.stderr)
-            return
+                               omitted_marker='llamadart F16 dot F32 accumulation')
         self.assertEqual(1, result.returncode, result.stderr)
-        self.assertIn('libllama.so: built without 0003-embedding-mode-scheduler-reserve.patch',
+        self.assertIn('libggml-cpu.so: built without 0005-arm-f16-dot-f32-accumulation.patch',
                       result.stderr)
 
     def test_tool_rejects_a_second_definition(self):

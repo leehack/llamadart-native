@@ -17,15 +17,6 @@
       ]
     },
     {
-      "file": "0003-embedding-mode-scheduler-reserve.patch",
-      "tracking": "https://github.com/leehack/llamadart-native/issues/114",
-      "upstream": "https://github.com/ggml-org/llama.cpp/pull/31086",
-      "android_markers": [
-        {"library": "libllama.so", "text": "llamadart re-reserves embedding mode"}
-      ],
-      "upstream_fix": "    if (cparams.embeddings != value) {\n        sched_need_reserve = true;\n    }\n"
-    },
-    {
       "file": "0004-metal-unary-cast-older-os-compilers.patch",
       "tracking": "https://github.com/leehack/llamadart-native/issues/154",
       "upstream": "https://github.com/ggml-org/llama.cpp/pull/31360",
