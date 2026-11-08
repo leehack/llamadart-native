@@ -6,9 +6,9 @@ Stable upstream v0.9.0, `cd959bae99ff4bed22bef2604f45241c09bbb8c8`
 identity is the stable tag `v0.9.0`, which `latest` selects.
 
 This change moves the production submodule to v0.9.0 and adds it as the
-pinned `LLAMADART_UPSTREAMS` row of `validate_wrapper.yml`, next to the v0.7.0
-and v0.8.0 rows. After the 2026-11-05 automatic dispatch failed at the CPU
-ISA audits
+pinned `LLAMADART_UPSTREAMS` row of `validate_wrapper.yml`, next to the v0.8.0
+row; the v0.7.0 row was retired with patch 0003. After the 2026-11-05
+automatic dispatch failed at the CPU ISA audits
 ([v090_android_isa_qualification.md](v090_android_isa_qualification.md)),
 native `v0.9.0` was published on 2026-11-08 from `a604639` by a manual
 `auto_native_release.yml` dispatch
@@ -59,16 +59,14 @@ passes `git apply --check` on both. `series.json` is unchanged.
 | --- | --- | --- | --- |
 | 0001 Adreno 750 matvec (#79) | Applied | [#29165](https://github.com/ggml-org/llama.cpp/pull/29165) open draft; `use_subgroups` selection unchanged on `master` | Keep |
 | 0002 buffer device address (leehack/llamadart#782) | Applied | No fix: `master` still takes `bufferDeviceAddress` from `VkPhysicalDeviceVulkan12Features` without checking the entry point; upstream supports Vulkan 1.2 and later only | Keep |
-| 0003 embedding-mode reserve (#114) | Not applied: `upstream_fix` present ([#31086](https://github.com/ggml-org/llama.cpp/pull/31086)) | Fixed since v0.8.0 | Needed only by the v0.7.0 row |
 | 0004 Metal unary cast (#154) | Not applied: `upstream_fix` present, `required_text` absent ([#31360](https://github.com/ggml-org/llama.cpp/pull/31360)) | Fixed after v0.8.0 | Needed only by the v0.8.0 row |
 | 0005 ARM F16 dot (#174) | Applied | [#31734](https://github.com/ggml-org/llama.cpp/issues/31734) open, no fix; non-SVE NEON `ggml_vec_dot_f16` still accumulates in `float16x8_t` | Keep |
 | 0006 ARM F16 GEMM (#174) | Applied | Same issue; llamafile still uses `tinyBLAS<8, float16x8_t, …>` | Keep |
 
-v0.7.0 needs 0001–0003, 0005 and 0006 (0004 does not fit it, since it predates
-the regression). v0.8.0 needs 0001, 0002 and 0004–0006. Deleting 0003 means
-dropping the v0.7.0 `LLAMADART_UPSTREAMS` row (cores 0.15–0.17); deleting 0004
-means dropping the v0.8.0 row (core 0.18). Both are support-policy decisions
-for the maintainer.
+v0.8.0 needs 0001, 0002 and 0004–0006. Patch 0003 and the v0.7.0
+`LLAMADART_UPSTREAMS` row (cores 0.15–0.17) were retired once cores on v0.8.0
+shipped; deleting 0004 means dropping the v0.8.0 row (core 0.18), a
+support-policy decision for the maintainer.
 
 `check-apple` does not require the 0004 marker on v0.9.0, and
 `metal_os_floor.yml` checks the unpatched v0.9.0 Metal kernels on the oldest

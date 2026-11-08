@@ -60,8 +60,8 @@ See `docs/v080_qualification.md` for the v0.8.0 candidate, its wrapper gate,
 carried-patch status and consumer ABI delta.
 See `docs/v080_android_isa_qualification.md` for the v0.8.0/KleidiAI v1.32.0
 source pair, its SVE I8MM-gated Q8 kernels and remaining gates.
-See `docs/v090_qualification.md` for the v0.9.0 candidate, patches 0003 and
-0004 (kept for the older rows, not applied to v0.9.0) and consumer ABI delta,
+See `docs/v090_qualification.md` for the v0.9.0 candidate, patch
+0004 (kept for the v0.8.0 row, not applied to v0.9.0) and consumer ABI delta,
 and `docs/v090_android_isa_qualification.md` for its source pair and ggml
 SVE256 repack paths.
 See `docs/v080_1_wrapper_rebuild.md` for the `v0.8.0-1` Metal kernel patch and
