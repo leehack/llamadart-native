@@ -7,11 +7,14 @@ identity is the stable tag `v0.9.0`, which `latest` selects.
 
 This change moves the production submodule to v0.9.0 and adds it as the
 pinned `LLAMADART_UPSTREAMS` row of `validate_wrapper.yml`, next to the v0.7.0
-and v0.8.0 rows. Native `v0.9.0` is not published: the 2026-11-05 automatic
-dispatch failed at the CPU ISA audits
-([v090_android_isa_qualification.md](v090_android_isa_qualification.md)).
-Merging this change publishes nothing; `auto_native_release.yml` runs only on
-manual dispatch.
+and v0.8.0 rows. After the 2026-11-05 automatic dispatch failed at the CPU
+ISA audits
+([v090_android_isa_qualification.md](v090_android_isa_qualification.md)),
+native `v0.9.0` was published on 2026-11-08 from `a604639` by a manual
+`auto_native_release.yml` dispatch
+([run](https://github.com/leehack/llamadart-native/actions/runs/42433633399)),
+with patches 0005 and 0006 fixing #174
+([native174_f16_dot_accumulation.md](native174_f16_dot_accumulation.md)).
 
 ## Wrapper
 
