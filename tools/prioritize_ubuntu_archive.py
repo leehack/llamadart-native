@@ -34,6 +34,9 @@ MIRROR_IDS = {
     b"http://azure.archive.ubuntu.com/ubuntu/": "azure_archive",
     b"https://archive.ubuntu.com/ubuntu/": "ubuntu_archive",
     b"https://security.ubuntu.com/ubuntu/": "ubuntu_security",
+    # Diagnostic hypothesis only: Canonical EC2 template + observed us-east-1.
+    # See docs/apt_mirror_diagnostics.md; never an admitted/writable format.
+    b"http://us-east-1.ec2.archive.ubuntu.com/ubuntu/": "ubuntu_ec2_us_east_1",
 }
 # Classification is diagnostic only. This does not expand accepted byte formats.
 KNOWN_ROW = re.compile(

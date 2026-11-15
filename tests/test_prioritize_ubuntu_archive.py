@@ -193,6 +193,7 @@ class MirrorPriorityTest(unittest.TestCase):
             (b"http://azure.archive.ubuntu.com/ubuntu/", "azure_archive"),
             (b"https://archive.ubuntu.com/ubuntu/", "ubuntu_archive"),
             (b"https://security.ubuntu.com/ubuntu/", "ubuntu_security"),
+            (b"http://us-east-1.ec2.archive.ubuntu.com/ubuntu/", "ubuntu_ec2_us_east_1"),
         ):
             for metadata in (b"unrecognized", b"priority:2 PRIVATE_TOKEN",
                              b"PRIVATE_TOKEN?credential=PRIVATE_TOKEN\x1b\x00",
@@ -231,6 +232,57 @@ class MirrorPriorityTest(unittest.TestCase):
                                           b"\tPRIVATE_TOKEN\n", expected)
         # A line ending/control is part of a token unless SP/TAB delimits it.
         self.assert_token_receipt(b"https://archive.ubuntu.com/ubuntu/\n", "unclassified")
+
+    def test_ec2_candidate_full_row_is_classified_but_never_admitted(self):
+        # Hypothesis probes from public template + observed cloud/region;
+        # these are NOT captured failed-image mirrorlist bytes.
+        row = b"http://us-east-1.ec2.archive.ubuntu.com/ubuntu/\tpriority:1\n"
+        fixtures = (
+            (row, {"priority": 1, "leading_ws": "", "separator_ws": "t",
+                   "trailing_ws": "", "ending": "lf"}),
+            (b" \t" + row.replace(b"\tpriority:1\n", b"  priority:999 \r\n"),
+             {"priority": 999, "leading_ws": "st", "separator_ws": "ss",
+              "trailing_ws": "s", "ending": "crlf"}),
+            (mirror.ORIGINAL.replace(mirror.ORIGINAL.splitlines(keepends=True)[0], row),
+             {"priority": 1, "leading_ws": "", "separator_ws": "t",
+              "trailing_ws": "", "ending": "lf"}),
+        )
+        for content, fields in fixtures:
+            with self.subTest(fields=fields):
+                self.path.write_bytes(content)
+                before = self.path.stat()
+                with mock.patch.object(mirror.os, "write", side_effect=AssertionError("write")):
+                    code, output, _ = self.run_main()
+                self.assertEqual(1, code)
+                data = self.receipt(output)
+                self.assertEqual({"mirror_id": "ubuntu_ec2_us_east_1",
+                                  "known_url_id": "ubuntu_ec2_us_east_1", **fields},
+                                 data["lines"][0])
+                self.assertNotIn("http", output)
+                self.assertEqual(content, self.path.read_bytes())
+                self.assertEqual(before.st_mtime_ns, self.path.stat().st_mtime_ns)
+
+    def test_ec2_candidate_url_variants_stay_unknown(self):
+        for token in (
+            b"prefixhttp://us-east-1.ec2.archive.ubuntu.com/ubuntu/",
+            b"http://us-east-1.ec2.archive.ubuntu.com/ubuntu/suffix",
+            b"http://us-east-1.ec2.archive.ubuntu.com.evil/ubuntu/",
+            b"http://us-east-1.ec2.archive.ubuntu.com@evil/ubuntu/",
+            b"http://us-east-2.ec2.archive.ubuntu.com/ubuntu/",
+            b"http://eu-west-1.ec2.archive.ubuntu.com/ubuntu/",
+            b"https://us-east-1.ec2.archive.ubuntu.com/ubuntu/",
+            b"http://us-east-1.ec2.archive.ubuntu.com/ubuntu",
+            b"http://us-east-1.ec2.archive.ubuntu.com/ubuntu//",
+            b"http://us-east-1.ec2.archive.ubuntu.com/ubuntu/%2f",
+            b"http://PRIVATE_TOKEN@us-east-1.ec2.archive.ubuntu.com/ubuntu/",
+            b"http://us-east-1.ec2.archive.ubuntu.com/ubuntu/?PRIVATE_TOKEN",
+            b"http://us-east-1.ec2.archive.ubuntu.com/ubuntu/#PRIVATE_TOKEN",
+            b"HTTP://us-east-1.ec2.archive.ubuntu.com/ubuntu/",
+            b"http://US-EAST-1.ec2.archive.ubuntu.com/ubuntu/",
+            b"http://us-east-1.ec2.arch\x00ive.ubuntu.com/ubuntu/",
+        ):
+            with self.subTest(token=token):
+                self.assert_token_receipt(token + b"\tpriority:1 PRIVATE_TOKEN\n", "unclassified")
 
     def test_bounded_priority_is_diagnostic_only(self):
         self.path.write_bytes(b"https://archive.ubuntu.com/ubuntu/\tpriority:999\n")
@@ -358,6 +410,8 @@ class MirrorPriorityTest(unittest.TestCase):
 
     def test_workflow_refusal_stops_before_any_apt_command(self):
         fixtures = (
+            b"http://us-east-1.ec2.archive.ubuntu.com/ubuntu/\tpriority:1\n",
+            b"http://us-east-1.ec2.archive.ubuntu.com/ubuntu/\tPRIVATE_TOKEN\n",
             b"https://archive.ubuntu.com/ubuntu/\tPRIVATE_TOKEN\n",
             b"https://user:PRIVATE_TOKEN@archive.ubuntu.com/ubuntu/ priority:2\n",
         )
