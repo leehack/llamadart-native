@@ -18,7 +18,8 @@ env:
   # commit is the submodule pin builds that checkout as is (tools/ci_scope.py).
   LLAMADART_UPSTREAMS: >-
     {"v0.8.0": "8642541b255bfb5dc39cd351a178be09013a55d6",
-    "v0.9.0": "cd959bae99ff4bed22bef2604f45241c09bbb8c8"}
+    "v0.9.0": "cd959bae99ff4bed22bef2604f45241c09bbb8c8",
+    "v1.0.0": "b1b770d90d94cad9e9ea5b993bdbc383a522fb28"}
 
 jobs:
   changes:
@@ -523,7 +524,7 @@ jobs:
           llamadart_owner_api_test llamadart_owner_reentrancy_test
           llamadart_f16_dot_accumulation_test
           llamadart_speculative_api_test
-          llamadart_build_identity_test
+          llamadart_build_identity_test llamadart_upstream_abi_test
           llamadart_cancel_flag_test
           llamadart_tts_api_test
           llamadart_tts_types_test
@@ -648,7 +649,7 @@ jobs:
           cmake --build --preset windows-x64-full --target
           llamadart_barrier_test
           llamadart_owner_api_test llamadart_owner_reentrancy_test
-          llamadart_build_identity_test
+          llamadart_build_identity_test llamadart_upstream_abi_test
           llamadart_cancel_flag_test
           llamadart_exit_teardown_test
           llamadart_vulkan_device_info_test
@@ -661,7 +662,7 @@ jobs:
           $wrapperDir = (Resolve-Path build/wx64).Path
           $upstreamDir = (Resolve-Path build/wx64/bin).Path
           $env:PATH = "$wrapperDir;$upstreamDir;$env:PATH"
-          ctest --test-dir build/wx64 -R "owner_api|owner_reentrant|barrier|build_identity|cancel_flag|vocabulary|vulkan_device_info|tts_api|tts_types|image_token_limit" --timeout 120 --output-on-failure
+          ctest --test-dir build/wx64 -R "owner_api|owner_reentrant|barrier|build_identity|upstream_abi|cancel_flag|vocabulary|vulkan_device_info|tts_api|tts_types|image_token_limit" --timeout 120 --output-on-failure
       - name: Validate wrapper exports
         shell: pwsh
         run: |
@@ -732,7 +733,7 @@ jobs:
       # the Metal library, which takes most of a minute.
       - name: Run the exit teardown scenarios
         run: >-
-          ctest --test-dir ${{ matrix.build_dir }} -R "owner_|exit_teardown|image_token_limit|build_identity|cancel_flag|f16_dot_accumulation"
+          ctest --test-dir ${{ matrix.build_dir }} -R "owner_|exit_teardown|image_token_limit|build_identity|cancel_flag|f16_dot_accumulation|f16_residual_kernels|upstream_abi|mtmd_compat"
           --timeout 300 --output-on-failure
       # Apple CPUs have FHM, so the shipped build takes the FMLAL branch of
       # patch 0005. ARMv8.2-A with FP16 compiles its conversion branch, as on
@@ -749,6 +750,7 @@ jobs:
             exit 1
           fi
           build/f16-conversion/llamadart_f16_dot_accumulation_test
+          build/f16-conversion/llamadart_f16_dot_accumulation_test --residual
       # A model that nothing tracks aborts at exit when Metal residency sets
       # are live. Whether a runner has them is outside this repository's
       # control, so their absence is reported instead of failing every native

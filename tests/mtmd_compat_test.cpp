@@ -2,10 +2,19 @@
 
 #include <cassert>
 #include <cstdio>
+#include <type_traits>
+#include <utility>
 
 #ifdef NDEBUG
 #error "Wrapper contract tests require active assertions in every configuration"
 #endif
+
+template<class T, class = void> struct audio_has_temp : std::false_type {};
+template<class T> struct audio_has_temp<T, std::void_t<decltype(std::declval<T>().temp)>>
+    : std::true_type {};
+static_assert(audio_has_temp<mtmd_helper_gen_audio_inp>::value ==
+                  static_cast<bool>(LLAMADART_MTMD_AUDIO_HAS_TEMP),
+              "audio temperature probe disagrees with the headers");
 
 #if LLAMADART_MTMD_HELPER_HAS_EMBD_BATCH
 struct callback_expectation {
@@ -50,6 +59,30 @@ static void test_callback_adapter() {
 #endif
 
 int main() {
+#if LLAMADART_MTMD_AUDIO_HAS_TEMP
+  // Expected values come from v0.9's pack policy, not the new model defaults.
+  for (const char *variant : {"english", "english_2026-04"}) {
+    assert(llama_dart_audio_input_compat(LLAMA_DART_TTS_MODEL_TYPE_POCKET_TTS,
+                                         variant).temp == 0.3f);
+  }
+  for (const char *variant : {"english_2026-01", "french_24l"}) {
+    assert(llama_dart_audio_input_compat(LLAMA_DART_TTS_MODEL_TYPE_POCKET_TTS,
+                                         variant).temp == 0.7f);
+  }
+  for (const char *variant : {static_cast<const char *>(nullptr), "", "unknown", "italian"}) {
+    assert(llama_dart_audio_input_compat(LLAMA_DART_TTS_MODEL_TYPE_POCKET_TTS,
+                                         variant).temp == -1.0f);
+  }
+  for (auto type : {LLAMA_DART_TTS_MODEL_TYPE_LFM3_AUDIO,
+                    LLAMA_DART_TTS_MODEL_TYPE_QWEN3,
+                    LLAMA_DART_TTS_MODEL_TYPE_CHATTERBOX}) {
+    assert(llama_dart_audio_input_compat(type, "english").temp == -1.0f);
+  }
+#endif
+  const auto input = llama_dart_audio_input_compat(LLAMA_DART_TTS_MODEL_TYPE_QWEN3, nullptr);
+  assert(!input.stream && input.n_past == 0 && input.seq_id == 0);
+  assert(!input.prompt && !input.speaker_ref && !input.lang);
+
 #if LLAMADART_MTMD_HELPER_HAS_EMBD_BATCH
   test_callback_adapter();
 #endif

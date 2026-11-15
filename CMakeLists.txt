@@ -169,6 +169,10 @@ set(CMAKE_REQUIRED_INCLUDES
     "${CMAKE_CURRENT_SOURCE_DIR}/third_party/llama.cpp/include"
     "${CMAKE_CURRENT_SOURCE_DIR}/third_party/llama.cpp/ggml/include"
     "${CMAKE_CURRENT_SOURCE_DIR}/third_party/llama.cpp/tools/mtmd")
+unset(LLAMADART_GGML_HAS_PREC_ACC CACHE)
+llamadart_probe_declaration(LLAMADART_GGML_HAS_PREC_ACC
+    "#include <ggml.h>
+int main() { return sizeof(decltype(&ggml_prec_set_acc)) == 0; }")
 unset(LLAMADART_MTMD_HELPER_HAS_OPTIONS CACHE)
 llamadart_probe_declaration(LLAMADART_MTMD_HELPER_HAS_OPTIONS
     "#include <mtmd-helper.h>
@@ -177,6 +181,10 @@ unset(LLAMADART_MTMD_HELPER_HAS_EMBD_BATCH CACHE)
 llamadart_probe_declaration(LLAMADART_MTMD_HELPER_HAS_EMBD_BATCH
     "#include <mtmd-helper.h>
 int main() { return sizeof(mtmd_helper_embd_batch) == 0; }")
+unset(LLAMADART_MTMD_AUDIO_HAS_TEMP CACHE)
+llamadart_probe_declaration(LLAMADART_MTMD_AUDIO_HAS_TEMP
+    "#include <mtmd-helper.h>
+int main() { return sizeof(decltype(mtmd_helper_gen_audio_inp::temp)) == 0; }")
 unset(LLAMADART_MTMD_HAS_GEN_STATE CACHE)
 llamadart_probe_declaration(LLAMADART_MTMD_HAS_GEN_STATE
     "#include <mtmd.h>
@@ -224,6 +232,10 @@ int main() {
          sizeof(decltype(&mtmd_helper_gen_audio_next_is_text)) == 0 ||
          sizeof(decltype(&common_chat_get_tts_prompt)) == 0;
 }")
+unset(LLAMADART_CONTEXT_HAS_MOE_CPU_SHARE CACHE)
+llamadart_probe_declaration(LLAMADART_CONTEXT_HAS_MOE_CPU_SHARE
+    "#include <llama.h>
+int main() { return sizeof(decltype(llama_context_params::moe_cache_cpu_share)) == 0; }")
 unset(LLAMADART_CONTEXT_HAS_MOE_CACHE CACHE)
 llamadart_probe_declaration(LLAMADART_CONTEXT_HAS_MOE_CACHE
     "#include <llama.h>
@@ -300,7 +312,8 @@ target_compile_definitions(llamadart_lib PRIVATE
     LLAMADART_MTMD_HAS_CHATTERBOX=$<BOOL:${LLAMADART_MTMD_HAS_CHATTERBOX}>
     LLAMADART_SPECULATIVE_HAS_COMMON_BATCH=$<BOOL:${LLAMADART_SPECULATIVE_HAS_COMMON_BATCH}>
     LLAMADART_SPECULATIVE_HAS_BATCH_STATE=$<BOOL:${LLAMADART_SPECULATIVE_HAS_BATCH_STATE}>
-    LLAMADART_MTMD_HELPER_HAS_OPTIONS=$<BOOL:${LLAMADART_MTMD_HELPER_HAS_OPTIONS}>)
+    LLAMADART_MTMD_HELPER_HAS_OPTIONS=$<BOOL:${LLAMADART_MTMD_HELPER_HAS_OPTIONS}>
+    LLAMADART_MTMD_AUDIO_HAS_TEMP=$<BOOL:${LLAMADART_MTMD_AUDIO_HAS_TEMP}>)
 
 if (MINGW)
     target_link_options(llamadart_lib PRIVATE -Wl,--export-all-symbols)
@@ -335,6 +348,13 @@ if (LLAMADART_BUILD_TESTS)
     enable_testing()
     add_executable(llamadart_f16_dot_accumulation_test tests/f16_dot_accumulation_test.cpp)
     target_compile_features(llamadart_f16_dot_accumulation_test PRIVATE cxx_std_17)
+    target_compile_definitions(llamadart_f16_dot_accumulation_test PRIVATE
+        LLAMADART_GGML_HAS_PREC_ACC=$<BOOL:${LLAMADART_GGML_HAS_PREC_ACC}>
+        LLAMADART_TEST_LLAMAFILE=$<BOOL:${GGML_LLAMAFILE}>
+        LLAMADART_TEST_F32_QUERY=$<BOOL:${LLAMADART_CONTEXT_HAS_MOE_CPU_SHARE}>)
+    target_include_directories(llamadart_f16_dot_accumulation_test PRIVATE
+        third_party/llama.cpp/ggml/src third_party/llama.cpp/ggml/src/ggml-cpu)
+    target_link_libraries(llamadart_f16_dot_accumulation_test PRIVATE ${CMAKE_DL_LIBS})
     target_link_libraries(llamadart_f16_dot_accumulation_test PRIVATE ggml ggml-base)
     if (GGML_BACKEND_DL)
         target_compile_definitions(llamadart_f16_dot_accumulation_test PRIVATE
@@ -344,6 +364,9 @@ if (LLAMADART_BUILD_TESTS)
         target_link_libraries(llamadart_f16_dot_accumulation_test PRIVATE ggml-cpu)
     endif()
     add_test(NAME llamadart_f16_dot_accumulation_test COMMAND llamadart_f16_dot_accumulation_test)
+    add_test(NAME llamadart_f16_residual_kernels_test
+        COMMAND llamadart_f16_dot_accumulation_test --residual)
+    set_tests_properties(llamadart_f16_residual_kernels_test PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 30)
     set_tests_properties(llamadart_f16_dot_accumulation_test PROPERTIES TIMEOUT 30)
 
     add_library(llamadart_owner_creation_gate SHARED tests/owner_creation_gate.cpp)
@@ -426,6 +449,15 @@ if (LLAMADART_BUILD_TESTS)
     )
     add_test(NAME llamadart_tts_types_test COMMAND llamadart_tts_types_test)
 
+    add_executable(llamadart_upstream_abi_test tests/upstream_abi_test.cpp)
+    target_compile_features(llamadart_upstream_abi_test PRIVATE cxx_std_17)
+    target_compile_definitions(llamadart_upstream_abi_test PRIVATE
+        LLAMADART_CONTEXT_HAS_MOE_CPU_SHARE=$<BOOL:${LLAMADART_CONTEXT_HAS_MOE_CPU_SHARE}>
+        LLAMADART_MTMD_AUDIO_HAS_TEMP=$<BOOL:${LLAMADART_MTMD_AUDIO_HAS_TEMP}>)
+    target_include_directories(llamadart_upstream_abi_test PRIVATE src)
+    target_link_libraries(llamadart_upstream_abi_test PRIVATE llamadart_lib)
+    add_test(NAME llamadart_upstream_abi_test COMMAND llamadart_upstream_abi_test)
+
     add_executable(llamadart_build_identity_test tests/build_identity_test.c)
     target_link_libraries(llamadart_build_identity_test PRIVATE llamadart_lib)
     target_include_directories(llamadart_build_identity_test PRIVATE
@@ -468,7 +500,8 @@ if (LLAMADART_BUILD_TESTS)
     target_include_directories(llamadart_mtmd_compat_test PRIVATE src)
     target_compile_definitions(llamadart_mtmd_compat_test PRIVATE
         LLAMADART_MTMD_HELPER_HAS_EMBD_BATCH=$<BOOL:${LLAMADART_MTMD_HELPER_HAS_EMBD_BATCH}>
-        LLAMADART_MTMD_HELPER_HAS_OPTIONS=$<BOOL:${LLAMADART_MTMD_HELPER_HAS_OPTIONS}>)
+        LLAMADART_MTMD_HELPER_HAS_OPTIONS=$<BOOL:${LLAMADART_MTMD_HELPER_HAS_OPTIONS}>
+        LLAMADART_MTMD_AUDIO_HAS_TEMP=$<BOOL:${LLAMADART_MTMD_AUDIO_HAS_TEMP}>)
     target_link_libraries(llamadart_mtmd_compat_test PRIVATE mtmd)
     add_test(NAME llamadart_mtmd_compat_test COMMAND llamadart_mtmd_compat_test)
 
@@ -732,7 +765,7 @@ if (LLAMADART_BUILD_TESTS)
     # Contract assertions must execute against optimized Release libraries too.
     foreach(test_target llamadart_owner_api_test llamadart_owner_reentrancy_test llamadart_speculative_api_test llamadart_tts_api_test
             llamadart_tts_types_test
-            llamadart_build_identity_test llamadart_cancel_flag_test
+            llamadart_build_identity_test llamadart_upstream_abi_test llamadart_cancel_flag_test
             llamadart_tts_eval_test llamadart_tts_seed_test llamadart_tts_sampler_test
             llamadart_exit_teardown_test
             llamadart_mtmd_compat_test

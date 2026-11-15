@@ -1,5 +1,9 @@
 #include "llama_dart_image_token_limit_internal.h"
+#if __has_include("mtmd-impl.h")
+#include "mtmd-impl.h"
+#else
 #include "clip-impl.h"
+#endif
 #include "gguf.h"
 
 #include <cstring>
@@ -25,7 +29,11 @@ int32_t llama_dart_image_token_limit_supported(const char *mmproj_fname,
     return 0;
   }
   const char *type = gguf_get_val_str(metadata.get(), key);
+#if __has_include("mtmd-impl.h")
+  if (projector_type_from_string(type) == PROJECTOR_TYPE_UNKNOWN) {
+#else
   if (clip_projector_type_from_string(type) == PROJECTOR_TYPE_UNKNOWN) {
+#endif
     return 0;
   }
   // v0.6.0 applies custom_image_max_tokens for these dynamic projectors

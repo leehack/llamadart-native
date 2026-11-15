@@ -60,6 +60,8 @@ See `docs/v080_qualification.md` for the v0.8.0 candidate, its wrapper gate,
 carried-patch status and consumer ABI delta.
 See `docs/v080_android_isa_qualification.md` for the v0.8.0/KleidiAI v1.32.0
 source pair, its SVE I8MM-gated Q8 kernels and remaining gates.
+See `docs/v100_qualification.md` for the fixed v1.0.0 candidate, retained
+carry decisions, ABI/audio adapters and pending original-trigger gates.
 See `docs/v090_qualification.md` for the v0.9.0 candidate, patch
 0004 (kept for the v0.8.0 row, not applied to v0.9.0) and consumer ABI delta,
 and `docs/v090_android_isa_qualification.md` for its source pair and ggml

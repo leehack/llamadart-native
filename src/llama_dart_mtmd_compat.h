@@ -1,7 +1,9 @@
 #pragma once
 
 #include "mtmd-helper.h"
+#include "llama_dart_wrapper.h"
 
+#include <cstring>
 #include <vector>
 
 #if LLAMADART_MTMD_HELPER_HAS_EMBD_BATCH
@@ -70,4 +72,29 @@ llama_dart_bitmap_from_file(mtmd_context *ctx, const char *fname) {
 #else
   return mtmd_helper_bitmap_init_from_file(ctx, fname, false);
 #endif
+}
+
+// Internal audio-frame policy, independent of the talker request temperature.
+static inline mtmd_helper_gen_audio_inp llama_dart_audio_input_compat(
+    llama_dart_tts_model_type model_type, const char *variant) {
+  mtmd_helper_gen_audio_inp input{};
+#if LLAMADART_MTMD_AUDIO_HAS_TEMP
+  // v1 adds an explicit frame/noise temperature; zero means greedy. LFM3
+  // previously used mtmd_gen_inp_default, as did untuned Pocket variants.
+  input.temp = -1.0f;
+  if (model_type == LLAMA_DART_TTS_MODEL_TYPE_POCKET_TTS && variant) {
+    // Preserve v0.9's reference-pack overrides, removed from v1's pack table.
+    if (std::strcmp(variant, "english") == 0 ||
+        std::strcmp(variant, "english_2026-04") == 0) {
+      input.temp = 0.3f;
+    } else if (std::strcmp(variant, "english_2026-01") == 0 ||
+               std::strcmp(variant, "french_24l") == 0) {
+      input.temp = 0.7f;
+    }
+  }
+#else
+  (void)model_type;
+  (void)variant;
+#endif
+  return input;
 }

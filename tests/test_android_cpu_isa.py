@@ -109,6 +109,9 @@ class AndroidCpuIsaTest(unittest.TestCase):
         ), (
             "fead7601e3b35651ee62764c76f28b50ee564160b543ff79be6fcc81837216c4",
             "fd5b9ca98d07b81671eca377c258da74e72173f92f3cab0acdf6c17ab870bd9d",
+        ), (
+            "9eb33398797f3bba473032917ebe0cd017a67ff12eeaf3d88e4c2552bbfa94e1",
+            "fd5b9ca98d07b81671eca377c258da74e72173f92f3cab0acdf6c17ab870bd9d",
         )})
         self.assertEqual(audit.SOURCE_PAIRS, expected)
         for ggml, kai in expected:
@@ -135,7 +138,8 @@ class AndroidCpuIsaTest(unittest.TestCase):
                 "--llama-source", "llama", "--kleidiai-source", "kleidiai", "test.so"]
         allowed_by_pair = {audit.V070_SOURCE_PAIR: audit.DISPATCHED_FUNCTIONS_V070,
                            audit.V080_SOURCE_PAIR: audit.DISPATCHED_FUNCTIONS_V080,
-                           audit.V090_SOURCE_PAIR: audit.DISPATCHED_FUNCTIONS_V080}
+                           audit.V090_SOURCE_PAIR: audit.DISPATCHED_FUNCTIONS_V080,
+                           audit.V100_SOURCE_PAIR: audit.DISPATCHED_FUNCTIONS_V080}
         for pair in audit.SOURCE_PAIRS:
             allowed = allowed_by_pair[pair]
             for artifact_ranges in (audit.DISPATCHED_FUNCTIONS, audit.DISPATCHED_FUNCTIONS_V070,
