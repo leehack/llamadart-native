@@ -408,24 +408,22 @@ class MirrorPriorityTest(unittest.TestCase):
             self.assertEqual("", output)
             self.assertEqual(mirror.PREFERRED, self.path.read_bytes())
 
-    def test_workflow_refusal_stops_before_any_apt_command(self):
+    def test_default_helper_refusal_stops_shell_before_any_apt_command(self):
         fixtures = (
             b"http://us-east-1.ec2.archive.ubuntu.com/ubuntu/\tpriority:1\n",
             b"http://us-east-1.ec2.archive.ubuntu.com/ubuntu/\tPRIVATE_TOKEN\n",
             b"https://archive.ubuntu.com/ubuntu/\tPRIVATE_TOKEN\n",
             b"https://user:PRIVATE_TOKEN@archive.ubuntu.com/ubuntu/ priority:2\n",
         )
-        for job, content in ((job, content)
-                             for job in ("linux-artifact-contract", "kleidiai-dispatch-emulated")
-                             for content in fixtures):
-            with self.subTest(job=job, content=content):
+        for content in fixtures:
+            with self.subTest(content=content):
                 self.path.write_bytes(content)
                 marker = self.path.with_name("apt-called")
                 marker.unlink(missing_ok=True)
-                step = step_running(job_block("validate_wrapper.yml", job),
-                                    "sudo python3 tools/prioritize_ubuntu_archive.py")
-                run = textwrap.dedent(step.split("        run: |\n", 1)[1])
-                run = run.replace("${{ matrix.arch }}", "arm64")
+                # The strict default remains fail-closed independently of the
+                # explicit private-source policy selected by these CI jobs.
+                run = ("sudo python3 tools/prioritize_ubuntu_archive.py\n"
+                       "sudo apt-get update\nsudo apt-get install -y ninja-build\n")
                 # Only the test harness overrides the fixed path. Never invoke
                 # real sudo/apt: a fake apt records any accidental fall-through.
                 probe = (
@@ -451,16 +449,33 @@ class MirrorPriorityTest(unittest.TestCase):
                 self.assertNotIn("PRIVATE", result.stdout + result.stderr)
                 self.assertEqual(content, self.path.read_bytes())
 
-    def test_workflow_runs_helper_before_only_affected_dependency_acquisitions(self):
-        command = "sudo python3 tools/prioritize_ubuntu_archive.py"
-        workflow = (ROOT / ".github/workflows/validate_wrapper.yml").read_text()
-        self.assertEqual(2, workflow.count(command))
-        for job in ("linux-artifact-contract", "kleidiai-dispatch-emulated"):
-            block = job_block("validate_wrapper.yml", job)
-            step = step_running(block, command)
-            self.assertLess(step.index(command), step.index("sudo apt-get update"))
-            if job == "linux-artifact-contract":
-                self.assertIn('if [ "${{ matrix.arch }}" = "arm64" ]; then\n            ' + command + '\n          fi', step)
+    def test_workflow_private_policy_selection_has_no_fallback_and_preserves_x64(self):
+        cases = (
+            ("kleidiai-dispatch-emulated", "arm64", "false",
+             ["python3 tools/ci_ubuntu_apt.py kleidiai"]),
+            ("linux-artifact-contract", "arm64", "false",
+             ["python3 tools/ci_ubuntu_apt.py linux-arm64"]),
+            ("linux-artifact-contract", "x64", "true",
+             ["apt-get update", "apt-get install -y ninja-build", "apt-get install -y clang lld"]),
+            ("linux-artifact-contract", "x64", "false",
+             ["apt-get update", "apt-get install -y ninja-build"]),
+        )
+        for job, arch, pinned, expected in cases:
+            for private_exit in (0, 23):
+                with self.subTest(job=job, arch=arch, private_exit=private_exit):
+                    step = step_running(job_block("validate_wrapper.yml", job),
+                                        "sudo python3 tools/ci_ubuntu_apt.py")
+                    run = textwrap.dedent(step.split("        run: |\n", 1)[1])
+                    run = run.replace("${{ matrix.arch }}", arch)
+                    record = self.path.with_name("commands")
+                    record.unlink(missing_ok=True)
+                    sudo = ('sudo() { printf "%s\\n" "$*" >> ' + shlex.quote(str(record)) +
+                            '; if [ "$1" = python3 ]; then return ' + str(private_exit) +
+                            '; elif [ "$1" = apt-get ]; then return 0; else return 98; fi; }\n')
+                    result = subprocess.run(["bash", "-eo", "pipefail", "-c", sudo + run],
+                        env={**os.environ, "PINNED": pinned}, capture_output=True, timeout=5)
+                    self.assertEqual(private_exit if arch == "arm64" else 0, result.returncode)
+                    self.assertEqual(expected, record.read_text().splitlines())
 
 
 if __name__ == "__main__":

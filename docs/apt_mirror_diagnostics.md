@@ -124,3 +124,33 @@ URL prefix/suffix/credential/query/fragment/case/control negatives, unsafe
 inputs, I/O errors, and refusal
 through the real workflow shell steps with fake APT commands. No local APT or
 package operation is performed by the tests.
+
+## Explicit private-source CI policy
+
+The `kleidiai-dispatch-emulated` dependency step and the arm64 branch of the
+`linux-artifact-contract` dependency step select `tools/ci_ubuntu_apt.py`
+explicitly. This is a disposable-job source policy, not a fallback after this
+mirror helper refuses. The strict mirror helper's default, admitted bytes and
+refusal behavior remain unchanged. Linux x64 and other jobs retain their
+existing acquisition paths.
+
+The private helper requires Ubuntu 24.04 / noble on an amd64 host and the
+installed Ubuntu archive keyring. It creates a fresh root-owned `/tmp` directory
+for configuration, sources, keyring copy, indexes, caches and APT logs. Only
+fixed HTTPS archive/security URLs with Noble suites are used. `APT_CONFIG`
+loads before system configuration; `Dir::Etc` points entirely into this private
+area. No host source, mirrorlist, credential, pinning or hook file is imported.
+`Signed-By` limits both sources to the validated packaged keyring copy; TLS,
+signature and date checks remain enabled, redirects/insecure sources are
+refused, and any update error stops installation. Installed-package state is
+still `/var/lib/dpkg/status`; package installation itself remains a real change
+to the disposable runner, not an isolated root filesystem.
+
+The fixed package groups and `install -y` options are unchanged. No Microsoft,
+Kitware or other third-party source is available to these private operations;
+a future dependency needing one must stop for a separate policy decision. No
+new key is downloaded, no global trust is changed, and child output or unknown
+host input is not printed. Failure exits 1 without a host-source retry. Real
+APT parsing, signature verification, dependency resolution and downstream
+artifact/ISA execution require hosted validation; fixture tests do not qualify
+them. The failed EC2 literal hypothesis does not identify the original input.
