@@ -154,3 +154,23 @@ host input is not printed. Failure exits 1 without a host-source retry. Real
 APT parsing, signature verification, dependency resolution and downstream
 artifact/ISA execution require hosted validation; fixture tests do not qualify
 them. The failed EC2 literal hypothesis does not identify the original input.
+
+## Private-helper failure stages
+
+The generic private-helper refusal and exit 1 are retained. Failure adds one
+ASCII JSON line prefixed `Private Ubuntu APT failure stage: `. Its `stage` is
+only `arguments`, `prerequisites`, `private_configuration`, `update` or
+`install`. Private configuration includes directory creation and cleanup.
+A failed child command may additionally report `exit_status` only for an
+integer from 1 through 255. Signals, timeouts, OS errors and malformed statuses
+have no numeric field. No child command/output, exception text, host value,
+path, environment, credential or unknown content/hash is printed. The closed
+fields bound the diagnostic line to at most 128 ASCII bytes. Success is silent.
+
+These phases locate a refused operation; they do not establish why a
+prerequisite, signature check, connection or resolver failed. In particular the
+reported head `48c1ba8` setup failures are not evidence of successful APT or
+failed downstream dispatch/numerical/artifact validation. No diagnostic triggers
+another query, retry, install, write or host-source fallback. The approved
+acquisition policy and package/option order remain unchanged. Actual hosted
+APT and downstream qualification remain separate gates.

@@ -146,9 +146,32 @@ raise AssertionError('Only fake APT is executable')
     def calls(self):
         return [json.loads(x)['args'] for x in self.record.read_text().splitlines()] if self.record.exists() else []
 
-    def assert_refused_without_apt(self, lane='linux-arm64', *extra):
+    def assert_initial_queries_only(self):
+        self.assertEqual([
+            ['/usr/bin/dpkg', '--print-architecture'],
+            ['/usr/bin/dpkg-query', '-S', str(self.keyring)],
+            ['/usr/bin/dpkg', '--verify', 'ubuntu-keyring'],
+        ], self.query_calls)
+
+    def assert_failure(self, result, stage, exit_status=None):
+        code, output = result
+        self.assertEqual(1, code)
+        lines = output.splitlines()
+        self.assertEqual(2, len(lines))
+        self.assertEqual(apt.REFUSAL, lines[0])
+        prefix = 'Private Ubuntu APT failure stage: '
+        self.assertTrue(lines[1].startswith(prefix))
+        expected = {'stage': stage}
+        if exit_status is not None:
+            expected['exit_status'] = exit_status
+        self.assertEqual(expected, json.loads(lines[1][len(prefix):]))
+        self.assertTrue(output.isascii())
+        self.assertLessEqual(len(lines[1]), 128)
+
+    def assert_refused_without_apt(self, lane='linux-arm64', *extra,
+                                  stage='prerequisites', exit_status=None):
         before = self.snapshot()
-        self.assertEqual((1, apt.REFUSAL+'\n'), self.run_main(lane, *extra))
+        self.assert_failure(self.run_main(lane, *extra), stage, exit_status)
         self.assertEqual([], self.calls())
         self.assertEqual([], list(self.private.iterdir()))
         self.assertEqual(before, self.snapshot())
@@ -163,32 +186,37 @@ raise AssertionError('Only fake APT is executable')
         for lane, commands in expected.items():
             with self.subTest(lane=lane):
                 self.record.unlink(missing_ok=True)
+                self.query_calls.clear()
                 before = self.snapshot()
                 with mock.patch.dict(os.environ, {'APT_CONFIG':'PRIVATE_TOKEN',
                         'https_proxy':'https://PRIVATE_TOKEN@unknown.invalid',
                         'DPKG_ROOT':'PRIVATE_TOKEN'}):
                     self.assertEqual((0, ''), self.run_main(lane))
                 self.assertEqual(commands, self.calls())
+                self.assert_initial_queries_only()
                 self.assertEqual(before, self.snapshot())
                 self.assertEqual([], list(self.private.iterdir()))
 
     def test_update_failure_stops_install_and_redacts_child_output(self):
         self.fail_apt = 'update'
         before = self.snapshot()
-        self.assertEqual((1, apt.REFUSAL+'\n'), self.run_main())
+        self.assert_failure(self.run_main(), 'update', 100)
         self.assertEqual([['update']], self.calls())
+        self.assert_initial_queries_only()
         self.assertEqual(before, self.snapshot())
         self.assertEqual([], list(self.private.iterdir()))
 
     def test_install_failure_stops_later_commands(self):
         self.fail_apt = 'install'
-        self.assertEqual((1, apt.REFUSAL+'\n'), self.run_main())
+        self.assert_failure(self.run_main(), 'install', 100)
         self.assertEqual([['update'], ['install','-y','ninja-build']], self.calls())
+        self.assert_initial_queries_only()
         self.assertEqual([], list(self.private.iterdir()))
 
     def test_unknown_lane_and_extra_arguments_refuse(self):
-        self.assert_refused_without_apt('PRIVATE_TOKEN')
-        self.assert_refused_without_apt('linux-arm64', '--source=PRIVATE_TOKEN')
+        self.assert_refused_without_apt('PRIVATE_TOKEN', stage='arguments')
+        self.assert_refused_without_apt('linux-arm64', '--source=PRIVATE_TOKEN', stage='arguments')
+        self.assertEqual([], self.query_calls)
 
     def test_wrong_or_malformed_os_refuses(self):
         for content in (b'ID=debian\nVERSION_ID="24.04"\nVERSION_CODENAME=noble\n',
@@ -246,7 +274,7 @@ raise AssertionError('Only fake APT is executable')
         self.assert_refused_without_apt()
         self.keyring.unlink(); os.mkfifo(self.keyring)
         # snapshot deliberately excludes FIFO; the read itself must not block.
-        self.assertEqual((1,apt.REFUSAL+'\n'), self.run_main())
+        self.assert_failure(self.run_main(), 'prerequisites')
         self.assertEqual([], self.calls())
 
     def test_os_read_failure_and_query_failure_redact(self):
@@ -255,7 +283,49 @@ raise AssertionError('Only fake APT is executable')
         def fail(args):
             raise subprocess.CalledProcessError(1,args,output=b'PRIVATE_TOKEN')
         self.query_fault=fail
+        self.assert_refused_without_apt(exit_status=1)
+
+    def test_configuration_failure_has_no_package_call_or_host_write(self):
+        with mock.patch.object(apt, 'configure', side_effect=ValueError('PRIVATE_TOKEN /private/path')):
+            self.assert_refused_without_apt(stage='private_configuration')
+        self.assert_initial_queries_only()
+
+    def test_cleanup_failure_has_configuration_stage_and_no_fallback(self):
+        real_temp = apt.tempfile.TemporaryDirectory
+        @contextlib.contextmanager
+        def fail_cleanup(*args, **kwargs):
+            with real_temp(*args, **kwargs) as directory:
+                yield directory
+            raise OSError('PRIVATE_TOKEN /private/path')
+        before = self.snapshot()
+        with mock.patch.object(apt.tempfile, 'TemporaryDirectory', side_effect=fail_cleanup):
+            self.assert_failure(self.run_main(), 'private_configuration')
+        self.assertEqual([['update'], ['install','-y','ninja-build'],
+                          ['install','-y','gcc-aarch64-linux-gnu','g++-aarch64-linux-gnu','qemu-user','llvm']],
+                         self.calls())
+        self.assert_initial_queries_only()
+        self.assertEqual(before, self.snapshot())
+        self.assertEqual([], list(self.private.iterdir()))
+
+    def test_only_bounded_integer_exit_status_is_reported(self):
+        for status, expected in ((1,1), (100,100), (255,255), (0,None),
+                                 (-9,None), (256,None), (True,None), ('PRIVATE_TOKEN',None)):
+            with self.subTest(status=status):
+                self.query_calls.clear()
+                def fail(args):
+                    raise subprocess.CalledProcessError(status, ['/PRIVATE_TOKEN'],
+                        output=b'PRIVATE_TOKEN https://private.invalid', stderr=b'PRIVATE_TOKEN')
+                self.query_fault = fail
+                self.assert_refused_without_apt(exit_status=expected)
+                self.assertEqual([['/usr/bin/dpkg','--print-architecture']], self.query_calls)
+
+    def test_timeout_stage_does_not_echo_child_output_or_request_retry(self):
+        def fail(args):
+            raise subprocess.TimeoutExpired('/PRIVATE_TOKEN',30,
+                output=b'PRIVATE_TOKEN https://private.invalid', stderr=b'PRIVATE_TOKEN')
+        self.query_fault = fail
         self.assert_refused_without_apt()
+        self.assertEqual([['/usr/bin/dpkg','--print-architecture']], self.query_calls)
 
     def test_nonroot_refuses_before_read_or_commands(self):
         with mock.patch.object(apt.os,'geteuid',return_value=123), \

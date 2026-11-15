@@ -5,6 +5,9 @@ Proposed for disposable amd64 Ubuntu 24.04 jobs only. Not a mirror fallback.
 """
 from __future__ import annotations
 
+import contextlib
+from enum import Enum
+import json
 import os
 from pathlib import Path
 import re
@@ -34,6 +37,34 @@ COMMANDS = {
          'qemu-user', 'llvm'),
     ),
 }
+
+
+class FailureStage(Enum):
+    ARGUMENTS = 'arguments'
+    PREREQUISITES = 'prerequisites'
+    PRIVATE_CONFIGURATION = 'private_configuration'
+    UPDATE = 'update'
+    INSTALL = 'install'
+
+
+class _PhaseFailure(Exception):
+    def __init__(self, stage: FailureStage, exit_status: int | None):
+        self.stage = stage
+        self.exit_status = exit_status
+
+
+@contextlib.contextmanager
+def _failure_stage(stage: FailureStage):
+    try:
+        yield
+    except _PhaseFailure:
+        raise
+    except (OSError, ValueError, subprocess.SubprocessError) as error:
+        status = error.returncode if isinstance(error, subprocess.CalledProcessError) else None
+        if type(status) is not int or not 1 <= status <= 255:
+            status = None
+        # Never copy child output, commands, paths or exception text to the receipt.
+        raise _PhaseFailure(stage, status) from None
 
 
 def root_file(path: Path, limit: int, *, public: bool = False) -> bytes:
@@ -156,21 +187,32 @@ def configure(work: Path, keyring: bytes) -> Path:
 
 def main() -> int:
     try:
-        if len(sys.argv) != 2 or sys.argv[1] not in COMMANDS:
-            raise ValueError()
-        keyring = prerequisites()
-        with tempfile.TemporaryDirectory(prefix='llamadart-ci-apt-', dir=TMP_ROOT) as temp:
-            config = configure(Path(temp), keyring)
-            for args in COMMANDS[sys.argv[1]]:
-                # APT_CONFIG loads before Dir::Etc defaults. No inherited APT,
-                # proxy, credential or hook environment; no -c-only isolation.
-                subprocess.run(['/usr/bin/apt-get', *args],
-                               env={**ENV, 'APT_CONFIG': str(config)},
-                               stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                               stderr=subprocess.DEVNULL, check=True)
+        with _failure_stage(FailureStage.ARGUMENTS):
+            if len(sys.argv) != 2 or sys.argv[1] not in COMMANDS:
+                raise ValueError()
+        with _failure_stage(FailureStage.PREREQUISITES):
+            keyring = prerequisites()
+        # This scope also covers private directory creation and cleanup.
+        with _failure_stage(FailureStage.PRIVATE_CONFIGURATION):
+            with tempfile.TemporaryDirectory(prefix='llamadart-ci-apt-', dir=TMP_ROOT) as temp:
+                config = configure(Path(temp), keyring)
+                for args in COMMANDS[sys.argv[1]]:
+                    stage = FailureStage.UPDATE if args[0] == 'update' else FailureStage.INSTALL
+                    with _failure_stage(stage):
+                        # APT_CONFIG loads before Dir::Etc defaults. No inherited APT,
+                        # proxy, credential or hook environment; no -c-only isolation.
+                        subprocess.run(['/usr/bin/apt-get', *args],
+                                       env={**ENV, 'APT_CONFIG': str(config)},
+                                       stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                       stderr=subprocess.DEVNULL, check=True)
         return 0
-    except (OSError, ValueError, subprocess.SubprocessError):
+    except _PhaseFailure as failure:
         print(REFUSAL, file=sys.stderr)
+        receipt = {'stage': failure.stage.value}
+        if failure.exit_status is not None:
+            receipt['exit_status'] = failure.exit_status
+        print('Private Ubuntu APT failure stage: ' +
+              json.dumps(receipt, sort_keys=True, separators=(',', ':')), file=sys.stderr)
         return 1
 
 
