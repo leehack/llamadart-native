@@ -47,14 +47,51 @@ class FailureStage(Enum):
     INSTALL = 'install'
 
 
+class PrerequisiteCheck(Enum):
+    ROOT = 'root'
+    OS_LINK = 'os_link'
+    OS_READ = 'os_read'
+    OS_FILE_TYPE = 'os_file_type'
+    OS_FILE_OWNER = 'os_file_owner'
+    OS_FILE_MODE = 'os_file_mode'
+    OS_FILE_SIZE = 'os_file_size'
+    OS_FILE_STABILITY = 'os_file_stability'
+    OS_ENCODING = 'os_encoding'
+    OS_LINE_COUNT = 'os_line_count'
+    OS_ASSIGNMENT = 'os_assignment'
+    OS_DUPLICATE_KEY = 'os_duplicate_key'
+    OS_VALUE_SYNTAX = 'os_value_syntax'
+    OS_VALUE_ARITY = 'os_value_arity'
+    OS_ID = 'os_id'
+    OS_VERSION = 'os_version'
+    OS_CODENAME = 'os_codename'
+    HOST_ARCHITECTURE_QUERY = 'host_architecture_query'
+    HOST_ARCHITECTURE_OUTPUT_LIMIT = 'host_architecture_output_limit'
+    HOST_ARCHITECTURE = 'host_architecture'
+    KEYRING_PACKAGE_QUERY = 'keyring_package_query'
+    KEYRING_PACKAGE_OUTPUT_LIMIT = 'keyring_package_output_limit'
+    KEYRING_PACKAGE_ATTRIBUTION = 'keyring_package_attribution'
+    KEYRING_INTEGRITY_QUERY = 'keyring_integrity_query'
+    KEYRING_INTEGRITY_OUTPUT_LIMIT = 'keyring_integrity_output_limit'
+    KEYRING_INTEGRITY = 'keyring_integrity'
+    KEYRING_READ = 'keyring_read'
+    KEYRING_FILE_TYPE = 'keyring_file_type'
+    KEYRING_FILE_OWNER = 'keyring_file_owner'
+    KEYRING_FILE_MODE = 'keyring_file_mode'
+    KEYRING_FILE_SIZE = 'keyring_file_size'
+    KEYRING_FILE_STABILITY = 'keyring_file_stability'
+
+
 class _PhaseFailure(Exception):
-    def __init__(self, stage: FailureStage, exit_status: int | None):
+    def __init__(self, stage: FailureStage, exit_status: int | None,
+                 check: PrerequisiteCheck | None = None):
         self.stage = stage
         self.exit_status = exit_status
+        self.check = check
 
 
 @contextlib.contextmanager
-def _failure_stage(stage: FailureStage):
+def _failure_stage(stage: FailureStage, check: PrerequisiteCheck | None = None):
     try:
         yield
     except _PhaseFailure:
@@ -64,80 +101,131 @@ def _failure_stage(stage: FailureStage):
         if type(status) is not int or not 1 <= status <= 255:
             status = None
         # Never copy child output, commands, paths or exception text to the receipt.
-        raise _PhaseFailure(stage, status) from None
+        raise _PhaseFailure(stage, status, check) from None
+
+
+def _prerequisite_check(check: PrerequisiteCheck):
+    return _failure_stage(FailureStage.PREREQUISITES, check)
 
 
 def root_file(path: Path, limit: int, *, public: bool = False) -> bytes:
+    # Only the keyring requires public readability. These are fixed labels for
+    # existing failed predicates, using the captured stat data, never new IO.
+    checks = (
+        (PrerequisiteCheck.KEYRING_FILE_TYPE, PrerequisiteCheck.KEYRING_FILE_OWNER,
+         PrerequisiteCheck.KEYRING_FILE_MODE, PrerequisiteCheck.KEYRING_FILE_SIZE,
+         PrerequisiteCheck.KEYRING_FILE_STABILITY) if public else
+        (PrerequisiteCheck.OS_FILE_TYPE, PrerequisiteCheck.OS_FILE_OWNER,
+         PrerequisiteCheck.OS_FILE_MODE, PrerequisiteCheck.OS_FILE_SIZE,
+         PrerequisiteCheck.OS_FILE_STABILITY)
+    )
     fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     try:
         before = os.fstat(fd)
         if (not stat.S_ISREG(before.st_mode) or before.st_uid != ROOT_UID or
                 before.st_mode & 0o022 or not 0 < before.st_size <= limit or
                 (public and not before.st_mode & 0o004)):
-            raise ValueError()
+            # Preserve the original short-circuit predicate order on refusal.
+            if not stat.S_ISREG(before.st_mode):
+                check = checks[0]
+            elif before.st_uid != ROOT_UID:
+                check = checks[1]
+            elif before.st_mode & 0o022:
+                check = checks[2]
+            elif not 0 < before.st_size <= limit:
+                check = checks[3]
+            else:
+                check = checks[2]
+            raise _PhaseFailure(FailureStage.PREREQUISITES, None, check)
         data = os.read(fd, limit + 1)
         after = os.fstat(fd)
         if (len(data) != before.st_size or len(data) > limit or
                 (before.st_size, before.st_mtime_ns, before.st_ctime_ns) !=
                 (after.st_size, after.st_mtime_ns, after.st_ctime_ns)):
-            raise ValueError()
+            raise _PhaseFailure(FailureStage.PREREQUISITES, None, checks[4])
         return data
     finally:
         os.close(fd)
 
 
-def query(args: list[str]) -> bytes:
+def query(args: list[str], *, output_check: PrerequisiteCheck) -> bytes:
     result = subprocess.run(args, env=ENV, stdin=subprocess.DEVNULL,
                             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                             timeout=30, check=True)
     if len(result.stdout) > 4096:
-        raise ValueError()
+        raise _PhaseFailure(FailureStage.PREREQUISITES, None, output_check)
     return result.stdout
 
 
 def prerequisites() -> bytes:
-    if os.geteuid() != 0:
-        raise ValueError()
+    with _prerequisite_check(PrerequisiteCheck.ROOT):
+        if os.geteuid() != 0:
+            raise ValueError()
     # Honor /etc precedence. Permit only the conventional vendor-file link;
     # never follow an arbitrary OS-release link or source it as shell code.
     release = OS_RELEASE
-    if OS_RELEASE.is_symlink():
-        if os.readlink(OS_RELEASE) not in ('../usr/lib/os-release', '/usr/lib/os-release'):
+    with _prerequisite_check(PrerequisiteCheck.OS_LINK):
+        if OS_RELEASE.is_symlink():
+            if os.readlink(OS_RELEASE) not in ('../usr/lib/os-release', '/usr/lib/os-release'):
+                raise ValueError()
+            release = VENDOR_RELEASE
+    with _prerequisite_check(PrerequisiteCheck.OS_READ):
+        data = root_file(release, 8192)
+    with _prerequisite_check(PrerequisiteCheck.OS_ENCODING):
+        if any(byte not in range(32, 127) and byte != 10 for byte in data):
             raise ValueError()
-        release = VENDOR_RELEASE
-    data = root_file(release, 8192)
-    if any(byte not in range(32, 127) and byte != 10 for byte in data):
-        raise ValueError()
-    fields = {}
-    lines = data.decode('ascii').splitlines()
-    if len(lines) > 128:
-        raise ValueError()
+        fields = {}
+        lines = data.decode('ascii').splitlines()
+    with _prerequisite_check(PrerequisiteCheck.OS_LINE_COUNT):
+        if len(lines) > 128:
+            raise ValueError()
     for line in lines:
         if not line or line.startswith('#'):
             continue
         match = re.fullmatch(r'([A-Z][A-Z0-9_]*)=(.*)', line)
         if not match or match[1] in fields:
-            raise ValueError()
+            check = PrerequisiteCheck.OS_ASSIGNMENT if not match else PrerequisiteCheck.OS_DUPLICATE_KEY
+            raise _PhaseFailure(FailureStage.PREREQUISITES, None, check)
         # One quoted or plain value only; no concatenated shell fragments.
-        if not re.fullmatch(r'''(?:"(?:[^"\\$`]|\\["\\$`])*"|'[^']*'|[A-Za-z0-9._-]+)''', match[2]):
-            raise ValueError()
-        values = shlex.split(match[2])
-        if len(values) != 1:
-            raise ValueError()
+        with _prerequisite_check(PrerequisiteCheck.OS_VALUE_SYNTAX):
+            if not re.fullmatch(r'''(?:"(?:[^"\\$`]|\\["\\$`])*"|'[^']*'|[A-Za-z0-9._-]+)''', match[2]):
+                raise ValueError()
+            values = shlex.split(match[2])
+        with _prerequisite_check(PrerequisiteCheck.OS_VALUE_ARITY):
+            if len(values) != 1:
+                raise ValueError()
         fields[match[1]] = values[0]
     if any(fields.get(k) != v for k, v in
            {'ID': 'ubuntu', 'VERSION_ID': '24.04', 'VERSION_CODENAME': 'noble'}.items()):
-        raise ValueError()
-    if query(['/usr/bin/dpkg', '--print-architecture']) != b'amd64\n':
-        raise ValueError()
-    if query(['/usr/bin/dpkg-query', '-S', str(KEYRING)]) != (
-            'ubuntu-keyring: ' + str(KEYRING) + '\n').encode('ascii'):
-        raise ValueError()
+        if fields.get('ID') != 'ubuntu':
+            check = PrerequisiteCheck.OS_ID
+        elif fields.get('VERSION_ID') != '24.04':
+            check = PrerequisiteCheck.OS_VERSION
+        else:
+            check = PrerequisiteCheck.OS_CODENAME
+        raise _PhaseFailure(FailureStage.PREREQUISITES, None, check)
+    with _prerequisite_check(PrerequisiteCheck.HOST_ARCHITECTURE_QUERY):
+        architecture = query(['/usr/bin/dpkg', '--print-architecture'],
+                             output_check=PrerequisiteCheck.HOST_ARCHITECTURE_OUTPUT_LIMIT)
+    with _prerequisite_check(PrerequisiteCheck.HOST_ARCHITECTURE):
+        if architecture != b'amd64\n':
+            raise ValueError()
+    with _prerequisite_check(PrerequisiteCheck.KEYRING_PACKAGE_QUERY):
+        attribution = query(['/usr/bin/dpkg-query', '-S', str(KEYRING)],
+                            output_check=PrerequisiteCheck.KEYRING_PACKAGE_OUTPUT_LIMIT)
+    with _prerequisite_check(PrerequisiteCheck.KEYRING_PACKAGE_ATTRIBUTION):
+        if attribution != ('ubuntu-keyring: ' + str(KEYRING) + '\n').encode('ascii'):
+            raise ValueError()
     # Installed-package integrity check, not a new trust root or cryptographic
     # provenance claim. Require no discrepancy output as well as exit success.
-    if query(['/usr/bin/dpkg', '--verify', 'ubuntu-keyring']):
-        raise ValueError()
-    return root_file(KEYRING, 1024 * 1024, public=True)
+    with _prerequisite_check(PrerequisiteCheck.KEYRING_INTEGRITY_QUERY):
+        integrity = query(['/usr/bin/dpkg', '--verify', 'ubuntu-keyring'],
+                          output_check=PrerequisiteCheck.KEYRING_INTEGRITY_OUTPUT_LIMIT)
+    with _prerequisite_check(PrerequisiteCheck.KEYRING_INTEGRITY):
+        if integrity:
+            raise ValueError()
+    with _prerequisite_check(PrerequisiteCheck.KEYRING_READ):
+        return root_file(KEYRING, 1024 * 1024, public=True)
 
 
 def configure(work: Path, keyring: bytes) -> Path:
@@ -209,6 +297,8 @@ def main() -> int:
     except _PhaseFailure as failure:
         print(REFUSAL, file=sys.stderr)
         receipt = {'stage': failure.stage.value}
+        if failure.check is not None:
+            receipt['check'] = failure.check.value
         if failure.exit_status is not None:
             receipt['exit_status'] = failure.exit_status
         print('Private Ubuntu APT failure stage: ' +

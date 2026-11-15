@@ -174,3 +174,22 @@ failed downstream dispatch/numerical/artifact validation. No diagnostic triggers
 another query, retry, install, write or host-source fallback. The approved
 acquisition policy and package/option order remain unchanged. Actual hosted
 APT and downstream qualification remain separate gates.
+
+## Prerequisite check identifiers
+
+Prerequisite refusals additionally emit one hardcoded `check` identifier. The
+closed enum distinguishes root; OS link/read, file type/owner/mode/size/stability,
+encoding/line count/assignment/duplicate key/value syntax/value arity, required
+ID/version/codename; architecture query/output limit/value; keyring package query/output
+limit/attribution and integrity query/output limit/result; and keyring read/type/owner/mode/size/stability.
+Only captured metadata and existing validation results choose these labels.
+No host value, file content, line/key name from input, child output, path or
+exception text is exposed. Existing safe numeric status rules and the 128-byte
+ASCII diagnostic-line bound remain. Other phases do not gain a `check` field.
+
+These labels instrument the existing checks and retain their order, predicates,
+limits, command sequence, cleanup and no-fallback policy. No additional query,
+read, retry or write is introduced. The reported head `3b764a9` receipts localize
+the failure before APT update/install, but do not identify the exact check or
+cause. The identifiers gather that missing evidence without guessing inputs or
+loosening the approved root/Ubuntu24.04/amd64/OS-release/keyring requirements.

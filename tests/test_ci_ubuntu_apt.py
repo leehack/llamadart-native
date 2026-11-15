@@ -10,6 +10,7 @@ import sys
 import tempfile
 import unittest
 from unittest import mock
+from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tools'))
@@ -153,7 +154,7 @@ raise AssertionError('Only fake APT is executable')
             ['/usr/bin/dpkg', '--verify', 'ubuntu-keyring'],
         ], self.query_calls)
 
-    def assert_failure(self, result, stage, exit_status=None):
+    def assert_failure(self, result, stage, exit_status=None, check=None):
         code, output = result
         self.assertEqual(1, code)
         lines = output.splitlines()
@@ -162,6 +163,8 @@ raise AssertionError('Only fake APT is executable')
         prefix = 'Private Ubuntu APT failure stage: '
         self.assertTrue(lines[1].startswith(prefix))
         expected = {'stage': stage}
+        if check is not None:
+            expected['check'] = check
         if exit_status is not None:
             expected['exit_status'] = exit_status
         self.assertEqual(expected, json.loads(lines[1][len(prefix):]))
@@ -169,9 +172,9 @@ raise AssertionError('Only fake APT is executable')
         self.assertLessEqual(len(lines[1]), 128)
 
     def assert_refused_without_apt(self, lane='linux-arm64', *extra,
-                                  stage='prerequisites', exit_status=None):
+                                  stage='prerequisites', exit_status=None, check=None):
         before = self.snapshot()
-        self.assert_failure(self.run_main(lane, *extra), stage, exit_status)
+        self.assert_failure(self.run_main(lane, *extra), stage, exit_status, check)
         self.assertEqual([], self.calls())
         self.assertEqual([], list(self.private.iterdir()))
         self.assertEqual(before, self.snapshot())
@@ -219,14 +222,23 @@ raise AssertionError('Only fake APT is executable')
         self.assertEqual([], self.query_calls)
 
     def test_wrong_or_malformed_os_refuses(self):
-        for content in (b'ID=debian\nVERSION_ID="24.04"\nVERSION_CODENAME=noble\n',
-                        b'ID=ubuntu\nVERSION_ID=22.04\nVERSION_CODENAME=jammy\n',
-                        b'ID=ubuntu\nVERSION_ID=24.04\nVERSION_CODENAME=PRIVATE_TOKEN\n',
-                        b'ID=ubuntu\nID=ubuntu\n', b'ID="PRIVATE_TOKEN\n',
-                        b'ID=ubun"tu"\nVERSION_ID=24.04\nVERSION_CODENAME=noble\n',
-                        b'ID=ubuntu\x00PRIVATE_TOKEN\n', b'x'*8193):
-            self.os_release.write_bytes(content)
-            self.assert_refused_without_apt()
+        fixtures = (
+            (b'ID=debian\nVERSION_ID="24.04"\nVERSION_CODENAME=noble\n', 'os_id'),
+            (b'ID=ubuntu\nVERSION_ID=22.04\nVERSION_CODENAME=jammy\n', 'os_version'),
+            (b'ID=ubuntu\nVERSION_ID=24.04\nVERSION_CODENAME=PRIVATE_TOKEN\n', 'os_codename'),
+            (b'ID=ubuntu\nID=ubuntu\n', 'os_duplicate_key'),
+            (b'BROKEN_PRIVATE_TOKEN\n', 'os_assignment'),
+            (b'ID="PRIVATE_TOKEN\n', 'os_value_syntax'),
+            (b'ID=ubun"tu"\nVERSION_ID=24.04\nVERSION_CODENAME=noble\n', 'os_value_syntax'),
+            (b'ID=ubuntu\x00PRIVATE_TOKEN\n', 'os_encoding'),
+            (b'\n'*129, 'os_line_count'),
+            (b'x'*8193, 'os_file_size'),
+        )
+        for content, check in fixtures:
+            with self.subTest(check=check):
+                self.os_release.write_bytes(content)
+                self.assert_refused_without_apt(check=check)
+                self.assertEqual([], self.query_calls)
 
     def test_conventional_os_release_link_only(self):
         vendor = self.host / 'vendor-os-release'
@@ -238,18 +250,18 @@ raise AssertionError('Only fake APT is executable')
         self.record.unlink()
         self.os_release.unlink()
         self.os_release.symlink_to('PRIVATE_TOKEN')
-        self.assert_refused_without_apt()
+        self.assert_refused_without_apt(check='os_link')
 
     def test_wrong_file_owner_refuses_before_apt(self):
         with mock.patch.object(apt, 'ROOT_UID', os.getuid() + 1):
-            self.assert_refused_without_apt()
+            self.assert_refused_without_apt(check='os_file_owner')
 
     def test_wrong_architecture_package_owner_or_keyring_integrity_refuses(self):
         real_route = self.route
-        for target, replacement in (
-            ('--print-architecture', b'arm64\n'),
-            ('-S', b'other-package: PRIVATE_TOKEN\n'),
-            ('--verify', b'??5?????? PRIVATE_TOKEN\n')):
+        for target, replacement, check in (
+            ('--print-architecture', b'arm64\n', 'host_architecture'),
+            ('-S', b'other-package: PRIVATE_TOKEN\n', 'keyring_package_attribution'),
+            ('--verify', b'??5?????? PRIVATE_TOKEN\n', 'keyring_integrity')):
             def fault(args, target=target, replacement=replacement):
                 if args[1] == target:
                     return subprocess.CompletedProcess(args, 0, replacement)
@@ -258,32 +270,34 @@ raise AssertionError('Only fake APT is executable')
                 self.query_fault = fault
                 return result
             self.query_fault = fault
-            self.assert_refused_without_apt()
+            self.assert_refused_without_apt(check=check)
         self.query_fault = None
 
     def test_missing_empty_unreadable_or_writable_keyring_refuses(self):
-        for content, mode in ((b'',0o644), (b'x',0o600), (b'x',0o666), (b'x'*1048577,0o644)):
+        for content, mode, check in ((b'',0o644,'keyring_file_size'),
+                (b'x',0o600,'keyring_file_mode'), (b'x',0o666,'keyring_file_mode'),
+                (b'x'*1048577,0o644,'keyring_file_size')):
             self.keyring.write_bytes(content); self.keyring.chmod(mode)
-            self.assert_refused_without_apt()
+            self.assert_refused_without_apt(check=check)
         self.keyring.unlink()
-        self.assert_refused_without_apt()
+        self.assert_refused_without_apt(check='keyring_read')
 
     def test_symlink_and_fifo_keyring_refuse_without_read(self):
         self.keyring.unlink()
         self.keyring.symlink_to(self.os_release)
-        self.assert_refused_without_apt()
+        self.assert_refused_without_apt(check='keyring_read')
         self.keyring.unlink(); os.mkfifo(self.keyring)
         # snapshot deliberately excludes FIFO; the read itself must not block.
-        self.assert_failure(self.run_main(), 'prerequisites')
+        self.assert_failure(self.run_main(), 'prerequisites', check='keyring_file_type')
         self.assertEqual([], self.calls())
 
     def test_os_read_failure_and_query_failure_redact(self):
         with mock.patch.object(apt.os,'read',side_effect=OSError('PRIVATE_TOKEN')):
-            self.assert_refused_without_apt()
+            self.assert_refused_without_apt(check='os_read')
         def fail(args):
             raise subprocess.CalledProcessError(1,args,output=b'PRIVATE_TOKEN')
         self.query_fault=fail
-        self.assert_refused_without_apt(exit_status=1)
+        self.assert_refused_without_apt(exit_status=1, check='host_architecture_query')
 
     def test_configuration_failure_has_no_package_call_or_host_write(self):
         with mock.patch.object(apt, 'configure', side_effect=ValueError('PRIVATE_TOKEN /private/path')):
@@ -316,7 +330,7 @@ raise AssertionError('Only fake APT is executable')
                     raise subprocess.CalledProcessError(status, ['/PRIVATE_TOKEN'],
                         output=b'PRIVATE_TOKEN https://private.invalid', stderr=b'PRIVATE_TOKEN')
                 self.query_fault = fail
-                self.assert_refused_without_apt(exit_status=expected)
+                self.assert_refused_without_apt(exit_status=expected, check='host_architecture_query')
                 self.assertEqual([['/usr/bin/dpkg','--print-architecture']], self.query_calls)
 
     def test_timeout_stage_does_not_echo_child_output_or_request_retry(self):
@@ -324,13 +338,108 @@ raise AssertionError('Only fake APT is executable')
             raise subprocess.TimeoutExpired('/PRIVATE_TOKEN',30,
                 output=b'PRIVATE_TOKEN https://private.invalid', stderr=b'PRIVATE_TOKEN')
         self.query_fault = fail
-        self.assert_refused_without_apt()
+        self.assert_refused_without_apt(check='host_architecture_query')
         self.assertEqual([['/usr/bin/dpkg','--print-architecture']], self.query_calls)
+
+    def test_os_file_type_mode_and_empty_size_refuse_without_queries(self):
+        valid = self.os_release.read_bytes()
+        for content, mode, check in ((b'',0o644,'os_file_size'),
+                                     (valid,0o666,'os_file_mode')):
+            self.os_release.write_bytes(content); self.os_release.chmod(mode)
+            self.assert_refused_without_apt(check=check)
+        self.os_release.unlink(); self.os_release.mkdir()
+        self.assert_refused_without_apt(check='os_file_type')
+        self.assertEqual([], self.query_calls)
+
+    def test_file_stability_checks_preserve_read_count_and_host_files(self):
+        real_read = apt.os.read
+        for failed_read, check in ((1,'os_file_stability'), (2,'keyring_file_stability')):
+            with self.subTest(check=check):
+                self.query_calls.clear()
+                calls = []
+                def short_read(fd, limit):
+                    data = real_read(fd, limit)
+                    calls.append(limit)
+                    return data[:-1] if len(calls) == failed_read else data
+                with mock.patch.object(apt.os,'read',side_effect=short_read):
+                    self.assert_refused_without_apt(check=check)
+                self.assertEqual([8193,1048577][:failed_read], calls)
+                if failed_read == 1:
+                    self.assertEqual([], self.query_calls)
+                else:
+                    self.assert_initial_queries_only()
+
+    def test_keyring_owner_refuses_after_only_existing_queries(self):
+        real_stat = apt.os.fstat
+        stats = []
+        def wrong_keyring_owner(fd):
+            result = real_stat(fd)
+            stats.append(result)
+            if len(stats) == 3:
+                return SimpleNamespace(st_mode=result.st_mode, st_uid=apt.ROOT_UID+1,
+                    st_size=result.st_size, st_mtime_ns=result.st_mtime_ns, st_ctime_ns=result.st_ctime_ns)
+            return result
+        with mock.patch.object(apt.os,'fstat',side_effect=wrong_keyring_owner):
+            self.assert_refused_without_apt(check='keyring_file_owner')
+        self.assertEqual(3,len(stats))
+        self.assert_initial_queries_only()
+
+    def test_os_value_arity_and_parser_error_refuse_before_queries(self):
+        with mock.patch.object(apt.shlex,'split',return_value=[]):
+            self.assert_refused_without_apt(check='os_value_arity')
+        with mock.patch.object(apt.shlex,'split',side_effect=ValueError('PRIVATE_TOKEN')):
+            self.assert_refused_without_apt(check='os_value_syntax')
+        self.assertEqual([],self.query_calls)
+
+    def test_each_query_failure_or_output_limit_has_its_own_check(self):
+        expected_queries = [
+            ['/usr/bin/dpkg','--print-architecture'],
+            ['/usr/bin/dpkg-query','-S',str(self.keyring)],
+            ['/usr/bin/dpkg','--verify','ubuntu-keyring'],
+        ]
+        valid_outputs = [b'amd64\n',('ubuntu-keyring: '+str(self.keyring)+'\n').encode(),b'']
+        for index, (check, output_check) in enumerate((
+                ('host_architecture_query','host_architecture_output_limit'),
+                ('keyring_package_query','keyring_package_output_limit'),
+                ('keyring_integrity_query','keyring_integrity_output_limit'))):
+            for overflow in (False,True):
+                with self.subTest(check=check,overflow=overflow):
+                    self.query_calls.clear()
+                    def fail(args):
+                        which = expected_queries.index(args)
+                        if which == index:
+                            if not overflow:
+                                raise subprocess.CalledProcessError(1,['PRIVATE_TOKEN'],
+                                    output=b'PRIVATE_TOKEN',stderr=b'PRIVATE_TOKEN /private/path')
+                            return subprocess.CompletedProcess(args,0,b'PRIVATE_TOKEN'*400)
+                        return subprocess.CompletedProcess(args,0,valid_outputs[which])
+                    self.query_fault=fail
+                    self.assert_refused_without_apt(check=output_check if overflow else check,
+                                                   exit_status=None if overflow else 1)
+                    self.assertEqual(expected_queries[:index+1],self.query_calls)
+        self.query_fault=None
+
+    def test_accepted_prerequisites_keep_exact_file_io_and_query_contract(self):
+        before = self.snapshot()
+        expected = self.keyring.read_bytes()
+        with mock.patch.object(apt.os,'open',wraps=apt.os.open) as opened, \
+                mock.patch.object(apt.os,'fstat',wraps=apt.os.fstat) as stated, \
+                mock.patch.object(apt.os,'read',wraps=apt.os.read) as read, \
+                mock.patch.object(apt.os,'close',wraps=apt.os.close) as closed:
+            self.assertEqual(expected,apt.prerequisites())
+        self.assertEqual(2,opened.call_count)
+        self.assertEqual(4,stated.call_count)
+        self.assertEqual([8193,1048577],[call.args[1] for call in read.call_args_list])
+        self.assertEqual(2,closed.call_count)
+        self.assert_initial_queries_only()
+        self.assertEqual(before,self.snapshot())
+        self.assertEqual([],self.calls())
+        self.assertEqual([],list(self.private.iterdir()))
 
     def test_nonroot_refuses_before_read_or_commands(self):
         with mock.patch.object(apt.os,'geteuid',return_value=123), \
                 mock.patch.object(apt.os,'open',side_effect=AssertionError('read')):
-            self.assert_refused_without_apt()
+            self.assert_refused_without_apt(check='root')
         self.assertEqual([],self.query_calls)
 
 
