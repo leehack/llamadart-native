@@ -55,7 +55,7 @@ int main() {
   assert(!admitted_defaults("llamadart-native-build/1;llama.cpp=b1b770d90d94cad9e9ea5b993bdbc383a522fb28;", spy));
 #endif
   assert(calls == 0); // No by-value call made on any refused runtime.
-  assert(admitted_defaults(llama_dart_build_identity(), [&] {
+  const auto check_defaults = [&] {
     ++calls;
     const auto model = llama_model_default_params();
     const auto context = llama_context_default_params();
@@ -69,7 +69,8 @@ int main() {
 #else
     assert(context.defrag_thold == -1.0f);
 #endif
-  }));
+  };
+  assert(admitted_defaults(llama_dart_build_identity(), check_defaults));
   assert(calls == 1);
   // All currently shipped native ABIs are 64-bit. Do not silently bless an
   // unreviewed 32-bit ABI from host-only size assertions.

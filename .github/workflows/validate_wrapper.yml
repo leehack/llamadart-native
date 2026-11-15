@@ -723,6 +723,7 @@ jobs:
           llamadart_owner_api_test llamadart_owner_reentrancy_test llamadart_exit_teardown_test llamadart_image_token_limit_test
           llamadart_build_identity_test llamadart_cancel_flag_test
           llamadart_f16_dot_accumulation_test
+          llamadart_upstream_abi_test llamadart_mtmd_compat_test
       - name: Validate wrapper exports and the static destructor binding
         run: >-
           python3 tools/validate_exports.py --format nm --tool nm
