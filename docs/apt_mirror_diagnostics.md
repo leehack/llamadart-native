@@ -193,3 +193,25 @@ read, retry or write is introduced. The reported head `3b764a9` receipts localiz
 the failure before APT update/install, but do not identify the exact check or
 cause. The identifiers gather that missing evidence without guessing inputs or
 loosening the approved root/Ubuntu24.04/amd64/OS-release/keyring requirements.
+
+## Public-keyring mode predicates
+
+Only a `keyring_file_mode` refusal additionally emits one record prefixed
+`Private Ubuntu keyring mode predicates: `. It contains exactly three boolean
+fields: `group_writable`, `other_writable`, `other_read_missing`. All three are
+reported together from the already captured mode of the public packaged
+keyring. No new stat, read, query, mode change or child invocation occurs.
+Other refusal checks, including OS-file mode and earlier keyring ownership/type
+failures, do not emit this record. The existing generic refusal and stage
+receipt remain unchanged; each diagnostic line stays within 128 ASCII bytes.
+No raw mode, user/group identity, path, content, environment or exception is
+reported. Success remains silent, and refusal still exits 1 with no fallback.
+
+The approved permission predicates are unchanged: reject group/other-writable
+files and require the other-read bit for this public keyring. The observed
+head `d1a82df` receipts identify only the combined mode check, not actual bits,
+package corruption, provisioning cause or an acquisition/network failure.
+Primary Noble package metadata lists the keyring but does not establish this
+runner's installed mode. Dpkg verification is an installed-file checksum check,
+not proof of mode; the bounded booleans gather the remaining evidence without
+loosening policy. Any permission-policy change requires a separate proposal.

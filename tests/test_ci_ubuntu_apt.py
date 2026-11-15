@@ -4,6 +4,7 @@ import contextlib
 import io
 import json
 import os
+import stat
 from pathlib import Path
 import subprocess
 import sys
@@ -154,11 +155,11 @@ raise AssertionError('Only fake APT is executable')
             ['/usr/bin/dpkg', '--verify', 'ubuntu-keyring'],
         ], self.query_calls)
 
-    def assert_failure(self, result, stage, exit_status=None, check=None):
+    def assert_failure(self, result, stage, exit_status=None, check=None, mode_predicates=None):
         code, output = result
         self.assertEqual(1, code)
         lines = output.splitlines()
-        self.assertEqual(2, len(lines))
+        self.assertEqual(2 if mode_predicates is None else 3, len(lines))
         self.assertEqual(apt.REFUSAL, lines[0])
         prefix = 'Private Ubuntu APT failure stage: '
         self.assertTrue(lines[1].startswith(prefix))
@@ -170,11 +171,17 @@ raise AssertionError('Only fake APT is executable')
         self.assertEqual(expected, json.loads(lines[1][len(prefix):]))
         self.assertTrue(output.isascii())
         self.assertLessEqual(len(lines[1]), 128)
+        if mode_predicates is not None:
+            prefix = 'Private Ubuntu keyring mode predicates: '
+            self.assertTrue(lines[2].startswith(prefix))
+            self.assertEqual(mode_predicates,json.loads(lines[2][len(prefix):]))
+            self.assertTrue(all(type(value) is bool for value in mode_predicates.values()))
+            self.assertLessEqual(len(lines[2]),128)
 
     def assert_refused_without_apt(self, lane='linux-arm64', *extra,
-                                  stage='prerequisites', exit_status=None, check=None):
+                                  stage='prerequisites', exit_status=None, check=None, mode_predicates=None):
         before = self.snapshot()
-        self.assert_failure(self.run_main(lane, *extra), stage, exit_status, check)
+        self.assert_failure(self.run_main(lane, *extra), stage, exit_status, check, mode_predicates)
         self.assertEqual([], self.calls())
         self.assertEqual([], list(self.private.iterdir()))
         self.assertEqual(before, self.snapshot())
@@ -274,11 +281,13 @@ raise AssertionError('Only fake APT is executable')
         self.query_fault = None
 
     def test_missing_empty_unreadable_or_writable_keyring_refuses(self):
-        for content, mode, check in ((b'',0o644,'keyring_file_size'),
-                (b'x',0o600,'keyring_file_mode'), (b'x',0o666,'keyring_file_mode'),
-                (b'x'*1048577,0o644,'keyring_file_size')):
+        for content, mode, check, predicates in (
+                (b'',0o644,'keyring_file_size',None),
+                (b'x',0o600,'keyring_file_mode',{'group_writable':False,'other_writable':False,'other_read_missing':True}),
+                (b'x',0o666,'keyring_file_mode',{'group_writable':True,'other_writable':True,'other_read_missing':False}),
+                (b'x'*1048577,0o644,'keyring_file_size',None)):
             self.keyring.write_bytes(content); self.keyring.chmod(mode)
-            self.assert_refused_without_apt(check=check)
+            self.assert_refused_without_apt(check=check,mode_predicates=predicates)
         self.keyring.unlink()
         self.assert_refused_without_apt(check='keyring_read')
 
@@ -376,7 +385,7 @@ raise AssertionError('Only fake APT is executable')
             result = real_stat(fd)
             stats.append(result)
             if len(stats) == 3:
-                return SimpleNamespace(st_mode=result.st_mode, st_uid=apt.ROOT_UID+1,
+                return SimpleNamespace(st_mode=result.st_mode|stat.S_IWGRP|stat.S_IWOTH, st_uid=apt.ROOT_UID+1,
                     st_size=result.st_size, st_mtime_ns=result.st_mtime_ns, st_ctime_ns=result.st_ctime_ns)
             return result
         with mock.patch.object(apt.os,'fstat',side_effect=wrong_keyring_owner):
@@ -435,6 +444,65 @@ raise AssertionError('Only fake APT is executable')
         self.assertEqual(before,self.snapshot())
         self.assertEqual([],self.calls())
         self.assertEqual([],list(self.private.iterdir()))
+
+    def test_keyring_mode_breakdown_is_complete_and_uses_only_captured_stat(self):
+        real_stat = apt.os.fstat
+        for group_write in (False,True):
+            for other_write in (False,True):
+                for read_missing in (False,True):
+                    if not (group_write or other_write or read_missing):
+                        continue
+                    with self.subTest(group=group_write,other=other_write,read_missing=read_missing):
+                        self.query_calls.clear()
+                        calls=[]
+                        def keyring_stat(fd):
+                            result=real_stat(fd);calls.append(result)
+                            if len(calls)==3:
+                                mode=stat.S_IFREG|stat.S_IRUSR|stat.S_IWUSR|stat.S_IRGRP
+                                if group_write:mode|=stat.S_IWGRP
+                                if other_write:mode|=stat.S_IWOTH
+                                if not read_missing:mode|=stat.S_IROTH
+                                return SimpleNamespace(st_mode=mode,st_uid=result.st_uid,
+                                    st_size=result.st_size,st_mtime_ns=result.st_mtime_ns,st_ctime_ns=result.st_ctime_ns)
+                            return result
+                        with mock.patch.object(apt.os,'fstat',side_effect=keyring_stat), \
+                                mock.patch.object(apt.os,'read',wraps=apt.os.read) as read:
+                            self.assert_refused_without_apt(check='keyring_file_mode',mode_predicates={
+                                'group_writable':group_write,'other_writable':other_write,
+                                'other_read_missing':read_missing})
+                        self.assertEqual(3,len(calls))
+                        self.assertEqual(1,read.call_count)  # OS only, never keyring content.
+                        self.assert_initial_queries_only()
+
+    def test_mode_policy_truth_table_is_unchanged_for_all_permission_combinations(self):
+        # Synthetic POSIX policy controls, never a claim about the failed runner.
+        actual = self.keyring.stat()
+        accepted = 0
+        for permissions in range(512):
+            expected = (bool(permissions & stat.S_IWGRP),
+                        bool(permissions & stat.S_IWOTH),
+                        not bool(permissions & stat.S_IROTH))
+            metadata = SimpleNamespace(st_mode=stat.S_IFREG|permissions,st_uid=actual.st_uid,
+                st_size=actual.st_size,st_mtime_ns=actual.st_mtime_ns,st_ctime_ns=actual.st_ctime_ns)
+            with self.subTest(permissions=permissions), \
+                    mock.patch.object(apt.os,'fstat',return_value=metadata) as stated, \
+                    mock.patch.object(apt.os,'read',wraps=apt.os.read) as read:
+                if any(expected):
+                    with self.assertRaises(apt._PhaseFailure) as failed:
+                        apt.root_file(self.keyring,1024*1024,public=True)
+                    self.assertEqual('keyring_file_mode',failed.exception.check.value)
+                    self.assertEqual(expected,failed.exception.keyring_mode)
+                    self.assertEqual(1,stated.call_count)
+                    read.assert_not_called()
+                else:
+                    self.assertEqual(b'FAKE_PACKAGED_KEYRING_NOT_A_REAL_KEY',
+                                     apt.root_file(self.keyring,1024*1024,public=True))
+                    self.assertEqual(2,stated.call_count)
+                    self.assertEqual(1,read.call_count)
+                    accepted += 1
+        self.assertEqual(64,accepted)
+        self.assertEqual([],self.query_calls)
+        self.assertEqual([],self.calls())
 
     def test_nonroot_refuses_before_read_or_commands(self):
         with mock.patch.object(apt.os,'geteuid',return_value=123), \

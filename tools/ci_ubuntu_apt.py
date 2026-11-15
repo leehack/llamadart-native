@@ -84,10 +84,12 @@ class PrerequisiteCheck(Enum):
 
 class _PhaseFailure(Exception):
     def __init__(self, stage: FailureStage, exit_status: int | None,
-                 check: PrerequisiteCheck | None = None):
+                 check: PrerequisiteCheck | None = None,
+                 keyring_mode: tuple[bool, bool, bool] | None = None):
         self.stage = stage
         self.exit_status = exit_status
         self.check = check
+        self.keyring_mode = keyring_mode
 
 
 @contextlib.contextmanager
@@ -136,7 +138,12 @@ def root_file(path: Path, limit: int, *, public: bool = False) -> bytes:
                 check = checks[3]
             else:
                 check = checks[2]
-            raise _PhaseFailure(FailureStage.PREREQUISITES, None, check)
+            keyring_mode = None
+            if check is PrerequisiteCheck.KEYRING_FILE_MODE:
+                keyring_mode = (bool(before.st_mode & 0o020),
+                                bool(before.st_mode & 0o002),
+                                not bool(before.st_mode & 0o004))
+            raise _PhaseFailure(FailureStage.PREREQUISITES, None, check, keyring_mode)
         data = os.read(fd, limit + 1)
         after = os.fstat(fd)
         if (len(data) != before.st_size or len(data) > limit or
@@ -303,6 +310,14 @@ def main() -> int:
             receipt['exit_status'] = failure.exit_status
         print('Private Ubuntu APT failure stage: ' +
               json.dumps(receipt, sort_keys=True, separators=(',', ':')), file=sys.stderr)
+        if (failure.check is PrerequisiteCheck.KEYRING_FILE_MODE and
+                failure.keyring_mode is not None):
+            group_writable, other_writable, other_read_missing = failure.keyring_mode
+            predicates = {'group_writable': group_writable,
+                          'other_writable': other_writable,
+                          'other_read_missing': other_read_missing}
+            print('Private Ubuntu keyring mode predicates: ' +
+                  json.dumps(predicates, sort_keys=True, separators=(',', ':')), file=sys.stderr)
         return 1
 
 
