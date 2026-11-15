@@ -135,12 +135,12 @@ refusal behavior remain unchanged. Linux x64 and other jobs retain their
 existing acquisition paths.
 
 The private helper requires Ubuntu 24.04 / noble on an amd64 host and the
-installed Ubuntu archive keyring. It creates a fresh root-owned `/tmp` directory
+repository-pinned [Ubuntu archive public key](../tools/keys/README.md). It creates a fresh root-owned `/tmp` directory
 for configuration, sources, keyring copy, indexes, caches and APT logs. Only
 fixed HTTPS archive/security URLs with Noble suites are used. `APT_CONFIG`
 loads before system configuration; `Dir::Etc` points entirely into this private
 area. No host source, mirrorlist, credential, pinning or hook file is imported.
-`Signed-By` limits both sources to the validated packaged keyring copy; TLS,
+`Signed-By` limits both sources to the exact private snapshot and full fingerprint; TLS,
 signature and date checks remain enabled, redirects/insecure sources are
 refused, and any update error stops installation. Installed-package state is
 still `/var/lib/dpkg/status`; package installation itself remains a real change
@@ -215,3 +215,42 @@ Primary Noble package metadata lists the keyring but does not establish this
 runner's installed mode. Dpkg verification is an installed-file checksum check,
 not proof of mode; the bounded booleans gather the remaining evidence without
 loosening policy. Any permission-policy change requires a separate proposal.
+
+
+## Proposed independently pinned CI keyring policy
+
+The writable ambient packaged keyring is never authenticated by chmod, owner
+checks or its local MD5 database. The private helper uses only the exact
+repository snapshot documented in `tools/keys/README.md`. Its SHA256 binds the
+captured public bytes to an independently reviewed Canonical publisher capture;
+no host-key read, attribution/integrity query or runtime key download occurs.
+Root, strict Ubuntu 24.04/noble OS-file validation and the amd64 architecture
+query remain. Two ambient-key package queries are removed deliberately because
+they no longer authenticate the selected trust source; the architecture query
+is retained. This is a trust-source policy change, not a mode-guard relaxation.
+
+The source snapshot must be a bounded regular no-follow/nonblocking file with
+exact size, other-read permission and no group/other-write permission. Descriptor
+identity, mode, ownership, size and nanosecond times must remain stable across
+one bounded read. Captured bytes must match the pinned SHA256 before copying
+them into the private root-owned operation. Only this authenticated copy is
+referenced by `Signed-By`. Refusals emit fixed `pinned_keyring_read` or
+`pinned_keyring_content` checks; no content, digest, metadata or exception is
+printed. The older closed diagnostic identifiers remain reserved; the generic
+strict file guard is retained, without selecting an ambient trust source.
+
+At `cfe1c77`, all six supplied Kleidi/Linux arm64 receipts establish
+`group_writable: true`, `other_writable: true`, `other_read_missing: false` for
+the refused ambient public keyring. They establish neither its exact mode,
+ownership, authenticity, integrity nor provisioning cause. The aggregate
+correctly propagates those setup-blocked groups; it remains required. No
+mirror identity or network/solver conclusion follows.
+
+The canonical HTTPS sources, suites/components, no-remove policy, strict TLS,
+signature/date/update checks, package/option order, x64 acquisition path and
+downstream artifact/ISA validators are unchanged. An absent, modified, unsafe
+or unknown snapshot refuses before APT, including when ambient bytes happen to
+match. A future key rotation/revocation or dependency/source/solver conflict
+requires a separate reviewed decision; no ambient fallback is available.
+
+Private APT configuration stays behind the operation directory's `0700` boundary while files are populated and assigned final safe modes. Traversal for `_apt` is published only after those permissions are complete; setup failures leave the private boundary intact.

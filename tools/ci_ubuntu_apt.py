@@ -8,6 +8,7 @@ from __future__ import annotations
 import contextlib
 from enum import Enum
 import json
+import hashlib
 import os
 from pathlib import Path
 import re
@@ -19,7 +20,10 @@ import tempfile
 
 OS_RELEASE = Path('/etc/os-release')
 VENDOR_RELEASE = Path('/usr/lib/os-release')
-KEYRING = Path('/usr/share/keyrings/ubuntu-archive-keyring.gpg')
+PINNED_KEYRING = Path(__file__).resolve().parent / 'keys/ubuntu-archive-2018.asc'
+PINNED_KEYRING_BYTES = 1660
+PINNED_KEYRING_SHA256 = '2a3cc57ab6b47626b496a101c29af6dfe54d54d03d613f2326b9f2a30a15c39b'
+PINNED_KEY_FINGERPRINT = 'F6ECB3762474EDA9D21B7022871920D1991BC93C'
 TMP_ROOT = '/tmp'
 ROOT_UID = 0
 ENV = {'PATH': '/usr/sbin:/usr/bin:/sbin:/bin', 'LC_ALL': 'C'}
@@ -48,6 +52,8 @@ class FailureStage(Enum):
 
 
 class PrerequisiteCheck(Enum):
+    PINNED_KEYRING_READ = 'pinned_keyring_read'
+    PINNED_KEYRING_CONTENT = 'pinned_keyring_content'
     ROOT = 'root'
     OS_LINK = 'os_link'
     OS_READ = 'os_read'
@@ -164,6 +170,30 @@ def query(args: list[str], *, output_check: PrerequisiteCheck) -> bytes:
     return result.stdout
 
 
+def pinned_keyring() -> bytes:
+    # The reviewed SHA256 is the trust binding. Checkout ownership or its local
+    # package database is not publisher authentication. Never read ambient keys.
+    with _prerequisite_check(PrerequisiteCheck.PINNED_KEYRING_READ):
+        fd = os.open(PINNED_KEYRING, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        try:
+            before = os.fstat(fd)
+            if (not stat.S_ISREG(before.st_mode) or before.st_size != PINNED_KEYRING_BYTES or
+                    before.st_mode & 0o022 or not before.st_mode & 0o004):
+                raise ValueError()
+            data = os.read(fd, PINNED_KEYRING_BYTES + 1)
+            after = os.fstat(fd)
+            fields = ('st_dev','st_ino','st_mode','st_uid','st_gid','st_size','st_mtime_ns','st_ctime_ns')
+            if (len(data) != PINNED_KEYRING_BYTES or
+                    tuple(getattr(before,k) for k in fields) != tuple(getattr(after,k) for k in fields)):
+                raise ValueError()
+        finally:
+            os.close(fd)
+    with _prerequisite_check(PrerequisiteCheck.PINNED_KEYRING_CONTENT):
+        if hashlib.sha256(data).hexdigest() != PINNED_KEYRING_SHA256:
+            raise ValueError()
+    return data
+
+
 def prerequisites() -> bytes:
     with _prerequisite_check(PrerequisiteCheck.ROOT):
         if os.geteuid() != 0:
@@ -217,29 +247,14 @@ def prerequisites() -> bytes:
     with _prerequisite_check(PrerequisiteCheck.HOST_ARCHITECTURE):
         if architecture != b'amd64\n':
             raise ValueError()
-    with _prerequisite_check(PrerequisiteCheck.KEYRING_PACKAGE_QUERY):
-        attribution = query(['/usr/bin/dpkg-query', '-S', str(KEYRING)],
-                            output_check=PrerequisiteCheck.KEYRING_PACKAGE_OUTPUT_LIMIT)
-    with _prerequisite_check(PrerequisiteCheck.KEYRING_PACKAGE_ATTRIBUTION):
-        if attribution != ('ubuntu-keyring: ' + str(KEYRING) + '\n').encode('ascii'):
-            raise ValueError()
-    # Installed-package integrity check, not a new trust root or cryptographic
-    # provenance claim. Require no discrepancy output as well as exit success.
-    with _prerequisite_check(PrerequisiteCheck.KEYRING_INTEGRITY_QUERY):
-        integrity = query(['/usr/bin/dpkg', '--verify', 'ubuntu-keyring'],
-                          output_check=PrerequisiteCheck.KEYRING_INTEGRITY_OUTPUT_LIMIT)
-    with _prerequisite_check(PrerequisiteCheck.KEYRING_INTEGRITY):
-        if integrity:
-            raise ValueError()
-    with _prerequisite_check(PrerequisiteCheck.KEYRING_READ):
-        return root_file(KEYRING, 1024 * 1024, public=True)
+    return pinned_keyring()
 
 
 def configure(work: Path, keyring: bytes) -> Path:
     # Paths are generated internally, never taken from CLI or environment.
     if not re.fullmatch(r'/[A-Za-z0-9_./-]+', str(work)) or '..' in work.parts:
         raise ValueError()
-    work.chmod(0o755)  # _apt must be able to traverse to public config/keyring.
+    work.chmod(0o700)  # Keep creation-time file modes hidden until publication.
     etc = work / 'etc'
     for name in ('etc/apt.conf.d', 'etc/sources.list.d', 'etc/preferences.d',
                  'etc/trusted.gpg.d', 'etc/auth.conf.d', 'state/lists/partial',
@@ -247,7 +262,7 @@ def configure(work: Path, keyring: bytes) -> Path:
         (work / name).mkdir(parents=True, exist_ok=True, mode=0o755)
     for name in ('apt.conf', 'preferences', 'trusted.gpg', 'auth.conf'):
         (etc / name).write_bytes(b'')
-    private_keyring = work / 'ubuntu-archive-keyring.gpg'
+    private_keyring = work / 'ubuntu-archive-2018.asc'
     private_keyring.write_bytes(keyring)
     private_keyring.chmod(0o644)
     stanzas = []
@@ -257,7 +272,7 @@ def configure(work: Path, keyring: bytes) -> Path:
     ):
         stanzas.append(f'Types: deb\nURIs: {uri}\nSuites: {suites}\n'
                        'Components: main universe restricted multiverse\n'
-                       f'Architectures: amd64\nSigned-By: {private_keyring}\n'
+                       f'Architectures: amd64\nSigned-By: {private_keyring} {PINNED_KEY_FINGERPRINT}\n'
                        'Check-Valid-Until: yes\n')
     (etc / 'ubuntu.sources').write_text('\n'.join(stanzas), encoding='ascii')
     options = {
@@ -277,6 +292,7 @@ def configure(work: Path, keyring: bytes) -> Path:
     # The process umask must not make the public configuration unreadable to _apt.
     for path in work.rglob('*'):
         path.chmod(0o755 if path.is_dir() else 0o644)
+    work.chmod(0o755)  # Publish traversal only after every child has safe modes.
     return config
 
 
