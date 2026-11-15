@@ -41,6 +41,10 @@ KNOWN_ROW = re.compile(
     rb")([ \t]{1,32})priority:([1-9][0-9]{0,2})([ \t]{0,32})(\r\n|\n)?"
 )
 
+# Only SP/TAB delimit the complete token; controls and URL suffixes stay part
+# of it and therefore cannot match a public literal. Leading whitespace is capped.
+KNOWN_URL_TOKEN = re.compile(rb"[ \t]{0,32}([^ \t]+)")
+
 
 class MirrorlistRefused(ValueError):
     def __init__(self, diagnostic: dict | None = None) -> None:
@@ -62,14 +66,17 @@ def _diagnostic(current: bytes) -> dict | None:
         return None
     rows = []
     for line in lines:
+        token = KNOWN_URL_TOKEN.match(line)
+        known_url_id = MIRROR_IDS.get(token[1], "unclassified") if token else "unclassified"
         match = KNOWN_ROW.fullmatch(line)
         if not match:
-            rows.append({"mirror_id": "unclassified"})
+            rows.append({"mirror_id": "unclassified", "known_url_id": known_url_id})
             continue
         leading, url, separator, priority, trailing, ending = match.groups()
         # Encode only already-validated whitespace, never raw configuration.
         rows.append({
-            "mirror_id": MIRROR_IDS[url], "priority": int(priority),
+            "mirror_id": MIRROR_IDS[url], "known_url_id": known_url_id,
+            "priority": int(priority),
             "leading_ws": _whitespace(leading), "separator_ws": _whitespace(separator),
             "trailing_ws": _whitespace(trailing),
             "ending": {b"\n": "lf", b"\r\n": "crlf", None: "none"}[ending],

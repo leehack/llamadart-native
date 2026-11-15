@@ -121,11 +121,11 @@ class MirrorPriorityTest(unittest.TestCase):
         self.assertEqual({"lf": 1, "crlf": 1, "bare_cr": 0}, data["newlines"])
         self.assertFalse(data["trailing_lf"])
         self.assertEqual([
-            {"mirror_id": "ubuntu_security", "priority": 3, "leading_ws": "s",
+            {"mirror_id": "ubuntu_security", "known_url_id": "ubuntu_security", "priority": 3, "leading_ws": "s",
              "separator_ws": "s", "trailing_ws": "s", "ending": "crlf"},
-            {"mirror_id": "azure_archive", "priority": 1, "leading_ws": "",
+            {"mirror_id": "azure_archive", "known_url_id": "azure_archive", "priority": 1, "leading_ws": "",
              "separator_ws": "t", "trailing_ws": "", "ending": "lf"},
-            {"mirror_id": "ubuntu_archive", "priority": 2, "leading_ws": "",
+            {"mirror_id": "ubuntu_archive", "known_url_id": "ubuntu_archive", "priority": 2, "leading_ws": "",
              "separator_ws": "ss", "trailing_ws": "", "ending": "none"},
         ], data["lines"])
         self.assertNotIn("http", output)
@@ -164,11 +164,73 @@ class MirrorPriorityTest(unittest.TestCase):
                 before = self.path.stat()
                 code, output, _ = self.run_main()
                 self.assertEqual(1, code)
-                self.assertEqual([{"mirror_id": "unclassified"}], self.receipt(output)["lines"])
+                expected_url_id = ("ubuntu_archive" if content.startswith(
+                    b"https://archive.ubuntu.com/ubuntu/\t") else "unclassified")
+                self.assertEqual([{"mirror_id": "unclassified", "known_url_id": expected_url_id}],
+                                 self.receipt(output)["lines"])
                 for forbidden in ("PRIVATE_TOKEN", "http", "private.invalid", "\x1b"):
                     self.assertNotIn(forbidden, output)
                 self.assertEqual(content, self.path.read_bytes())
                 self.assertEqual(before.st_mtime_ns, self.path.stat().st_mtime_ns)
+
+    def assert_token_receipt(self, content, expected_url_id):
+        self.path.write_bytes(content)
+        before = self.path.stat()
+        with mock.patch.object(mirror.os, "write", side_effect=AssertionError("unexpected write")):
+            code, output, _ = self.run_main()
+        self.assertEqual(1, code)
+        self.assertEqual([{"mirror_id": "unclassified", "known_url_id": expected_url_id}],
+                         self.receipt(output)["lines"])
+        self.assertTrue(output.isascii())
+        for forbidden in ("PRIVATE_TOKEN", "http", "priority", "\x1b", "\x00"):
+            self.assertNotIn(forbidden, output)
+        self.assertEqual(content, self.path.read_bytes())
+        self.assertEqual(before.st_mtime_ns, self.path.stat().st_mtime_ns)
+
+    def test_exact_known_url_with_unknown_metadata_is_identified_but_refused(self):
+        # Public literals are classification probes, not observed image input.
+        for url, expected in (
+            (b"http://azure.archive.ubuntu.com/ubuntu/", "azure_archive"),
+            (b"https://archive.ubuntu.com/ubuntu/", "ubuntu_archive"),
+            (b"https://security.ubuntu.com/ubuntu/", "ubuntu_security"),
+        ):
+            for metadata in (b"unrecognized", b"priority:2 PRIVATE_TOKEN",
+                             b"PRIVATE_TOKEN?credential=PRIVATE_TOKEN\x1b\x00",
+                             b"priority:0", b"priority:1000"):
+                with self.subTest(url_id=expected, metadata=metadata):
+                    self.assert_token_receipt(b" \t" + url + b"\t" + metadata + b"\n", expected)
+
+    def test_only_complete_exact_url_tokens_are_identified(self):
+        fixtures = (
+            b"prefixhttps://archive.ubuntu.com/ubuntu/",
+            b"https://archive.ubuntu.com/ubuntu/suffix",
+            b"https://user:PRIVATE_TOKEN@archive.ubuntu.com/ubuntu/",
+            b"https://archive.ubuntu.com/ubuntu/?PRIVATE_TOKEN",
+            b"https://archive.ubuntu.com/ubuntu/#PRIVATE_TOKEN",
+            b"HTTPS://archive.ubuntu.com/ubuntu/",
+            b"https://ARCHIVE.ubuntu.com/ubuntu/",
+            b"https://archive.ubuntu.com/ubuntu/\r",
+            b"https://archive.ubuntu.com/ubuntu/\x00",
+            b"https://arch\x00ive.ubuntu.com/ubuntu/",
+            b"https://arch\x1bive.ubuntu.com/ubuntu/",
+            b"https://archive.ubuntu.com/ubuntu/\x1b",
+            b"https://archive.ubuntu.com/ubuntu/\v",
+            b"https://archive.ubuntu.com/ubuntu/\f",
+            b"\vhttps://archive.ubuntu.com/ubuntu/",
+            b"https://archive.ubuntu.com.evil/ubuntu/",
+            b"https://private.invalid/PRIVATE_TOKEN",
+            b"PRIVATE_TOKEN",
+        )
+        for token in fixtures:
+            with self.subTest(token=token):
+                self.assert_token_receipt(token + b"\tPRIVATE_TOKEN\n", "unclassified")
+        for leading, expected in ((b" " * 32, "ubuntu_archive"),
+                                  (b" " * 33, "unclassified")):
+            with self.subTest(leading=len(leading)):
+                self.assert_token_receipt(leading + b"https://archive.ubuntu.com/ubuntu/"
+                                          b"\tPRIVATE_TOKEN\n", expected)
+        # A line ending/control is part of a token unless SP/TAB delimits it.
+        self.assert_token_receipt(b"https://archive.ubuntu.com/ubuntu/\n", "unclassified")
 
     def test_bounded_priority_is_diagnostic_only(self):
         self.path.write_bytes(b"https://archive.ubuntu.com/ubuntu/\tpriority:999\n")
@@ -295,9 +357,15 @@ class MirrorPriorityTest(unittest.TestCase):
             self.assertEqual(mirror.PREFERRED, self.path.read_bytes())
 
     def test_workflow_refusal_stops_before_any_apt_command(self):
-        self.path.write_bytes(b"https://user:PRIVATE_TOKEN@archive.ubuntu.com/ubuntu/ priority:2\n")
-        for job in ("linux-artifact-contract", "kleidiai-dispatch-emulated"):
-            with self.subTest(job=job):
+        fixtures = (
+            b"https://archive.ubuntu.com/ubuntu/\tPRIVATE_TOKEN\n",
+            b"https://user:PRIVATE_TOKEN@archive.ubuntu.com/ubuntu/ priority:2\n",
+        )
+        for job, content in ((job, content)
+                             for job in ("linux-artifact-contract", "kleidiai-dispatch-emulated")
+                             for content in fixtures):
+            with self.subTest(job=job, content=content):
+                self.path.write_bytes(content)
                 marker = self.path.with_name("apt-called")
                 marker.unlink(missing_ok=True)
                 step = step_running(job_block("validate_wrapper.yml", job),
@@ -327,8 +395,7 @@ class MirrorPriorityTest(unittest.TestCase):
                 self.assertEqual(1, result.returncode)
                 self.assertFalse(marker.exists())
                 self.assertNotIn("PRIVATE", result.stdout + result.stderr)
-                self.assertEqual(b"https://user:PRIVATE_TOKEN@archive.ubuntu.com/ubuntu/ priority:2\n",
-                                 self.path.read_bytes())
+                self.assertEqual(content, self.path.read_bytes())
 
     def test_workflow_runs_helper_before_only_affected_dependency_acquisitions(self):
         command = "sudo python3 tools/prioritize_ubuntu_archive.py"
