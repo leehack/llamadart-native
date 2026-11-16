@@ -1,0 +1,100 @@
+name: QA iOS sim x64 ABI
+on:
+  push:
+    branches: [qa/817e3c2-ios-sim-x64-abi]
+permissions:
+  contents: read
+jobs:
+  abi:
+    runs-on: macos-15-intel
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+          persist-credentials: false
+      - name: Run
+        shell: bash
+        run: |
+          set -uo pipefail
+          O="$PWD/out"; mkdir -p "$O/logs" "$O/staging/ios-sim-x86_64"
+          HEAD=817e3c270130b8e33906cd2c095510911d8b0c01
+          UP=b1b770d90d94cad9e9ea5b993bdbc383a522fb28
+          fail=0
+          step() { local n="$1"; shift; echo "== $n"; "$@" >"$O/logs/$n.out" 2>"$O/logs/$n.err"; local rc=$?; echo "$n rc=$rc" | tee -a "$O/results.txt"; return $rc; }
+          { uname -a; uname -m; sw_vers; sysctl -n machdep.cpu.brand_string; sysctl -n hw.optional.arm64 || true; xcodebuild -version; xcrun --sdk iphonesimulator --show-sdk-version; cmake --version; ninja --version; git rev-parse HEAD; git -C third_party/llama.cpp rev-parse HEAD; } > "$O/host.txt" 2>&1
+          [ "$(git rev-parse HEAD)" = "$HEAD" ] || { echo "workflow commit differs from frozen head (expected: workflow commit is child of head)"; }
+          git diff --stat "$HEAD" HEAD > "$O/diff-vs-frozen-head.txt"
+          [ "$(git rev-parse HEAD^)" = "$HEAD" ] && echo "parent==frozen head" >> "$O/results.txt"
+          git diff --name-status "$HEAD" HEAD >> "$O/results.txt"
+          # build
+          step configure cmake --preset ios-sim-x86_64-full -B build -DFETCHCONTENT_FULLY_DISCONNECTED=ON || exit 1
+          cp build/CMakeCache.txt "$O/effective-cache.txt"
+          step build cmake --build build --parallel 3 || exit 1
+          L="$O/staging/ios-sim-x86_64/libllamadart.dylib"
+          cp "$(find build -name '*.dylib' | tee "$O/dylibs.txt" | head -1)" "$L"
+          [ "$(wc -l < "$O/dylibs.txt")" = 1 ] || { echo "multiple dylibs"; fail=1; }
+          step lib-exports nm -gU "$L"
+          step lib-deps otool -L "$L"
+          step lib-load otool -l "$L"
+          step lib-arch lipo -info "$L"
+          step lib-build vtool -show-build "$L"
+          step lib-file file "$L"
+          step validate-exports python3 tools/validate_exports.py --format nm --tool nm --forbid-import __cxa_atexit "$L" || fail=1
+          step validate-identity python3 tools/validate_build_identity.py "$L" || fail=1
+          step check-apple python3 tools/llama_cpp_patches.py check-apple --dir "$O/staging/ios-sim-x86_64" || fail=1
+          strings "$L" | grep '^llamadart-native-build/1;' > "$O/identity.txt"
+          cat "$O/identity.txt"
+          # headers
+          H="$O/staging/headers"; mkdir -p "$H/libllamadart"
+          cp src/llama_dart_wrapper.h "$H/libllamadart/"
+          for rel in include ggml/include tools/mtmd; do
+            mkdir -p "$H/llama_cpp/$rel"
+            for f in third_party/llama.cpp/$rel/*.h third_party/llama.cpp/$rel/*.hpp; do [ -f "$f" ] && cp "$f" "$H/llama_cpp/$rel/"; done
+          done
+          (cd "$H" && find . -type f | sort | xargs shasum -a 256) > "$O/headers.sha256"
+          wc -l < "$O/headers.sha256" | tee "$O/header-count.txt"
+          grep -q 'LLAMADART_CONTEXT_HAS_MOE_CPU_SHARE:INTERNAL=1' build/CMakeCache.txt && grep -q 'LLAMADART_MTMD_AUDIO_HAS_TEMP:INTERNAL=1' build/CMakeCache.txt && echo macros-ok >> "$O/results.txt" || { echo macros-missing >> "$O/results.txt"; fail=1; }
+          # canary
+          SDK="$(xcrun --sdk iphonesimulator --show-sdk-path)"
+          CXX="$(xcrun --sdk iphonesimulator --find clang++)"
+          "$CXX" --version > "$O/logs/clangxx-version.out"
+          cp tests/upstream_abi_test.cpp "$O/source-inspected.cpp"
+          step canary-compile "$CXX" -target x86_64-apple-ios16.4-simulator -isysroot "$SDK" -std=c++17 -UNDEBUG \
+            -DLLAMADART_CONTEXT_HAS_MOE_CPU_SHARE=1 -DLLAMADART_MTMD_AUDIO_HAS_TEMP=1 \
+            -I "$H/libllamadart" -I "$H/llama_cpp/include" -I "$H/llama_cpp/ggml/include" -I "$H/llama_cpp/tools/mtmd" \
+            -include qa/abi-offset-supplement.hpp tests/upstream_abi_test.cpp "$L" -Wl,-rpath,"$O/staging/ios-sim-x86_64" -o "$O/upstream_abi_test" || exit 1
+          step exe-arch lipo -info "$O/upstream_abi_test"
+          step exe-build vtool -show-build "$O/upstream_abi_test"
+          step exe-deps otool -L "$O/upstream_abi_test"
+          # simulator
+          xcrun simctl list runtimes -j > "$O/runtimes.json"
+          read -r RT DT RTV < <(python3 - "$O/runtimes.json" <<'PY'
+          import json, sys
+          rs = [r for r in json.load(open(sys.argv[1]))["runtimes"] if r["isAvailable"] and r["platform"] == "iOS" and "x86_64" in r.get("supportedArchitectures", [])]
+          r = max(rs, key=lambda r: [int(n) for n in r["version"].split(".")])
+          d = next(d for d in r["supportedDeviceTypes"] if d["productFamily"] == "iPhone")
+          print(r["identifier"], d["identifier"], r["version"])
+          PY
+          )
+          echo "runtime=$RT device_type=$DT version=$RTV" | tee -a "$O/results.txt"
+          [ -n "$RT" ] || exit 1
+          UDID="$(xcrun simctl create qa-x64 "$DT" "$RT")"; echo "$UDID" > "$O/udid.txt"
+          xcrun simctl boot "$UDID"; xcrun simctl bootstatus "$UDID" -b > "$O/logs/bootstatus.out" 2>&1
+          xcrun simctl list devices -j > "$O/devices.json"
+          RTROOT="$(xcrun simctl getenv "$UDID" IPHONE_SIMULATOR_ROOT 2>/dev/null)"; echo "root=$RTROOT" >> "$O/results.txt"
+          for f in usr/lib/dyld_sim bin/launchctl; do lipo -info "$RTROOT/$f" 2>&1 | tee -a "$O/runtime-arch.txt"; done
+          start=$(date +%s)
+          SIMCTL_CHILD_DYLD_PRINT_LIBRARIES=1 timeout 60 xcrun simctl spawn "$UDID" "$O/upstream_abi_test" >"$O/logs/canary.out" 2>"$O/logs/canary.err"; rc=$?
+          echo "canary rc=$rc seconds=$(( $(date +%s) - start ))" | tee -a "$O/results.txt"
+          cat "$O/logs/canary.out"
+          grep -c libllamadart "$O/logs/canary.err" || true
+          xcrun simctl shutdown "$UDID" || true
+          (cd "$O" && find . -type f \( -name 'libllamadart.dylib' -o -name upstream_abi_test \) | xargs shasum -a 256) > "$O/binary-hashes.txt"
+          [ "$rc" = 0 ] && [ "$fail" = 0 ]
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: ios-sim-x64-abi
+          path: out/
+          if-no-files-found: warn
