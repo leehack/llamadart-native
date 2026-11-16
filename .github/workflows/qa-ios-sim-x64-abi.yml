@@ -12,18 +12,18 @@ jobs:
       - uses: actions/checkout@v7
         with:
           submodules: recursive
+          fetch-depth: 2
           persist-credentials: false
       - name: Run
         shell: bash
         run: |
-          set -uo pipefail
+          set +e; set -u -o pipefail
           O="$PWD/out"; mkdir -p "$O/logs" "$O/staging/ios-sim-x86_64"
           HEAD=817e3c270130b8e33906cd2c095510911d8b0c01
           UP=b1b770d90d94cad9e9ea5b993bdbc383a522fb28
           fail=0
           step() { local n="$1"; shift; echo "== $n"; "$@" >"$O/logs/$n.out" 2>"$O/logs/$n.err"; local rc=$?; echo "$n rc=$rc" | tee -a "$O/results.txt"; return $rc; }
           { uname -a; uname -m; sw_vers; sysctl -n machdep.cpu.brand_string; sysctl -n hw.optional.arm64 || true; xcodebuild -version; xcrun --sdk iphonesimulator --show-sdk-version; cmake --version; ninja --version; git rev-parse HEAD; git -C third_party/llama.cpp rev-parse HEAD; } > "$O/host.txt" 2>&1
-          [ "$(git rev-parse HEAD)" = "$HEAD" ] || { echo "workflow commit differs from frozen head (expected: workflow commit is child of head)"; }
           git diff --stat "$HEAD" HEAD > "$O/diff-vs-frozen-head.txt"
           [ "$(git rev-parse HEAD^)" = "$HEAD" ] && echo "parent==frozen head" >> "$O/results.txt"
           git diff --name-status "$HEAD" HEAD >> "$O/results.txt"
