@@ -12,7 +12,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           submodules: recursive
-          fetch-depth: 2
+          fetch-depth: 0
           persist-credentials: false
       - name: Run
         shell: bash
@@ -25,15 +25,20 @@ jobs:
           step() { local n="$1"; shift; echo "== $n"; "$@" >"$O/logs/$n.out" 2>"$O/logs/$n.err"; local rc=$?; echo "$n rc=$rc" | tee -a "$O/results.txt"; return $rc; }
           { uname -a; uname -m; sw_vers; sysctl -n machdep.cpu.brand_string; sysctl -n hw.optional.arm64 || true; xcodebuild -version; xcrun --sdk iphonesimulator --show-sdk-version; cmake --version; ninja --version; git rev-parse HEAD; git -C third_party/llama.cpp rev-parse HEAD; } > "$O/host.txt" 2>&1
           git diff --stat "$HEAD" HEAD > "$O/diff-vs-frozen-head.txt"
-          [ "$(git rev-parse HEAD^)" = "$HEAD" ] && echo "parent==frozen head" >> "$O/results.txt"
-          git diff --name-status "$HEAD" HEAD >> "$O/results.txt"
+          git cat-file -e "$HEAD^{commit}" && echo "frozen head present" >> "$O/results.txt"
+          git diff --name-status "$HEAD" HEAD | tee "$O/diff-name-status.txt" >> "$O/results.txt"
+          if [ "$(git diff --name-only "$HEAD" HEAD | sort)" = "$(printf '%s\n' .github/workflows/qa-ios-sim-x64-abi.yml qa/abi-offset-supplement.hpp | sort)" ]; then
+            echo "parent-diff=ok (only workflow + supplement)" | tee -a "$O/results.txt"
+          else
+            echo "parent-diff=UNEXPECTED" | tee -a "$O/results.txt"; fail=1
+          fi
           # build
           step configure cmake --preset ios-sim-x86_64-full -B build -DFETCHCONTENT_FULLY_DISCONNECTED=ON || exit 1
           cp build/CMakeCache.txt "$O/effective-cache.txt"
           step build cmake --build build --parallel 3 || exit 1
           L="$O/staging/ios-sim-x86_64/libllamadart.dylib"
           cp "$(find build -name '*.dylib' | tee "$O/dylibs.txt" | head -1)" "$L"
-          [ "$(wc -l < "$O/dylibs.txt")" = 1 ] || { echo "multiple dylibs"; fail=1; }
+          [ "$(wc -l < "$O/dylibs.txt" | tr -d ' ')" = 1 ] || { echo "multiple dylibs"; fail=1; }
           step lib-exports nm -gU "$L"
           step lib-deps otool -L "$L"
           step lib-load otool -l "$L"
@@ -85,7 +90,8 @@ jobs:
           RTROOT="$(xcrun simctl getenv "$UDID" IPHONE_SIMULATOR_ROOT 2>/dev/null)"; echo "root=$RTROOT" >> "$O/results.txt"
           for f in usr/lib/dyld_sim bin/launchctl; do lipo -info "$RTROOT/$f" 2>&1 | tee -a "$O/runtime-arch.txt"; done
           start=$(date +%s)
-          SIMCTL_CHILD_DYLD_PRINT_LIBRARIES=1 timeout 60 xcrun simctl spawn "$UDID" "$O/upstream_abi_test" >"$O/logs/canary.out" 2>"$O/logs/canary.err"; rc=$?
+          SIMCTL_CHILD_DYLD_PRINT_LIBRARIES=1 perl -e 'alarm shift; exec @ARGV' 60 xcrun simctl spawn "$UDID" "$O/upstream_abi_test" >"$O/logs/canary.out" 2>"$O/logs/canary.err"; rc=$?
+          [ "$rc" = 142 ] && echo "canary timed out (SIGALRM)" | tee -a "$O/results.txt"
           echo "canary rc=$rc seconds=$(( $(date +%s) - start ))" | tee -a "$O/results.txt"
           cat "$O/logs/canary.out"
           grep -c libllamadart "$O/logs/canary.err" || true
