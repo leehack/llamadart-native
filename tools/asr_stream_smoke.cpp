@@ -331,7 +331,6 @@ int main(int argc, char **argv) {
   check(llama_dart_asr_stream_step(stream.get(), &finished) ==
             LLAMA_DART_ASR_STREAM_STATUS_INVALID_STATE,
         "a finished session stepped");
-  const double rss_clip = peak_rss_mb();
 
   // Reset, then five random chunkings give the same text.
   for (unsigned seed = 1; seed <= 5; ++seed) {
@@ -342,6 +341,8 @@ int main(int argc, char **argv) {
     check(random.text == fixed.text, "a random chunking changed the text");
   }
   std::printf("5 random chunkings and 5 resets: same transcript\n");
+  // After the model pages are all touched, so that lazy mapping is not growth.
+  const double rss_clip = peak_rss_mb();
 
   // The whole input pushed in one call keeps every step bounded: upstream
   // alone encodes such a backlog in one call (2.7 s for 297 s of LFM3-Audio).
