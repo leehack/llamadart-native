@@ -50,6 +50,17 @@
       ]
     },
     {
+      "file": "0007-fit-log-scope-static-state.patch",
+      "tracking": "https://github.com/leehack/llamadart/issues/2034",
+      "upstream": "https://github.com/ggml-org/llama.cpp/blob/b1b770d90d94cad9e9ea5b993bdbc383a522fb28/common/fit.cpp#L33-L58",
+      "android_markers": [
+        {"library": "libllama-common.so", "text": "llamadart fit log scope"}
+      ],
+      "apple_markers": [
+        {"library": "libllamadart.dylib", "text": "llamadart fit log scope"}
+      ]
+    },
+    {
       "file": "0008-arm-fp16-unhinted-f16-matmul-route.patch",
       "tracking": "https://github.com/leehack/llamadart-native/issues/192",
       "upstream": "https://github.com/ggml-org/llama.cpp/pull/31854",

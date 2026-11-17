@@ -532,6 +532,7 @@ jobs:
           llamadart_tts_sampler_test
           llamadart_mtmd_compat_test
           llamadart_image_token_limit_test
+          llamadart_fit_api_test
           llamadart_barrier_test
           llamadart_vulkan_device_info_test
           llamadart_exit_teardown_test
@@ -719,7 +720,7 @@ jobs:
       - name: Build the exit teardown test
         run: >-
           cmake --build ${{ matrix.build_dir }} --target
-          llamadart_owner_api_test llamadart_owner_reentrancy_test llamadart_exit_teardown_test llamadart_image_token_limit_test
+          llamadart_owner_api_test llamadart_owner_reentrancy_test llamadart_exit_teardown_test llamadart_image_token_limit_test llamadart_fit_api_test
           llamadart_build_identity_test llamadart_cancel_flag_test
           llamadart_f16_dot_accumulation_test
           llamadart_upstream_abi_test llamadart_mtmd_compat_test
@@ -733,7 +734,7 @@ jobs:
       # the Metal library, which takes most of a minute.
       - name: Run the exit teardown scenarios
         run: >-
-          ctest --test-dir ${{ matrix.build_dir }} -R "owner_|exit_teardown|image_token_limit|build_identity|cancel_flag|f16_dot_accumulation|f16_residual_kernels|upstream_abi|mtmd_compat"
+          ctest --test-dir ${{ matrix.build_dir }} -R "owner_|exit_teardown|image_token_limit|fit_api|build_identity|cancel_flag|f16_dot_accumulation|f16_residual_kernels|upstream_abi|mtmd_compat"
           --timeout 300 --output-on-failure
       # Apple CPUs have FHM, so the shipped build takes the FMLAL branch of
       # patch 0005. ARMv8.2-A with FP16 compiles its conversion branch, as on

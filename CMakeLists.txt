@@ -223,6 +223,29 @@ unset(LLAMADART_SPECULATIVE_HAS_BATCH_STATE CACHE)
 llamadart_probe_declaration(LLAMADART_SPECULATIVE_HAS_BATCH_STATE
     "#include <common.h>
 int main() { return sizeof(decltype(&common_batch::set_embd_state)) == 0; }")
+# common_fit_params and common_get_device_memory_data take a list of model
+# paths, and the latter reports the skipped layers, from v1.0.0 on; v0.8.0 and
+# v0.9.0 take a single path.
+unset(LLAMADART_FIT_HAS_PATH_LIST CACHE)
+llamadart_probe_declaration(LLAMADART_FIT_HAS_PATH_LIST
+    "#include <fit.h>
+int main() {
+  common_params_fit_status (*fit)(const std::vector<std::string> &,
+      llama_model_params *, llama_context_params *, float *,
+      llama_model_tensor_buft_override *, size_t *, uint32_t,
+      const common_fit_extra_model *, ggml_log_level) = &common_fit_params;
+  return fit == nullptr;
+}")
+unset(LLAMADART_FIT_HAS_NGL_SKIP CACHE)
+llamadart_probe_declaration(LLAMADART_FIT_HAS_NGL_SKIP
+    "#include <fit.h>
+int main() {
+  common_device_memory_data_vec (*measure)(const std::vector<std::string> &,
+      const llama_model_params *, const llama_context_params *,
+      std::vector<ggml_backend_dev_t> &, uint32_t &, uint32_t &, uint32_t &,
+      uint32_t &, ggml_log_level) = &common_get_device_memory_data;
+  return measure == nullptr;
+}")
 unset(LLAMADART_MTMD_HAS_LFM3A_GEN CACHE)
 llamadart_probe_declaration(LLAMADART_MTMD_HAS_LFM3A_GEN
     "#include <chat.h>
@@ -302,6 +325,8 @@ if (MSVC)
     target_compile_options(llamadart_lib PRIVATE /EHsc-)
 endif()
 target_compile_definitions(llamadart_lib PRIVATE
+    LLAMADART_FIT_HAS_PATH_LIST=$<BOOL:${LLAMADART_FIT_HAS_PATH_LIST}>
+    LLAMADART_FIT_HAS_NGL_SKIP=$<BOOL:${LLAMADART_FIT_HAS_NGL_SKIP}>
     LLAMADART_HAS_BATCH_EXT=$<BOOL:${LLAMADART_HAS_BATCH_EXT}>
     LLAMADART_CONTEXT_HAS_MOE_CACHE=$<BOOL:${LLAMADART_CONTEXT_HAS_MOE_CACHE}>
     LLAMADART_MTMD_HELPER_HAS_EMBD_BATCH=$<BOOL:${LLAMADART_MTMD_HELPER_HAS_EMBD_BATCH}>
@@ -495,6 +520,21 @@ if (LLAMADART_BUILD_TESTS)
     target_link_libraries(llamadart_image_token_limit_test PRIVATE llamadart_lib ggml-base)
     add_test(NAME llamadart_image_token_limit_test COMMAND llamadart_image_token_limit_test)
 
+    add_executable(llamadart_fit_api_test tests/fit_api_test.cpp)
+    target_compile_features(llamadart_fit_api_test PRIVATE cxx_std_17)
+    target_include_directories(llamadart_fit_api_test PRIVATE
+        src third_party/llama.cpp/include third_party/llama.cpp/ggml/include)
+    target_link_libraries(llamadart_fit_api_test PRIVATE llamadart_lib Threads::Threads)
+    if (GGML_BACKEND_DL AND NOT APPLE)
+        target_compile_definitions(llamadart_fit_api_test PRIVATE
+            LLAMADART_TEST_CPU_BACKEND="$<TARGET_FILE:ggml-cpu>")
+        add_dependencies(llamadart_fit_api_test ggml-cpu)
+    endif()
+    target_compile_definitions(llamadart_fit_api_test PRIVATE
+        LLAMADART_FIT_HAS_NGL_SKIP=$<BOOL:${LLAMADART_FIT_HAS_NGL_SKIP}>)
+    add_test(NAME llamadart_fit_api_test COMMAND llamadart_fit_api_test)
+    set_tests_properties(llamadart_fit_api_test PROPERTIES TIMEOUT 300)
+
     add_executable(llamadart_mtmd_compat_test tests/mtmd_compat_test.cpp)
     target_compile_features(llamadart_mtmd_compat_test PRIVATE cxx_std_17)
     target_include_directories(llamadart_mtmd_compat_test PRIVATE src)
@@ -620,7 +660,7 @@ if (LLAMADART_BUILD_TESTS)
         foreach(scenario model-idle model-dispose model-sync model-wrappers
                 model-order model-session model-session-untracked model-embedding-toggle
                 model-freed model-decode-wait model-mtmd-wait model-decode
-                model-late-load model-load model-load-wait
+                model-late-load model-load model-load-wait model-fit-wait
                 model-free-in-flight)
             add_test(NAME llamadart_exit_teardown_${scenario}
                 COMMAND llamadart_exit_teardown_test ${scenario}
@@ -769,7 +809,8 @@ if (LLAMADART_BUILD_TESTS)
             llamadart_tts_eval_test llamadart_tts_seed_test llamadart_tts_sampler_test
             llamadart_exit_teardown_test
             llamadart_mtmd_compat_test
-            llamadart_vulkan_device_info_test llamadart_barrier_test llamadart_image_token_limit_test)
+            llamadart_vulkan_device_info_test llamadart_barrier_test llamadart_image_token_limit_test
+            llamadart_fit_api_test)
         if (MSVC)
             target_compile_options(${test_target} PRIVATE /UNDEBUG)
         else()

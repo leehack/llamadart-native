@@ -540,6 +540,102 @@ LLAMADART_API struct llama_context * llama_dart_init_from_model(
 LLAMADART_API int32_t llama_dart_mtmd_supports_image_token_limit(
     const char * mmproj_fname, int32_t max_tokens);
 
+// GPU memory fit, API v1. Wraps llama.cpp's common_fit_params, which is not
+// part of libllama's C API, and measures what the fitted parameters need per
+// device. Bindings must check llama_dart_fit_api_version() before use.
+#define LLAMA_DART_FIT_MAX_DEVICES 16
+
+enum llama_dart_fit_status {
+    // The parameters are projected to fit, and may be unchanged. A fit that
+    // leaves nothing on the GPU is a success with n_gpu_layers == 0.
+    LLAMA_DART_FIT_STATUS_SUCCESS = 0,
+    // No fitting allocation exists, or the parameters need a change that is
+    // not allowed: n_gpu_layers was set, or the parameters ask for a tensor
+    // or row split. Parameters that already fit are never refused. On a host
+    // without a GPU device a margin above total memory is also a failure.
+    // mparams and cparams are left as they were; the tensor_split and
+    // tensor_buft_overrides buffers are unspecified.
+    LLAMA_DART_FIT_STATUS_FAILURE = 1,
+    // A hard error, such as a model that cannot be read.
+    LLAMA_DART_FIT_STATUS_ERROR = 2,
+};
+
+// Memory of one device, or of the host, at the fitted parameters. The host
+// entry is named "Host" and has the total and free memory of the CPU device.
+struct llama_dart_fit_device {
+    char name[64];
+    int64_t total_bytes;
+    int64_t free_bytes;
+    uint64_t model_bytes;
+    uint64_t context_bytes;
+    uint64_t compute_bytes;
+};
+
+struct llama_dart_fit_report {
+    // Entries of devices in use: every non-CPU device of the model, also one
+    // that holds nothing at the fitted parameters; at most
+    // LLAMA_DART_FIT_MAX_DEVICES.
+    uint32_t n_devices;
+    // Repeating layers, as llama_model_n_layer: the output layer and the
+    // NextN/MTP layers are not counted.
+    uint32_t n_layers;
+    uint32_t n_ctx_train;
+    // NextN/MTP layers that the loader counts in n_gpu_layers but n_layers
+    // leaves out; 0 before v1.0.0 and for a model without them. A fit that
+    // changes n_gpu_layers sets it on the loader's scale, so all of the model
+    // is offloaded exactly when
+    // n_gpu_layers >= n_layers + n_layers_skipped + 1.
+    uint32_t n_layers_skipped;
+    struct llama_dart_fit_device devices[LLAMA_DART_FIT_MAX_DEVICES];
+    struct llama_dart_fit_device host;
+};
+
+// Returns 1.
+LLAMADART_API uint32_t llama_dart_fit_api_version(void);
+
+// Fits mparams and cparams to the free memory of the GPU devices, measuring
+// with no_alloc loads of path_model, and returns a llama_dart_fit_status, or
+// LLAMA_DART_STATUS_EXCEPTION after a caught exception or for a null argument
+// (llama_dart_last_error describes it). It is a call in flight that tracks
+// what it creates: it blocks after teardown, and teardown waits for it.
+//
+// Only parameters that have their llama_model_default_params value change
+// (n_gpu_layers must be -1), and n_ctx changes only when it is 0, down to
+// n_ctx_min; pass UINT32_MAX to keep the context. On success mparams has
+// n_gpu_layers, tensor_split and tensor_buft_overrides set when the load
+// needed a change, and cparams n_ctx. A GPU load that offloads nothing
+// returns with n_gpu_layers == 0. A load that fits as it is leaves
+// n_gpu_layers at -1 and mparams pointing where it did. On a host without a
+// GPU device a context of 0 comes back as the trained context size.
+//
+// tensor_split needs llama_max_devices() elements, tensor_buft_overrides
+// llama_max_tensor_buft_overrides(), and margins llama_max_devices() elements
+// of bytes to leave free per device. When the fit changed the load, mparams
+// points into the caller's tensor_split and tensor_buft_overrides, which must
+// outlive the model load that uses mparams. The override patterns they point
+// at are static storage inside llama-common that stays valid while the library
+// is loaded and must not be freed. report is filled on success and may be NULL.
+//
+// Fits are serialized with each other and with llama_dart_set_log_level, which
+// a log callback must therefore not call: it would wait for the fit that is
+// running it. llama.cpp swaps the global log callback while it measures;
+// the carried llama.cpp patch 0007 keeps that state in static storage, so a
+// thread that logs meanwhile reaches the original callback, and lowers only
+// the fit's own log lines. llama_log_set itself is not atomic: a thread that
+// logs in the instant the callback is installed or restored, or that calls
+// llama_log_set, still races with it.
+//
+// Teardown cannot cancel a fit, and waits for one that is running.
+LLAMADART_API int32_t llama_dart_fit_params(
+    const char * path_model,
+    struct llama_model_params * mparams,
+    struct llama_context_params * cparams,
+    float * tensor_split,
+    struct llama_model_tensor_buft_override * tensor_buft_overrides,
+    const size_t * margins,
+    uint32_t n_ctx_min,
+    struct llama_dart_fit_report * report);
+
 // mtmd_init_from_file that tracks the context in the MODEL_USER stage. Free it
 // with llama_dart_exit_free. Blocks after teardown.
 LLAMADART_API struct mtmd_context * llama_dart_mtmd_init_from_file(

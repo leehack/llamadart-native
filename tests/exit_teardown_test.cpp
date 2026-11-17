@@ -2000,6 +2000,47 @@ int test_model_load_wait(const char *path) {
   return 0;
 }
 
+// Teardown waits for a GPU memory fit in flight. The fit loads and frees
+// models itself, so nothing is tracked while it runs.
+int test_model_fit_wait(const char *path) {
+  init_backends();
+  static std::atomic<bool> fitting{false};
+  static std::atomic<bool> held{false};
+  static const char *model_path = nullptr;
+  model_path = path;
+  // The fit forwards what llama.cpp logs while it measures to the callback
+  // that was set before it.
+  llama_log_set(
+      [](ggml_log_level, const char *, void *) {
+        if (!fitting.exchange(true)) {
+          sleep_ms(400);
+          held.store(true);
+        }
+      },
+      nullptr);
+  std::thread([] {
+    auto model_params = llama_model_default_params();
+    auto context_params = llama_context_default_params();
+    std::vector<float> split(llama_max_devices(), 0.0f);
+    std::vector<llama_model_tensor_buft_override> overrides(
+        llama_max_tensor_buft_overrides());
+    std::vector<size_t> margins(llama_max_devices(), 0);
+    llama_dart_fit_params(model_path, &model_params, &context_params,
+                          split.data(), overrides.data(), margins.data(),
+                          UINT32_MAX, nullptr);
+  }).detach();
+  while (!fitting.load()) {
+    sleep_ms(1);
+  }
+  llama_dart_exit_set_wait_ms(30000);
+  const auto started = std::chrono::steady_clock::now();
+  llama_dart_exit_teardown();
+  assert(held.load());
+  assert(elapsed_ms(started) < 20000);
+  assert(llama_dart_exit_tracked_count() == 0);
+  return 0;
+}
+
 std::atomic<bool> g_free_started{false};
 std::atomic<bool> g_free_finished{false};
 
@@ -3128,6 +3169,9 @@ int main(int argc, char **argv) {
     }
     if (scenario == "model-load-wait") {
       return test_model_load_wait(first);
+    }
+    if (scenario == "model-fit-wait") {
+      return test_model_fit_wait(first);
     }
     if (scenario == "model-free-in-flight") {
       return test_model_free_in_flight(first);
