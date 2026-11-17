@@ -150,4 +150,18 @@ files as in [lfm3_support.md](lfm3_support.md) and the plan's Voxtral
 at `0b0f7ac9` (`Voxtral-Mini-4B-Realtime-2602-Q4_K_M.gguf`,
 `mmproj-Voxtral-Mini-4B-Realtime-2602-Q8_0.gguf`):
 
-RESULTS_TABLE
+| | LFM3-Audio-2B Q4_K_M (`PROMPTED_CHUNKS`) | Voxtral-Mini-4B-Realtime Q4_K_M (`TOKEN_DELAY`) |
+| --- | --- | --- |
+| 11 s clip, real-time factor (warm) | 0.09 | 0.61 (the first run pages the model in) |
+| Longest step, 11 s clip | 133 ms | 686 ms |
+| 297 s in one `push`: real-time factor, longest step | 0.09, 154 ms | 0.68, 519 ms (the context holds 324 s) |
+| Peak memory, 11 s run to 297 s run | 2560 to 2626 MB | 6609 to 6609 MB |
+| Segment breaks, 44 s of input | 1 (sentence intact 3 of 4 times) | 0 (4 of 4) |
+| `CONTEXT_FULL` in a 512-token context | not bounded by the context | after 474 tokens, text kept |
+
+Without the metering, one upstream step for 297 s of LFM3-Audio took 2.7 to 3 s
+and peak memory reached 5 GB (the smoke fails its bound at 2960 ms when the
+queue hands upstream everything). The LFM3-Audio transcript of the generic CPU
+build lacks the comma after "for you" that the arm64-native probe build has;
+the smoke compares without punctuation. The Voxtral bound is `--max-step-ms
+1000`: its decode of one step on a CPU is about 0.5 s.
