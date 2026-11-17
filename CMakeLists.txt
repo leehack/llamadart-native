@@ -298,6 +298,7 @@ add_library(llamadart_lib SHARED
     "src/llama_dart_wrapper.cpp"
     "src/llama_dart_build_identity.cpp"
     "src/llama_dart_image_token_limit.cpp"
+    "src/llama_dart_device_memory.cpp"
     "src/llama_dart_vulkan_device_info.cpp")
 include(cmake/build_identity.cmake)
 llamadart_add_build_identity(llamadart_lib)
@@ -574,6 +575,14 @@ if (LLAMADART_BUILD_TESTS)
     add_test(NAME llamadart_vulkan_device_info_test
         COMMAND llamadart_vulkan_device_info_test)
 
+    add_executable(llamadart_device_memory_test tests/device_memory_test.cpp)
+    target_compile_features(llamadart_device_memory_test PRIVATE cxx_std_17)
+    target_include_directories(llamadart_device_memory_test PRIVATE src)
+    if (WIN32)
+        target_link_libraries(llamadart_device_memory_test PRIVATE dxgi)
+    endif()
+    add_test(NAME llamadart_device_memory_test COMMAND llamadart_device_memory_test)
+
     add_executable(llamadart_cancel_flag_test tests/cancel_flag_test.cpp)
     target_compile_features(llamadart_cancel_flag_test PRIVATE cxx_std_17)
     target_link_libraries(llamadart_cancel_flag_test PRIVATE
@@ -819,7 +828,7 @@ if (LLAMADART_BUILD_TESTS)
             llamadart_exit_teardown_test
             llamadart_mtmd_compat_test
             llamadart_vulkan_device_info_test llamadart_barrier_test llamadart_image_token_limit_test
-            llamadart_fit_api_test)
+            llamadart_fit_api_test llamadart_device_memory_test)
         if (MSVC)
             target_compile_options(${test_target} PRIVATE /UNDEBUG)
         else()

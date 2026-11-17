@@ -1,6 +1,7 @@
 #include "llama_dart_wrapper.h"
 #include "llama_dart_barrier_internal.h"
 #include "llama_dart_cancel_eval_internal.h"
+#include "llama_dart_device_memory.h"
 #include "llama_dart_evaluate_internal.h"
 #include "llama_dart_image_token_limit_internal.h"
 #include "llama_dart_mtmd_compat.h"
@@ -1744,11 +1745,11 @@ static void llama_dart_fit_fill_report(const char *path_model,
     throw std::runtime_error("unexpected device memory breakdown");
   }
   const auto copy = [](const common_device_memory_data &from, const char *name,
-                       llama_dart_fit_device &to) {
+                       llama_dart_fit_device &to, size_t free_bytes) {
     to = {};
     std::strncpy(to.name, name, sizeof(to.name) - 1);
     to.total_bytes = from.total;
-    to.free_bytes = from.free;
+    to.free_bytes = free_bytes;
     to.model_bytes = from.model;
     to.context_bytes = from.context;
     to.compute_bytes = from.compute;
@@ -1760,9 +1761,10 @@ static void llama_dart_fit_fill_report(const char *path_model,
   report->n_devices = static_cast<uint32_t>(
       std::min<size_t>(devices.size(), LLAMA_DART_FIT_MAX_DEVICES));
   for (uint32_t i = 0; i < report->n_devices; ++i) {
-    copy(memory[i], ggml_backend_dev_name(devices[i]), report->devices[i]);
+    copy(memory[i], ggml_backend_dev_name(devices[i]), report->devices[i],
+         llama_dart_device_free_bytes(devices[i], memory[i].free, true));
   }
-  copy(memory.back(), "Host", report->host);
+  copy(memory.back(), "Host", report->host, memory.back().free);
 }
 
 LLAMADART_API int32_t llama_dart_fit_params(
@@ -1782,6 +1784,9 @@ LLAMADART_API int32_t llama_dart_fit_params(
     std::vector<size_t> fit_margins(margins, margins + llama_max_devices());
     llama_model_params fitted_model = *mparams;
     llama_context_params fitted_context = *cparams;
+    llama_dart_fit_apply_system_margins(path_model, fitted_model,
+                                        fit_margins.data(),
+                                        fit_margins.size());
     const common_params_fit_status status = common_fit_params(
         llama_dart_fit_model_path(path_model), &fitted_model, &fitted_context,
         tensor_split, tensor_buft_overrides, fit_margins.data(), n_ctx_min,
@@ -2148,6 +2153,7 @@ llama_dart_ggml_backend_dev_memory(ggml_backend_dev_t device, size_t *free,
   const bool read = llama_dart_barrier(false, [device, free, total] {
     llama_dart_exit_call call;
     ggml_backend_dev_memory(device, free, total);
+    *free = llama_dart_device_free_bytes(device, *free, false);
     return true;
   });
   if (!read) {
@@ -2163,6 +2169,8 @@ llama_dart_ggml_backend_dev_get_props(ggml_backend_dev_t device,
   const bool read = llama_dart_barrier(false, [device, props] {
     llama_dart_exit_call call;
     ggml_backend_dev_get_props(device, props);
+    props->memory_free =
+        llama_dart_device_free_bytes(device, props->memory_free, false);
     return true;
   });
   if (!read) {

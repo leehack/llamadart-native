@@ -565,6 +565,10 @@ enum llama_dart_fit_status {
 
 // Memory of one device, or of the host, at the fitted parameters. The host
 // entry is named "Host" and has the total and free memory of the CPU device.
+// On Windows, free_bytes of a Vulkan GPU is the smaller of what the driver
+// reports and what the display adapter has free for every process. The driver
+// reports a per-process budget, which does not deduct memory that other
+// processes hold.
 struct llama_dart_fit_device {
     char name[64];
     int64_t total_bytes;
@@ -627,6 +631,14 @@ LLAMADART_API uint32_t llama_dart_fit_api_version(void);
 // the fit's own log lines. llama_log_set itself is not atomic: a thread that
 // logs in the instant the callback is installed or restored, or that calls
 // llama_log_set, still races with it.
+//
+// On Windows the free memory of a Vulkan GPU is the smaller of the driver's
+// number and the display adapter's free dedicated memory for all processes
+// (D3DKMTQueryStatistics, found by the device's LUID), applied as extra margin.
+// A Vulkan GPU of the model whose adapter memory cannot be read fails the fit
+// with LLAMA_DART_STATUS_EXCEPTION: the fit never runs on the driver's number
+// alone there. It reads the model's device list with a vocabulary-only load
+// first. Elsewhere, and for other devices, nothing changes. The version stays 1.
 //
 // Teardown cannot cancel a fit, and waits for one that is running.
 LLAMADART_API int32_t llama_dart_fit_params(
@@ -928,7 +940,9 @@ LLAMADART_API ggml_backend_t llama_dart_ggml_backend_dev_init(
 
 // Both queries ask the backend again: ggml-vulkan lists the physical devices
 // each time. After a caught exception they return false and the outputs are
-// zero.
+// zero. On Windows the free memory of a Vulkan GPU is the smaller of the
+// driver's number and the adapter's free dedicated memory for all processes;
+// when that cannot be read, the driver's number is returned.
 LLAMADART_API bool llama_dart_ggml_backend_dev_memory(
     ggml_backend_dev_t device,
     size_t * free,

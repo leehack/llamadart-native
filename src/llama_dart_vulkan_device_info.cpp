@@ -8,6 +8,11 @@
 #define LLAMA_DART_VULKAN_PROBE 0
 #endif
 
+#include "llama_dart_device_memory.h"
+
+#include <cstdio>
+#include <cstring>
+
 #if LLAMA_DART_VULKAN_PROBE
 
 #include "llama_dart_vulkan_internal.h"
@@ -71,6 +76,29 @@ static const llama_dart_vulkan_devices &llama_dart_vulkan_probed() {
 }
 
 #endif
+
+bool llama_dart_vulkan_device_luid(int32_t index, char *name,
+                                   size_t name_size, uint8_t *luid,
+                                   bool *luid_valid) {
+#if LLAMA_DART_VULKAN_PROBE
+  const llama_dart_vulkan_devices &devices = llama_dart_vulkan_probed();
+  if (devices.status != LLAMA_DART_VULKAN_STATUS_OK || index < 0 ||
+      index >= devices.count || name_size == 0) {
+    return false;
+  }
+  snprintf(name, name_size, "%s", devices.devices[index].device_name);
+  memcpy(luid, devices.identities[index].luid, VK_LUID_SIZE);
+  *luid_valid = devices.identities[index].luid_valid;
+  return true;
+#else
+  (void)index;
+  (void)name;
+  (void)name_size;
+  (void)luid;
+  (void)luid_valid;
+  return false;
+#endif
+}
 
 extern "C" {
 

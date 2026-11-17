@@ -15,6 +15,13 @@
 #include <string>
 #include <vector>
 
+// What the public device info does not carry: the LUID that maps a device to
+// its Windows display adapter.
+struct llama_dart_vulkan_device_identity {
+  uint8_t luid[VK_LUID_SIZE] = {};
+  bool luid_valid = false;
+};
+
 // The devices that ggml-vulkan selects, in its order, as
 // llama_dart_vulkan_get_device_info reports them.
 struct llama_dart_vulkan_devices {
@@ -23,6 +30,7 @@ struct llama_dart_vulkan_devices {
   int32_t status = LLAMA_DART_VULKAN_STATUS_NO_LOADER;
   int32_t count = 0;
   llama_dart_vulkan_device_info devices[capacity] = {};
+  llama_dart_vulkan_device_identity identities[capacity] = {};
 };
 
 struct llama_dart_vulkan_candidate {
@@ -298,6 +306,10 @@ static inline void llama_dart_vulkan_probe(
       memcpy(info.device_name, candidate.properties.deviceName,
              sizeof(candidate.properties.deviceName));
       info.device_name[sizeof(info.device_name) - 1] = '\0';
+      llama_dart_vulkan_device_identity &identity =
+          result.identities[result.count - 1];
+      memcpy(identity.luid, candidate.luid, VK_LUID_SIZE);
+      identity.luid_valid = candidate.luid_valid;
     }
   }
 
