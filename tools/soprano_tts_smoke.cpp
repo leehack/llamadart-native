@@ -311,6 +311,14 @@ int main(int argc, char **argv) {
         return 1;
     }
 
+    // The utterance is decoded in one piece at the end, so there is nothing to
+    // stream; the refusal leaves the task usable.
+    if (llama_dart_tts_start_streaming(tts.get(), &request, nullptr) != LLAMA_DART_TTS_STATUS_UNSUPPORTED ||
+        llama_dart_tts_last_error(tts.get())[0] == '\0') {
+        std::fprintf(stderr, "a Soprano streamed start was not rejected\n");
+        return 1;
+    }
+
     if (llama_dart_tts_start(tts.get(), &request) != LLAMA_DART_TTS_STATUS_OK) {
         std::fprintf(stderr, "failed to start the cancel probe\n");
         return 1;

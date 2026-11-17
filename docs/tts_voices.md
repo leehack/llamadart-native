@@ -108,8 +108,9 @@ helper, each restarting from the voice; frames of every chunk count towards
 
 ## Not exposed
 
-- Streaming PCM and `mtmd_helper_gen_audio_flush`. Chatterbox's flow decode is
-  one-shot anyway.
+- Chatterbox streaming: its flow decode is one-shot, so
+  `llama_dart_tts_start_streaming` returns `UNSUPPORTED`. Pocket TTS streams,
+  see [tts_streaming.md](tts_streaming.md).
 - `mtmd_gen_audio_read_tensor`, `mtmd_gen_state_set_ref` and raw voice bitmaps:
   the helper calls them; callers name voices.
 - Chatterbox CFG strength (fixed at 0.5 upstream).

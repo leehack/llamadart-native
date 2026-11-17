@@ -535,7 +535,8 @@ cmake -S . -B build/tts-smoke -G Ninja \
   -DLLAMADART_BUILD_TTS_SMOKE=ON
 cmake --build build/tts-smoke --target \
   llamadart_speculative_api_test llamadart_tts_api_test \
-  llamadart_tts_types_test llamadart_tts_eval_test llamadart_mtmd_compat_test \
+  llamadart_tts_types_test llamadart_tts_stream_test llamadart_tts_eval_test \
+  llamadart_mtmd_compat_test \
   llamadart_tts_smoke llamadart_tts_lfm3_smoke llamadart_soprano_tts_smoke \
   llamadart_tts_voice_smoke
 ctest --test-dir build/tts-smoke --output-on-failure
@@ -551,6 +552,10 @@ The smoke checks capability metadata, cancellation/reset, two consecutive
 syntheses, 24 kHz mono PCM metadata, finite/non-silent output, and WAV writing.
 The same seed must repeat the first synthesis's PCM after the cancel probes,
 and with a greedy talker, seeds 1 and 2 must give different PCM.
+It also streams a long utterance: no samples before frame 72, then a 138,240
+sample window, earlier samples unchanged on re-read, and a final PCM equal to
+the plain task's; a plain task refuses both reads mid-generation, and a streamed
+cancel withdraws the PCM.
 It also checks the eval callback: uncancelled PCM stays byte-identical, frame
 steps stay whole, no chunk of the final decode exceeds a quarter of it, and a
 cancel issued a quarter of the way into a decode step, through
@@ -570,9 +575,8 @@ drive LFM3-Audio and LFM3-Omni speech output. Callers opt in by model type:
 names `LLAMA_DART_TTS_MODEL_TYPE_LFM3_AUDIO`. `llama_dart_tts_supported_model_types`
 reports whether the build has it. The wrapper renders `request.text` through the
 model's `tts` chat template with `request.language` and the voice of
-`llama_dart_tts_start_with_voice` (`female` or `male`). Output is complete PCM;
-speaker references, sequence continuation, text/audio interleaving and
-streaming are not exposed. Scope and upstream gaps:
+`llama_dart_tts_start_with_voice` (`female` or `male`). Speaker references,
+sequence continuation and text/audio interleaving are not exposed. Scope and upstream gaps:
 [docs/lfm3_support.md](docs/lfm3_support.md).
 
 ```bash
@@ -585,7 +589,7 @@ build/tts-smoke/llamadart_tts_lfm3_smoke \
 It checks that the Qwen3-only exports still refuse the model, the capability
 metadata, speaker-reference and voice rejection, cancel before and during
 generation, reuse after cancel, seed, voice and language effects, `max_frames`
-truncation, and that ASR through the generic mtmd input exports transcribes the
+truncation, streamed PCM equal to the plain PCM, and that ASR through the generic mtmd input exports transcribes the
 speech back to its text.
 
 ### Soprano
@@ -632,6 +636,13 @@ one by name; an unknown name is `INVALID_ARGUMENT`. Without a voice or a
 speaker reference the first voice speaks. Chatterbox Multilingual takes a
 language and a second sequence for classifier-free guidance. Rules, ABI delta
 and the qualified model files: [docs/tts_voices.md](docs/tts_voices.md).
+
+Qwen3-TTS, LFM3-Audio and Pocket TTS report
+`LLAMA_DART_TTS_CAPABILITY_STREAMING_PCM`: `llama_dart_tts_start_streaming`
+starts a task whose PCM `llama_dart_tts_read_pcm` returns while it generates,
+and that ends on the same PCM as `llama_dart_tts_start`. Soprano and Chatterbox
+return `UNSUPPORTED`. Contract, cadence and ABI delta:
+[docs/tts_streaming.md](docs/tts_streaming.md).
 
 ```bash
 build/tts-smoke/llamadart_tts_voice_smoke \

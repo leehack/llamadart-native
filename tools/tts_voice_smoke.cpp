@@ -1,6 +1,7 @@
 // Local check of the opt-in Chatterbox and Pocket TTS generators and their
 // predefined voices against real weights; see docs/tts_voices.md.
 #include "llama_dart_wrapper.h"
+#include "tts_stream_smoke_check.h"
 
 #include "llama.h"
 #include "mtmd.h"
@@ -301,6 +302,11 @@ int main(int argc, char **argv) {
         return die("invalid capability metadata");
     }
 
+    // Pocket TTS decodes as it generates, Chatterbox only at the end.
+    if (((info.capabilities & LLAMA_DART_TTS_CAPABILITY_STREAMING_PCM) != 0) == chatterbox) {
+        return die("invalid streamed PCM capability");
+    }
+
     // Callers that did not opt in keep seeing UNKNOWN.
     llama_dart_tts_info legacy{};
     legacy.struct_size = sizeof(legacy);
@@ -362,6 +368,7 @@ int main(int argc, char **argv) {
         return die("request validation failed");
     }
 
+    int streamed_frames_first_window = 0;
     llama_dart_tts_progress progress{};
     progress.struct_size = sizeof(progress);
     if (llama_dart_tts_start(tts.get(), &request) != LLAMA_DART_TTS_STATUS_OK) {
@@ -385,6 +392,37 @@ int main(int argc, char **argv) {
     // The task owns both sequences only while it runs.
     if (!sequence_empty(context.get(), 0) || !sequence_empty(context.get(), 2)) {
         return die("a completed task left its sequences in the context");
+    }
+
+    streamed_frames_first_window = 0;
+    if (chatterbox) {
+        // Refused before anything is touched, so the task runs a plain start.
+        if (llama_dart_tts_start_streaming(tts.get(), &request, nullptr) != LLAMA_DART_TTS_STATUS_UNSUPPORTED ||
+            llama_dart_tts_last_error(tts.get())[0] == '\0') {
+            return die("Chatterbox accepted a streamed start");
+        }
+        synthesis after_refusal;
+        if (!synthesize(tts.get(), request, nullptr, info.sample_rate, &after_refusal) ||
+            !same_pcm(first.pcm, after_refusal.pcm)) {
+            return die("a refused streamed start disturbed the next task");
+        }
+    } else {
+        tts_stream_smoke::expectation expected;
+        expected.first_frames = 8;
+        expected.first_samples = 15360;
+        tts_stream_smoke::streamed_run streamed;
+        if (!tts_stream_smoke::run_streamed(tts.get(), request, nullptr, info.sample_rate, expected,
+                                            &streamed)) {
+            return 1;
+        }
+        if (!same_pcm(streamed.pcm, first.pcm)) {
+            return die("the streamed PCM differs from the plain PCM of the same seed");
+        }
+        streamed_frames_first_window = streamed.first_frames;
+        if (!tts_stream_smoke::plain_task_hides_pcm(tts.get(), request, nullptr, 3) ||
+            !tts_stream_smoke::streamed_cancel(tts.get(), request, voices.back().c_str())) {
+            return 1;
+        }
     }
 
     int cancel_frames = -1;
@@ -487,11 +525,11 @@ int main(int argc, char **argv) {
     }
     std::printf("PASS type=%s backend=%s capabilities=0x%x voices=%zu first_voice=%s last_voice=%s "
                 "sample_rate=%d frames=%d samples=%zu rms=%.6f last_voice_frames=%d cloned_frames=%d "
-                "cancel_frames=%d\n",
+                "cancel_frames=%d streamed_first_window_frames=%d\n",
                 chatterbox ? (takes_language ? "chatterbox-multilingual" : "chatterbox-turbo") : "pocket-tts",
                 use_gpu ? "gpu" : "cpu", info.capabilities, voices.size(), voices.front().c_str(),
                 voices.back().c_str(), info.sample_rate, first.progress.frames_generated, first.pcm.size(),
                 finite_rms(first.pcm), other.progress.frames_generated, cloned.progress.frames_generated,
-                cancel_frames);
+                cancel_frames, streamed_frames_first_window);
     return 0;
 }
