@@ -504,6 +504,7 @@ jobs:
           -DGGML_OPENMP=OFF
           -DLLAMADART_BUILD_TESTS=ON
           -DLLAMADART_BUILD_TTS_SMOKE=ON
+          -DLLAMADART_BUILD_ASR_STREAM_SMOKE=ON
       # The Soprano tests take their expectation from this probe.
       - name: Check that the Soprano probe follows the checked-out llama.cpp
         run: |
@@ -527,6 +528,8 @@ jobs:
           llamadart_cancel_flag_test
           llamadart_tts_api_test
           llamadart_tts_types_test
+          llamadart_asr_stream_api_test
+          llamadart_asr_stream_meter_test
           llamadart_tts_stream_test
           llamadart_tts_eval_test
           llamadart_tts_seed_test
@@ -542,6 +545,7 @@ jobs:
           llamadart_tts_lfm3_smoke
           llamadart_soprano_tts_smoke
           llamadart_tts_voice_smoke
+          llamadart_asr_stream_smoke
       - name: Run wrapper contract tests
         run: ctest --test-dir build/wrapper-contract --output-on-failure
       - name: Check that the build identity is reproducible and follows its inputs
@@ -658,6 +662,8 @@ jobs:
           llamadart_device_memory_test
           llamadart_tts_api_test
           llamadart_tts_types_test
+          llamadart_asr_stream_api_test
+          llamadart_asr_stream_meter_test
           llamadart_tts_stream_test
           llamadart_image_token_limit_test
       - name: Run the barrier and Vulkan probe tests
@@ -666,7 +672,7 @@ jobs:
           $wrapperDir = (Resolve-Path build/wx64).Path
           $upstreamDir = (Resolve-Path build/wx64/bin).Path
           $env:PATH = "$wrapperDir;$upstreamDir;$env:PATH"
-          ctest --test-dir build/wx64 -R "owner_api|owner_reentrant|barrier|build_identity|upstream_abi|cancel_flag|vocabulary|vulkan_device_info|device_memory|tts_api|tts_types|tts_stream|image_token_limit" --timeout 120 --output-on-failure
+          ctest --test-dir build/wx64 -R "owner_api|owner_reentrant|barrier|build_identity|upstream_abi|cancel_flag|vocabulary|vulkan_device_info|device_memory|tts_api|tts_types|asr_stream|tts_stream|image_token_limit" --timeout 120 --output-on-failure
       - name: Validate wrapper exports
         shell: pwsh
         run: |
@@ -728,6 +734,7 @@ jobs:
           llamadart_build_identity_test llamadart_cancel_flag_test
           llamadart_f16_dot_accumulation_test
           llamadart_upstream_abi_test llamadart_mtmd_compat_test
+          llamadart_asr_stream_api_test llamadart_asr_stream_meter_test
       - name: Validate wrapper exports and the static destructor binding
         run: >-
           python3 tools/validate_exports.py --format nm --tool nm
@@ -738,7 +745,7 @@ jobs:
       # the Metal library, which takes most of a minute.
       - name: Run the exit teardown scenarios
         run: >-
-          ctest --test-dir ${{ matrix.build_dir }} -R "owner_|exit_teardown|image_token_limit|fit_api|device_memory|build_identity|cancel_flag|f16_dot_accumulation|f16_residual_kernels|upstream_abi|mtmd_compat"
+          ctest --test-dir ${{ matrix.build_dir }} -R "owner_|exit_teardown|image_token_limit|fit_api|device_memory|build_identity|cancel_flag|f16_dot_accumulation|f16_residual_kernels|upstream_abi|mtmd_compat|asr_stream"
           --timeout 300 --output-on-failure
       # Apple CPUs have FHM, so the shipped build takes the FMLAL branch of
       # patch 0005. ARMv8.2-A with FP16 compiles its conversion branch, as on
