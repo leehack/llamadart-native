@@ -45,11 +45,14 @@ with FP16 vector arithmetic they run `ggml_vec_dot_f16_f32` instead, 0.16 to
 0.6 of `v0.9.0` for F16 weights on Neoverse-N1. Patch 0008 returns an F16
 `GGML_OP_MUL_MAT` with F32 `src1` and no `src1` precision request (or
 `GGML_PREC_F16`) to the F16 route of `v0.9.0`: `src1` rounded to F16, so 0005
-and 0006 apply again. An explicit F32 or BF16 `src1` request and the `CONV_2D`
-matmuls keep upstream's F32 route. Patch 0009 does the same for an F16 K in the
+and 0006 apply again. An explicit F32, BF16, Q8 or Q4 `src1` request and the
+`CONV_2D`/`CONV_3D` matmuls keep upstream's F32 route. Patch 0009 does the same for an F16 K in the
 flash-attention one-chunk kernel. x86 and modules without FP16 vector
-arithmetic are unchanged. Results on ARM FP16 modules then differ from
-upstream's CPU reference by the query rounding that `v0.9.0` had. Evidence,
+arithmetic are unchanged; Windows arm64 builds with ClangCL (`_MSC_VER`) and
+keeps the regression. Results on ARM FP16 modules then differ from upstream's
+CPU reference by the query rounding that `v0.9.0` had: unhinted F16 matmul
+inputs above 65504 become `inf` and values below about 3e-8 flush to 0, the
+same as `v0.9.0` and new relative to upstream v1.0. Evidence,
 checks and gates:
 [native192_arm_fp16_f16_route.md](../../docs/native192_arm_fp16_f16_route.md).
 This exception does not extend eligibility to other patches.

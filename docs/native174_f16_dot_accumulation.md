@@ -126,9 +126,11 @@ with and without 0008 and 0009
 | M4 Max, macOS arm64, without | 0.25–0.28 | 0.72–0.83 | 0.74 | 0.74–0.89 / 0.79–0.90 |
 | M4 Max, macOS arm64, with | 0.98–1.01 | 0.98–0.99 | 1.00–1.01 | 0.91–0.95 / 0.87–0.90 |
 | Neoverse-N1, `linux_armv8.2_2`, without | 0.16 | 0.58–0.60 | 0.54 | 0.87 / 0.88–0.89 |
-| Neoverse-N1, `linux_armv8.2_2`, with | pending | pending | pending | pending |
+| Neoverse-N1, `linux_armv8.2_2`, with | 1.01 | 1.01 | 1.00 | 0.99 / 0.96 |
 
-The M4 Max rows are one agent's local runs on a shared host (3–5 rounds, a
+The Neoverse-N1 "with" row is the t2a run of the #193 library (32 cells, 0
+below 0.9; Qwen2.5-0.5B F16 and Q8_0, Nemotron; both modules). Matmul-bound
+cells are 0.99–1.07; FA-on depth-decode cells are 0.95–0.97. x86 (shipped AVX2 module, #188 candidate against `v0.9.0`, unchanged by #193): 20 cells, 0 below 0.9, worst 0.978. The M4 Max rows are one agent's local runs on a shared host (3–5 rounds, a
 claim rests on an effect repeated across runs). What stays below 0.97 with the
 patches is `7f24aacd`, the nonfinite V accumulator fix of
 [native #187](https://github.com/leehack/llamadart-native/issues/187).

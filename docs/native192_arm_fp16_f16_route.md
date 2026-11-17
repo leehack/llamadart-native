@@ -37,18 +37,24 @@ carries them.
 
 - The `dst->op == GGML_OP_MUL_MAT` guard matters: `CONV_2D` calls the matmul on
   a tensor without an op whose `src1` is the op's own work buffer, and an F16
-  route there gives inconsistent results on several threads.
+  route there gives inconsistent results on several threads. `CONV_3D` is
+  covered by the same guard but has no test.
 - An explicit `GGML_PREC_F32` or `GGML_PREC_BF16` request on `src1` is honored,
-  which `v0.9.0` ignored.
+  which `v0.9.0` ignored. Q8 and Q4 precision requests keep F32 too
+  (`llama_prec_policy` sets Q8 from GGUF metadata).
 - Not covered: `GGML_OP_MUL_MAT_ID` (F16 experts stay on upstream's route) and
   F16 `src0` with F16 `src1`.
 - The guard also puts the Android SVE2 module on its SVE `ggml_vec_dot_f16`
   again. That module was not built or run for this change.
-- x86 and modules without FP16 vector arithmetic are unchanged.
+- x86 and modules without FP16 vector arithmetic are unchanged. Windows arm64
+  builds with ClangCL (`_MSC_VER`), so it keeps upstream's throughput
+  regression.
 
 Numerics: ARM FP16 CPU graphs return to `v0.9.0` (query rounded to F16, 0005 and
 0006 live). They differ from upstream's CPU reference by that rounding until
-upstream ships its own gated path.
+upstream ships its own gated path. Consequences, the same as `v0.9.0` and new
+relative to upstream v1.0: on ARM FP16, unhinted F16 matmul inputs above 65504
+become `inf`, and values below about 3e-8 flush to 0.
 
 ## Remove when
 
@@ -68,6 +74,13 @@ rounds), ratio to `v0.9.0` with 0005/0006, Qwen2.5-0.5B:
 | + 0008 + 0009 | 0.98–1.01 | 0.98–0.99 | 1.00–1.01 | 0.91–0.95 / 0.87–0.90 |
 | Docker GCC 13.3 `armv8.2-a+dotprod+fp16`, + both | 1.00–1.04 | 1.03 | 1.01 | 0.97 / 0.91 |
 | Docker GCC 13.3 `armv8.6-a+...+i8mm` (no llamafile), + both | 1.00–1.04 | 1.01–1.06 | not run | 1.01 / 0.875 |
+
+Neoverse-N1 (t2a, #193 library, same ratios; 32 cells, 0 below 0.9, both
+modules): matmul-bound cells 0.99–1.07, FA-on depth-decode cells 0.95–0.97
+(upstream `7f24aacd`, as on M4 Max), Q8 tg128 FA-on on the armv82 module 0.967
+(identical-module null 0.976–1.022, so within noise).
+
+x86 (shipped AVX2 module, #188 candidate against `v0.9.0`; #193 does not change x86): 20 cells, 0 below 0.9, worst 0.978 (Qwen F16 FA-on depth decode), Qwen F16 pp512 1.12–1.13 and Nemotron 0.998–1.002; upstream v1.0 shows no regression there.
 
 The FA-on depth-decode loss that remains is upstream `7f24aacd` (the nonfinite
 V accumulator fix, [native #187](https://github.com/leehack/llamadart-native/issues/187)),
@@ -106,10 +119,14 @@ Each of these needs the PR head:
 
 - CI, independent audit (native kernel change), and the Android ISA audit for
   the changed `ggml-cpu.c` and `ops.cpp`.
-- t2a and c4a throughput: `cand/pub090` at 0.97 or more outside the FA-on
-  depth-decode cells.
+- c4a throughput: `cand/pub090` at 0.97 or more outside the FA-on
+  depth-decode cells (t2a done, above).
 - The test on every published CPU module, the Nemotron CPU-FA rows, ON_DEVICE CPU
-  rows, CPU smoke, the S24 and A53 C1 and S2 reruns with new APKs, a Qwen3-TTS
-  cancel-latency check and the FA-off cross-layout NMSE gate.
-- The throughput figures above are local M4 Max runs on a shared host, not N1,
-  V2, Android or x86 numbers.
+  rows, CPU smoke, a Qwen3-TTS cancel-latency check and the FA-off cross-layout
+  NMSE gate.
+- Done at head `a0d82e6`: the Android gate-1 rerun (C1 back on the `v0.9.0`
+  trajectories). CPU greedy ids are identical to `v0.9.0` on caiman, S24 and
+  A53; caiman Vulkan EQUAL 32/32 (C1 passes); S24 and A53 show only the Vulkan
+  defects already in `v0.9.0`.
+- The M4 Max figures are local runs on a shared host; N1 is t2a; V2, c4a and
+  Android throughput are not measured.
