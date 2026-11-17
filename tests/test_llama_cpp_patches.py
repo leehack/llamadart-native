@@ -381,7 +381,12 @@ class CarriedSeriesTests(unittest.TestCase):
                 ("0005-arm-f16-dot-f32-accumulation.patch",
                  "llamadart F16 dot F32 accumulation", "void ggml_vec_dot_f16("),
                 ("0006-arm-f16-gemm-f32-accumulation.patch",
-                 "llamadart F16 GEMM F32 accumulation", "        D Cv[RN][RM] = {};")):
+                 "llamadart F16 GEMM F32 accumulation", "        D Cv[RN][RM] = {};"),
+                ("0008-arm-fp16-unhinted-f16-matmul-route.patch",
+                 "llamadart F16 matmul route", "static void ggml_compute_forward_mul_mat_one_chunk("),
+                ("0009-arm-fp16-fa-kq-f16-dot.patch",
+                 "llamadart F16 K.Q route",
+                 "ggml_type         const k_vec_dot_type = ggml_get_type_traits_cpu(k->type)")):
             with self.subTest(patch=name):
                 self.check_exact_source_patch(name, marker, context)
 
@@ -465,7 +470,7 @@ class CarriedSeriesTests(unittest.TestCase):
                 [sys.executable, str(ROOT / "tools/llama_cpp_patches.py"),
                  "manifest", "--upstream", directory], capture_output=True, text=True)
         self.assertEqual(0, result.returncode, result.stderr)
-        self.assertEqual(["0001", "0002", "0004", "0005", "0006"],
+        self.assertEqual(["0001", "0002", "0004", "0005", "0006", "0008", "0009"],
                          [e["file"][:4] for e in json.loads(result.stdout)])
 
     @unittest.skipUnless((UPSTREAM / "CMakeLists.txt").is_file(),

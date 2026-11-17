@@ -1,0 +1,57 @@
+diff --git a/ggml/src/ggml-cpu/ggml-cpu.c b/ggml/src/ggml-cpu/ggml-cpu.c
+index a76af8487..ff30e9366 100644
+--- a/ggml/src/ggml-cpu/ggml-cpu.c
++++ b/ggml/src/ggml-cpu/ggml-cpu.c
+@@ -1172,4 +1172,20 @@ void ggml_set_f32_nd(const struct ggml_tensor * tensor, int i0, int i1, int i2,
+ // ggml_compute_forward_mul_mat
+ 
++// llamadart F16 x F16 matmul route: F16 weights with F32 activations that carry
++// no src1 precision request use the FP16 kernels, as before ggml-org/llama.cpp#31854.
++static inline bool ggml_mul_mat_src1_as_f16(const struct ggml_tensor * dst) {
++    GGML_ASSERT(dst->src[0]->type < GGML_TYPE_COUNT && "llamadart F16 matmul route");
++#if defined(__ARM_FEATURE_FP16_VECTOR_ARITHMETIC) && !defined(_MSC_VER)
++    const enum ggml_prec prec = ggml_prec_get_src(dst, 1);
++    // conv ops call mul_mat on a tensor without an op, with src1 in their own work buffer: those keep F32
++    return dst->op == GGML_OP_MUL_MAT &&
++           dst->src[0]->type == GGML_TYPE_F16 && dst->src[1]->type == GGML_TYPE_F32 &&
++           (prec == GGML_PREC_UNDEFINED || prec == GGML_PREC_F16);
++#else
++    (void) dst;
++    return false;
++#endif
++}
++
+ static void ggml_compute_forward_mul_mat_one_chunk(
+     const struct ggml_compute_params * params,
+@@ -1189,6 +1205,8 @@ static void ggml_compute_forward_mul_mat_one_chunk(
+     const bool src1_cont = ggml_is_contiguous(src1);
+ 
+-    ggml_vec_dot_t const vec_dot      = type_traits_cpu[type].vec_dot;
+-    enum ggml_type const vec_dot_type = type_traits_cpu[type].vec_dot_type;
++    const bool src1_as_f16 = ggml_mul_mat_src1_as_f16(dst);
++
++    ggml_vec_dot_t const vec_dot      = src1_as_f16 ? (ggml_vec_dot_t) ggml_vec_dot_f16 : type_traits_cpu[type].vec_dot;
++    enum ggml_type const vec_dot_type = src1_as_f16 ? GGML_TYPE_F16 : type_traits_cpu[type].vec_dot_type;
+ 
+     // broadcast factors
+@@ -1285,5 +1303,5 @@ void ggml_compute_forward_mul_mat(
+     const int nth = params->nth;
+ 
+-    enum ggml_type    const vec_dot_type     = type_traits_cpu[src0->type].vec_dot_type;
++    enum ggml_type    const vec_dot_type     = ggml_mul_mat_src1_as_f16(dst) ? GGML_TYPE_F16 : type_traits_cpu[src0->type].vec_dot_type;
+     ggml_from_float_t const from_float       = type_traits_cpu[vec_dot_type].from_float;
+     int64_t           const vec_dot_num_rows = type_traits_cpu[src0->type].nrows;
+@@ -1318,5 +1336,5 @@ void ggml_compute_forward_mul_mat(
+     const bool src1_cont = ggml_is_contiguous(src1);
+ 
+-    if (!params->use_ref && src1_cont) {
++    if (!params->use_ref && src1_cont && vec_dot_type == type_traits_cpu[src0->type].vec_dot_type) {
+         for (int64_t i13 = 0; i13 < ne13; i13++)
+             for (int64_t i12 = 0; i12 < ne12; i12++)
+@@ -2892,5 +2910,5 @@ struct ggml_cplan ggml_graph_plan(
+                 case GGML_OP_MUL_MAT:
+                     {
+-                        const enum ggml_type vec_dot_type = type_traits_cpu[node->src[0]->type].vec_dot_type;
++                        const enum ggml_type vec_dot_type = ggml_mul_mat_src1_as_f16(node) ? GGML_TYPE_F16 : type_traits_cpu[node->src[0]->type].vec_dot_type;
+                         if (node->src[1]->type != vec_dot_type) {
+                             cur = ggml_row_size(vec_dot_type, ggml_nelements(node->src[1]));

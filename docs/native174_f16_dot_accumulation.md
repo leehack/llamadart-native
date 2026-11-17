@@ -116,6 +116,23 @@ time, F16-weight pp512 at 0.44 of `v0.8.0-3` and a median TTS cancel latency
 of 65 ms. Blocks of 16 or 32 products per lane, instead of 64, gave pp512
 at 0.79 or 0.87.
 
+On `v1.0.0` (llama.cpp `b1b770d9`), which routes F16 weights through
+`ggml_vec_dot_f16_f32`, ratio to the same `v0.9.0` build with 0005 and 0006,
+with and without 0008 and 0009
+([native192_arm_fp16_f16_route.md](native192_arm_fp16_f16_route.md)):
+
+| Host, module | F16 pp512 | F16 tg128 | Q8_0 pp512, FA off | Q8_0 decode at depth, FA off / on |
+| --- | --- | --- | --- | --- |
+| M4 Max, macOS arm64, without | 0.25–0.28 | 0.72–0.83 | 0.74 | 0.74–0.89 / 0.79–0.90 |
+| M4 Max, macOS arm64, with | 0.98–1.01 | 0.98–0.99 | 1.00–1.01 | 0.91–0.95 / 0.87–0.90 |
+| Neoverse-N1, `linux_armv8.2_2`, without | 0.16 | 0.58–0.60 | 0.54 | 0.87 / 0.88–0.89 |
+| Neoverse-N1, `linux_armv8.2_2`, with | pending | pending | pending | pending |
+
+The M4 Max rows are one agent's local runs on a shared host (3–5 rounds, a
+claim rests on an effect repeated across runs). What stays below 0.97 with the
+patches is `7f24aacd`, the nonfinite V accumulator fix of
+[native #187](https://github.com/leehack/llamadart-native/issues/187).
+
 ## Checks
 
 - `llamadart_f16_dot_accumulation_test` (CTest, `validate_wrapper.yml`) runs
