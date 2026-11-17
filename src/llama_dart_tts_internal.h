@@ -31,6 +31,7 @@ struct llama_dart_tts {
   llama_seq_id cfg_sequence_id = -1;
   bool owns_sequence = false;
   bool paired_cfg = false;
+  bool stream = false;
   int32_t prompt_batch_size = 512;
   int32_t max_frames = 512;
   int32_t prompt_tokens_remaining = 0;

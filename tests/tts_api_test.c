@@ -92,6 +92,10 @@ int main(void) {
     assert(llama_dart_tts_start_with_voice(NULL, &request, NULL) == LLAMA_DART_TTS_STATUS_INVALID_ARGUMENT);
     assert(llama_dart_tts_start_with_voice(NULL, &request, "male") == LLAMA_DART_TTS_STATUS_INVALID_ARGUMENT);
 
+    assert(llama_dart_tts_start_streaming(NULL, &request, NULL) == LLAMA_DART_TTS_STATUS_INVALID_ARGUMENT);
+    assert(llama_dart_tts_start_streaming(NULL, &request, "male") == LLAMA_DART_TTS_STATUS_INVALID_ARGUMENT);
+    assert(LLAMA_DART_TTS_CAPABILITY_STREAMING_PCM == 8u);
+
     const uint32_t all_types = qwen3 | lfm3 | soprano | chatterbox | pocket;
     int32_t voice_count = -1;
     assert(llama_dart_tts_get_voice_count(NULL, all_types, &voice_count) == LLAMA_DART_TTS_STATUS_INVALID_ARGUMENT);

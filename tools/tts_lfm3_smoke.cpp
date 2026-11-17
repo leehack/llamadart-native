@@ -1,4 +1,5 @@
 #include "llama_dart_wrapper.h"
+#include "tts_stream_smoke_check.h"
 
 #include "llama.h"
 #include "mtmd.h"
@@ -239,7 +240,8 @@ int main(int argc, char **argv) {
     if (llama_dart_tts_get_info_ext(mtmd.get(), qwen3_bit | lfm3_bit, &info) != LLAMA_DART_TTS_STATUS_OK ||
         info.model_type != LLAMA_DART_TTS_MODEL_TYPE_LFM3_AUDIO || info.sample_rate <= 0 ||
         info.channels != 1 ||
-        info.capabilities != (LLAMA_DART_TTS_CAPABILITY_LANGUAGE | LLAMA_DART_TTS_CAPABILITY_VOICE)) {
+        info.capabilities != (LLAMA_DART_TTS_CAPABILITY_LANGUAGE | LLAMA_DART_TTS_CAPABILITY_VOICE |
+                              LLAMA_DART_TTS_CAPABILITY_STREAMING_PCM)) {
         std::fprintf(stderr, "invalid LFM3-Audio capability metadata\n");
         return 1;
     }
@@ -329,6 +331,23 @@ int main(int argc, char **argv) {
     }
     if (!same_pcm(first, repeat)) {
         std::fprintf(stderr, "the same seed and default voice did not repeat the PCM after cancel and reuse\n");
+        return 1;
+    }
+
+    // Streamed PCM comes out frame by frame and ends on the plain PCM.
+    tts_stream_smoke::expectation expected_stream;
+    expected_stream.first_frames = 1;
+    expected_stream.min_growth_steps = 10;
+    tts_stream_smoke::streamed_run streamed;
+    if (!tts_stream_smoke::run_streamed(tts.get(), request, nullptr, info.sample_rate, expected_stream, &streamed)) {
+        return 1;
+    }
+    if (!same_pcm(streamed.pcm, first)) {
+        std::fprintf(stderr, "the streamed PCM differs from the plain PCM of the same seed\n");
+        return 1;
+    }
+    if (!tts_stream_smoke::plain_task_hides_pcm(tts.get(), request, nullptr, 3) ||
+        !tts_stream_smoke::streamed_cancel(tts.get(), request, "male")) {
         return 1;
     }
 

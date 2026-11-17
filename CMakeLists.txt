@@ -489,6 +489,15 @@ if (LLAMADART_BUILD_TESTS)
     )
     add_test(NAME llamadart_asr_stream_meter_test COMMAND llamadart_asr_stream_meter_test)
 
+    add_executable(llamadart_tts_stream_test tests/tts_stream_test.cpp)
+    target_compile_features(llamadart_tts_stream_test PRIVATE cxx_std_17)
+    target_include_directories(llamadart_tts_stream_test PRIVATE
+        src
+        third_party/llama.cpp/include
+        third_party/llama.cpp/ggml/include
+    )
+    add_test(NAME llamadart_tts_stream_test COMMAND llamadart_tts_stream_test)
+
     add_executable(llamadart_upstream_abi_test tests/upstream_abi_test.cpp)
     target_compile_features(llamadart_upstream_abi_test PRIVATE cxx_std_17)
     target_compile_definitions(llamadart_upstream_abi_test PRIVATE
@@ -843,7 +852,7 @@ if (LLAMADART_BUILD_TESTS)
 
     # Contract assertions must execute against optimized Release libraries too.
     foreach(test_target llamadart_owner_api_test llamadart_owner_reentrancy_test llamadart_speculative_api_test llamadart_tts_api_test
-            llamadart_tts_types_test llamadart_asr_stream_api_test llamadart_asr_stream_meter_test
+            llamadart_tts_types_test llamadart_tts_stream_test llamadart_asr_stream_api_test llamadart_asr_stream_meter_test
             llamadart_build_identity_test llamadart_upstream_abi_test llamadart_cancel_flag_test
             llamadart_tts_eval_test llamadart_tts_seed_test llamadart_tts_sampler_test
             llamadart_exit_teardown_test

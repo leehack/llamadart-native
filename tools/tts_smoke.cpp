@@ -1,4 +1,5 @@
 #include "llama_dart_wrapper.h"
+#include "tts_stream_smoke_check.h"
 
 #include "llama.h"
 #include "mtmd.h"
@@ -535,6 +536,47 @@ int main(int argc, char **argv) {
         return 1;
     }
 
+    // Streamed PCM: the first window of 72 frames is 138,240 samples, and the
+    // streamed task ends on the PCM of a plain task with the same request.
+    if ((info.capabilities & LLAMA_DART_TTS_CAPABILITY_STREAMING_PCM) == 0) {
+        std::fprintf(stderr, "Qwen3-TTS does not report streamed PCM\n");
+        return 1;
+    }
+    std::vector<float> long_plain_pcm;
+    llama_dart_tts_progress long_plain_progress{};
+    double long_plain_rms = 0.0;
+    if (!synthesize(tts.get(), &long_request, info, &long_plain_pcm, &long_plain_progress, &long_plain_rms)) {
+        return 1;
+    }
+    tts_stream_smoke::expectation expected_window;
+    expected_window.first_frames = qwen3_window_frames;
+    expected_window.first_samples = 138240;
+    expected_window.min_growth_steps = 2;
+    tts_stream_smoke::streamed_run streamed;
+    if (!tts_stream_smoke::run_streamed(tts.get(), long_request, nullptr, info.sample_rate, expected_window,
+                                        &streamed)) {
+        return 1;
+    }
+    if (!same_pcm(streamed.pcm, long_plain_pcm)) {
+        std::fprintf(stderr, "the streamed PCM differs from the plain PCM of the same seed\n");
+        return 1;
+    }
+    if (!tts_stream_smoke::plain_task_hides_pcm(tts.get(), long_request, nullptr, 3)) {
+        return 1;
+    }
+    if (!tts_stream_smoke::streamed_cancel(tts.get(), long_request, nullptr)) {
+        return 1;
+    }
+    std::vector<float> after_cancel_pcm;
+    llama_dart_tts_progress after_cancel_progress{};
+    double after_cancel_rms = 0.0;
+    if (!synthesize(tts.get(), &long_request, info, &after_cancel_pcm, &after_cancel_progress,
+                    &after_cancel_rms) ||
+        !same_pcm(after_cancel_pcm, long_plain_pcm)) {
+        std::fprintf(stderr, "the seed did not repeat after a streamed cancel\n");
+        return 1;
+    }
+
     // A greedy talker leaves the seed only to the code predictor.
     llama_dart_tts_request greedy_request = request;
     greedy_request.temperature = 0.0f;
@@ -567,7 +609,8 @@ int main(int argc, char **argv) {
                 "final_cancel_ms=%.1f final_cancel_frames=%d "
                 "window_cancel_ms=%.1f window_cancel_frames=%d "
                 "lowered_final_ms=%.1f lowered_final_frames=%d "
-                "lowered_window_ms=%.1f lowered_window_frames=%d\n",
+                "lowered_window_ms=%.1f lowered_window_frames=%d "
+                "stream_growth_steps=%d stream_first_samples=%lld\n",
                 use_gpu ? "gpu" : "cpu", static_cast<int>(info.model_type),
                 info.sample_rate, first_pcm.size(),
                 second_pcm.size(), first_progress.frames_generated,
@@ -576,6 +619,7 @@ int main(int argc, char **argv) {
                 final_cancel_ms, final_cancel_frames,
                 window_cancel_ms, window_cancel_frames,
                 lowered_final_ms, lowered_final_frames,
-                lowered_window_ms, lowered_window_frames);
+                lowered_window_ms, lowered_window_frames, streamed.growth_steps,
+                static_cast<long long>(streamed.first_samples));
     return 0;
 }

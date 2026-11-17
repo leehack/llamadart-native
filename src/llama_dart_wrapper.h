@@ -84,6 +84,9 @@ enum llama_dart_tts_capability {
     LLAMA_DART_TTS_CAPABILITY_LANGUAGE = 1u << 0,
     LLAMA_DART_TTS_CAPABILITY_SPEAKER_REFERENCE = 1u << 1,
     LLAMA_DART_TTS_CAPABILITY_VOICE = 1u << 2,
+    // llama_dart_tts_start_streaming is accepted, see its contract. Set for
+    // Qwen3-TTS, LFM3-Audio and Pocket TTS.
+    LLAMA_DART_TTS_CAPABILITY_STREAMING_PCM = 1u << 3,
 };
 
 enum llama_dart_tts_state {
@@ -996,9 +999,10 @@ LLAMADART_API enum llama_dart_tts_status llama_dart_tts_start(
     struct llama_dart_tts * tts,
     const struct llama_dart_tts_request * request);
 
-// Performs one prompt batch or one generation-frame step. Upstream currently
-// exposes complete PCM only after generation ends; this is not chunked audio
-// streaming.
+// Performs one prompt batch or one generation-frame step. For a task started
+// with llama_dart_tts_start or llama_dart_tts_start_with_voice, upstream
+// exposes complete PCM only after generation ends. For a task started with
+// llama_dart_tts_start_streaming, a step may append decoded PCM, see there.
 LLAMADART_API enum llama_dart_tts_status llama_dart_tts_step(
     struct llama_dart_tts * tts,
     struct llama_dart_tts_progress * out_progress);
@@ -1033,12 +1037,22 @@ LLAMADART_API bool llama_dart_tts_eval_callback(
 LLAMADART_API enum llama_dart_tts_status llama_dart_tts_reset(
     struct llama_dart_tts * tts);
 
+// For a task started with llama_dart_tts_start_streaming this is also valid
+// while the task is in PROCESSING_PROMPT or GENERATING, with sample_count the
+// samples produced so far. Otherwise it is valid only in COMPLETED. It is
+// INVALID_STATE after CANCELLED, FAILED and llama_dart_tts_reset.
 LLAMADART_API enum llama_dart_tts_status llama_dart_tts_get_output_info(
     const struct llama_dart_tts * tts,
     struct llama_dart_tts_output_info * out_info);
 
 // Copies float32 mono PCM from the completed task. out_samples may be NULL to
-// query the number of samples remaining from sample_offset.
+// query the number of samples remaining from sample_offset. For a task started
+// with llama_dart_tts_start_streaming the PCM is also readable while the task
+// generates: it only grows, and samples already readable never change, so a
+// caller reads from the offset it last reached. Not readable in CANCELLED,
+// FAILED or after llama_dart_tts_reset (INVALID_STATE). Both reads run behind
+// the exit-teardown guard like every other llama_dart_tts_ call. As for every
+// task call, do not overlap them with llama_dart_tts_step on the same task.
 LLAMADART_API enum llama_dart_tts_status llama_dart_tts_read_pcm(
     const struct llama_dart_tts * tts,
     int64_t sample_offset,
@@ -1062,8 +1076,8 @@ LLAMADART_API const char * llama_dart_tts_last_error(
 // default, English) and the voice of llama_dart_tts_start_with_voice. It
 // rejects speaker references with UNSUPPORTED, samples audio codes with the
 // model's own GGUF settings (request top_k, top_p, min_p and temperature are
-// validated but unused), and returns complete PCM: no text/audio
-// interleaving, sequence continuation or streaming.
+// validated but unused). It has no text/audio interleaving or sequence
+// continuation, and streams PCM only through llama_dart_tts_start_streaming.
 //
 // SOPRANO (llamadart-native#123, a Qwen3 backbone with a Vocos decoder) has
 // no capability bits: llama_dart_tts_start returns UNSUPPORTED for a speaker
@@ -1081,7 +1095,8 @@ LLAMADART_API const char * llama_dart_tts_last_error(
 // LLAMA_DART_TTS_CAPABILITY_SPEAKER_REFERENCE, else UNSUPPORTED. With neither,
 // the first predefined voice speaks, as in upstream llama-tts; a Chatterbox
 // without predefined voices then returns INVALID_ARGUMENT, and Pocket TTS
-// speaks unconditioned. Both return complete PCM.
+// speaks unconditioned. Chatterbox returns complete PCM at the end of the task;
+// POCKET_TTS can stream, see llama_dart_tts_start_streaming.
 //
 // CHATTERBOX samples backbone tokens with the request's sampling settings;
 // request->seed seeds that sampler and the flow decoder. It decodes the whole
@@ -1128,6 +1143,22 @@ LLAMADART_API struct llama_dart_tts * llama_dart_tts_init_ext(
 // INVALID_ARGUMENT, never a fallback to the default. LFM3_AUDIO voices are
 // "female" (default) and "male".
 LLAMADART_API enum llama_dart_tts_status llama_dart_tts_start_with_voice(
+    struct llama_dart_tts * tts,
+    const struct llama_dart_tts_request * request,
+    const char * voice);
+
+// llama_dart_tts_start_with_voice (voice may be NULL) for a task whose PCM is
+// readable while it generates. Requires LLAMA_DART_TTS_CAPABILITY_STREAMING_PCM,
+// else UNSUPPORTED with the task and the llama context untouched. Soprano and
+// Chatterbox decode their whole utterance at the end and never report it.
+// Each llama_dart_tts_step appends the PCM decoded since the previous one, which
+// is nothing until the model's decode window fills (Qwen3-TTS 72 frames, Pocket
+// TTS 8 frames and each text chunk, LFM3-Audio every frame). The step that ends
+// generation (end of speech or max_frames) flushes the decoder and appends its
+// tail, so the COMPLETED PCM equals that of llama_dart_tts_start with the same
+// request and seed. A step that observes a cancel appends nothing. Does not
+// change any struct, status value or llama_dart_tts_api_version.
+LLAMADART_API enum llama_dart_tts_status llama_dart_tts_start_streaming(
     struct llama_dart_tts * tts,
     const struct llama_dart_tts_request * request,
     const char * voice);

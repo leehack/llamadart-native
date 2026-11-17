@@ -530,6 +530,7 @@ jobs:
           llamadart_tts_types_test
           llamadart_asr_stream_api_test
           llamadart_asr_stream_meter_test
+          llamadart_tts_stream_test
           llamadart_tts_eval_test
           llamadart_tts_seed_test
           llamadart_tts_sampler_test
@@ -661,6 +662,7 @@ jobs:
           llamadart_tts_types_test
           llamadart_asr_stream_api_test
           llamadart_asr_stream_meter_test
+          llamadart_tts_stream_test
           llamadart_image_token_limit_test
       - name: Run the barrier and Vulkan probe tests
         shell: pwsh
@@ -668,7 +670,7 @@ jobs:
           $wrapperDir = (Resolve-Path build/wx64).Path
           $upstreamDir = (Resolve-Path build/wx64/bin).Path
           $env:PATH = "$wrapperDir;$upstreamDir;$env:PATH"
-          ctest --test-dir build/wx64 -R "owner_api|owner_reentrant|barrier|build_identity|upstream_abi|cancel_flag|vocabulary|vulkan_device_info|tts_api|tts_types|asr_stream|image_token_limit" --timeout 120 --output-on-failure
+          ctest --test-dir build/wx64 -R "owner_api|owner_reentrant|barrier|build_identity|upstream_abi|cancel_flag|vocabulary|vulkan_device_info|tts_api|tts_types|asr_stream|tts_stream|image_token_limit" --timeout 120 --output-on-failure
       - name: Validate wrapper exports
         shell: pwsh
         run: |

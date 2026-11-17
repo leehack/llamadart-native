@@ -90,6 +90,16 @@ llama_dart_tts_accepted_model_type(mtmd_gen_audio_type type,
              : LLAMA_DART_TTS_MODEL_TYPE_UNKNOWN;
 }
 
+// Whether upstream decodes PCM incrementally for the type. Soprano and
+// Chatterbox decode the whole utterance in the final flush, so a streamed task
+// would only return it at the end.
+static inline bool
+llama_dart_tts_streams_pcm(llama_dart_tts_model_type type) {
+  return type == LLAMA_DART_TTS_MODEL_TYPE_QWEN3 ||
+         type == LLAMA_DART_TTS_MODEL_TYPE_LFM3_AUDIO ||
+         type == LLAMA_DART_TTS_MODEL_TYPE_POCKET_TTS;
+}
+
 // What a loaded projector offers, read once by the wrapper.
 struct llama_dart_tts_model_traits {
   bool speaker_encoder = false;   // mtmd_support_audio
@@ -104,22 +114,25 @@ llama_dart_tts_model_capabilities(llama_dart_tts_model_type type,
       traits.speaker_encoder ? LLAMA_DART_TTS_CAPABILITY_SPEAKER_REFERENCE : 0u;
   const uint32_t voice =
       traits.predefined_voices ? LLAMA_DART_TTS_CAPABILITY_VOICE : 0u;
+  const uint32_t stream =
+      llama_dart_tts_streams_pcm(type) ? LLAMA_DART_TTS_CAPABILITY_STREAMING_PCM
+                                       : 0u;
   switch (type) {
   case LLAMA_DART_TTS_MODEL_TYPE_QWEN3:
-    return LLAMA_DART_TTS_CAPABILITY_LANGUAGE | speaker;
+    return LLAMA_DART_TTS_CAPABILITY_LANGUAGE | speaker | stream;
   case LLAMA_DART_TTS_MODEL_TYPE_LFM3_AUDIO:
     // Its audio encoder is for chat input; the generator has no voice
     // conditioning and ignores a speaker reference. Its voices are names in
     // the "tts" chat template.
-    return LLAMA_DART_TTS_CAPABILITY_LANGUAGE |
-           LLAMA_DART_TTS_CAPABILITY_VOICE;
+    return LLAMA_DART_TTS_CAPABILITY_LANGUAGE | LLAMA_DART_TTS_CAPABILITY_VOICE |
+           stream;
   case LLAMA_DART_TTS_MODEL_TYPE_CHATTERBOX:
     // Turbo is English only and ignores a language upstream.
     return (traits.multilingual ? LLAMA_DART_TTS_CAPABILITY_LANGUAGE : 0u) |
            speaker | voice;
   case LLAMA_DART_TTS_MODEL_TYPE_POCKET_TTS:
     // The language is a property of the weights.
-    return speaker | voice;
+    return speaker | voice | stream;
   default:
     return 0;
   }
