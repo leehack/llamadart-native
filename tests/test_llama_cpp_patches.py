@@ -465,7 +465,7 @@ class CarriedSeriesTests(unittest.TestCase):
                 [sys.executable, str(ROOT / "tools/llama_cpp_patches.py"),
                  "manifest", "--upstream", directory], capture_output=True, text=True)
         self.assertEqual(0, result.returncode, result.stderr)
-        self.assertEqual(["0001", "0002", "0004", "0005", "0006"],
+        self.assertEqual(["0001", "0002", "0004", "0005", "0006", "0007"],
                          [e["file"][:4] for e in json.loads(result.stdout)])
 
     @unittest.skipUnless((UPSTREAM / "CMakeLists.txt").is_file(),

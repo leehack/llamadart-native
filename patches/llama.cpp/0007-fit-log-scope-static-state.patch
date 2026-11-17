@@ -1,0 +1,66 @@
+diff --git a/common/fit.cpp b/common/fit.cpp
+index 7ab89cc09..e6e5b688a 100644
+--- a/common/fit.cpp
++++ b/common/fit.cpp
+@@ -9,4 +9,5 @@
+ 
+ #include <array>
++#include <atomic>
+ #include <cassert>
+ #include <stdexcept>
+@@ -30,28 +31,40 @@ class common_params_fit_exception : public std::runtime_error {
+ };
+ 
++// llamadart: the logger that a scope installs keeps its state in static storage, not in the scope's stack frame.
++// llama_log_set is not atomic, so another thread can still call the installed lambda with the previous user data,
++// or after the scope has ended. Only the thread that holds the scope demotes levels; other threads pass through.
++static std::atomic<ggml_log_callback> g_fit_log_original_callback{nullptr};
++static std::atomic<void *>            g_fit_log_original_user_data{nullptr};
++static std::atomic<int>               g_fit_log_min_level{GGML_LOG_LEVEL_NONE};
++static thread_local bool              g_fit_log_scope_held = false;
++
+ // RAII: send llama logs below min_level to the debug log
+ struct common_fit_log_scope {
+-    common_fit_log_scope(ggml_log_level min_level) : min_level(min_level) {
+-        llama_log_get(&original_logger.callback, &original_logger.user_data);
+-        llama_log_set([](ggml_log_level level, const char * text, void * user_data) {
+-            const common_fit_log_scope * self = (const common_fit_log_scope *) user_data;
+-            const ggml_log_level level_eff = level >= self->min_level ? level : GGML_LOG_LEVEL_DEBUG;
+-            self->original_logger.callback(level_eff, text, self->original_logger.user_data);
+-        }, this);
++    common_fit_log_scope(ggml_log_level min_level) {
++        GGML_ASSERT(!g_fit_log_scope_held && "llamadart fit log scope");
++        ggml_log_callback callback  = nullptr;
++        void *            user_data = nullptr;
++        llama_log_get(&callback, &user_data);
++        g_fit_log_original_callback.store(callback);
++        g_fit_log_original_user_data.store(user_data);
++        g_fit_log_min_level.store(min_level);
++        g_fit_log_scope_held = true;
++        llama_log_set([](ggml_log_level level, const char * text, void *) {
++            const ggml_log_level level_eff =
++                g_fit_log_scope_held && level < g_fit_log_min_level.load() ? GGML_LOG_LEVEL_DEBUG : level;
++            const ggml_log_callback callback = g_fit_log_original_callback.load();
++            if (callback) {
++                callback(level_eff, text, g_fit_log_original_user_data.load());
++            }
++        }, nullptr);
+     }
+ 
+     ~common_fit_log_scope() {
+-        llama_log_set(original_logger.callback, original_logger.user_data);
++        llama_log_set(g_fit_log_original_callback.load(), g_fit_log_original_user_data.load());
++        g_fit_log_scope_held = false;
+     }
+ 
+     common_fit_log_scope(const common_fit_log_scope &) = delete;
+     common_fit_log_scope & operator=(const common_fit_log_scope &) = delete;
+-
+-private:
+-    struct {
+-        ggml_log_callback callback;
+-        void * user_data;
+-    } original_logger;
+-    ggml_log_level min_level;
+ };
+ 

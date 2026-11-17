@@ -1695,7 +1695,6 @@ static void llama_dart_fit_fill_report(const char *path_model,
       llama_dart_fit_model_path(path_model), &mparams, &cparams, devices,
       n_layers, n_ctx_train, n_expert, GGML_LOG_LEVEL_ERROR);
 #endif
-  (void)n_layers_skipped;
   (void)n_expert;
   if (memory.size() != devices.size() + 1) {
     throw std::runtime_error("unexpected device memory breakdown");
@@ -1713,6 +1712,7 @@ static void llama_dart_fit_fill_report(const char *path_model,
   *report = {};
   report->n_layers = n_layers;
   report->n_ctx_train = n_ctx_train;
+  report->n_layers_skipped = n_layers_skipped;
   report->n_devices = static_cast<uint32_t>(
       std::min<size_t>(devices.size(), LLAMA_DART_FIT_MAX_DEVICES));
   for (uint32_t i = 0; i < report->n_devices; ++i) {

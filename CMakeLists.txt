@@ -530,6 +530,8 @@ if (LLAMADART_BUILD_TESTS)
             LLAMADART_TEST_CPU_BACKEND="$<TARGET_FILE:ggml-cpu>")
         add_dependencies(llamadart_fit_api_test ggml-cpu)
     endif()
+    target_compile_definitions(llamadart_fit_api_test PRIVATE
+        LLAMADART_FIT_HAS_NGL_SKIP=$<BOOL:${LLAMADART_FIT_HAS_NGL_SKIP}>)
     add_test(NAME llamadart_fit_api_test COMMAND llamadart_fit_api_test)
     set_tests_properties(llamadart_fit_api_test PROPERTIES TIMEOUT 300)
 

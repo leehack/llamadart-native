@@ -40,10 +40,12 @@ void add_tensor(gguf_context *gguf, ggml_context *ggml, const std::string &name,
   gguf_add_tensor(gguf, tensor);
 }
 
-// A llama decoder of about 36 MiB with a long trained context, so that its
+// A llama decoder of about 32.5 MiB with a long trained context, so that its
 // weights and its cache are large enough to be fitted into a budget of a few
-// tens of MiB.
-void make_model(const char *path) {
+// tens of MiB. With a NextN layer it has one more block, which the loader
+// counts but llama_model_n_layer does not, and which has no weights here.
+void make_model(const char *path, bool with_nextn = false) {
+  const uint32_t blocks = kBlocks + (with_nextn ? 1 : 0);
   gguf_context *gguf = gguf_init_empty();
   const auto set = [&](const char *key, uint32_t value) {
     gguf_set_val_u32(gguf, (std::string("llama.") + key).c_str(), value);
@@ -52,7 +54,10 @@ void make_model(const char *path) {
   gguf_set_val_str(gguf, "general.name", "llamadart fit test");
   set("context_length", kTrainedContext);
   set("embedding_length", kEmbedding);
-  set("block_count", kBlocks);
+  set("block_count", blocks);
+  if (with_nextn) {
+    set("nextn_predict_layers", 1);
+  }
   set("feed_forward_length", kFeedForward);
   set("attention.head_count", 4);
   set("vocab_size", kVocabulary);
@@ -117,6 +122,24 @@ void set_budget(fit_request &request, const llama_dart_fit_device &device,
                          static_cast<size_t>(device.free_bytes) - budget);
 }
 
+// Whether the device runs an F32 matrix product. A device that does not, such
+// as a Metal device without simdgroup reduction, gets no weights from llama.cpp.
+bool device_runs_matmul(const char *name) {
+  ggml_backend_dev_t device = ggml_backend_dev_by_name(name);
+  assert(device != nullptr);
+  ggml_init_params params{};
+  params.mem_size = 1 * kMiB;
+  params.no_alloc = true;
+  ggml_context *ggml = ggml_init(params);
+  assert(ggml != nullptr);
+  ggml_tensor *weights = ggml_new_tensor_2d(ggml, GGML_TYPE_F32, kEmbedding, kEmbedding);
+  ggml_tensor *input = ggml_new_tensor_2d(ggml, GGML_TYPE_F32, kEmbedding, 4);
+  ggml_tensor *product = ggml_mul_mat(ggml, weights, input);
+  const bool supported = ggml_backend_dev_supports_op(device, product);
+  ggml_free(ggml);
+  return supported;
+}
+
 void test_contract(const char *path) {
   assert(llama_dart_fit_api_version() == 1);
 
@@ -177,6 +200,7 @@ void test_cpu_only(const char *path) {
   assert(request.model.n_gpu_layers == llama_model_default_params().n_gpu_layers);
   assert(request.context.n_ctx == 2048);
   assert(std::string(request.report.host.name) == "Host");
+  assert(request.report.host.total_bytes > 0 && request.report.host.free_bytes > 0);
 }
 
 void test_everything_fits(const char *path) {
@@ -185,11 +209,17 @@ void test_everything_fits(const char *path) {
   assert(request.model.n_gpu_layers == llama_model_default_params().n_gpu_layers);
   assert(request.context.n_ctx == 2048);
   assert(request.report.n_layers == kBlocks);
+  assert(request.report.n_layers_skipped == 0);
   const llama_dart_fit_device &device = request.report.devices[0];
   assert(device.name[0] != '\0');
   assert(device.free_bytes > 0 && device.total_bytes >= device.free_bytes);
   assert(projected_bytes(device) > 0);
-  assert(device.model_bytes + request.report.host.model_bytes >= 30 * kMiB);
+  // The weights are on the device only where it can run the products.
+  if (device_runs_matmul(device.name)) {
+    assert(device.model_bytes >= 30 * kMiB);
+  } else {
+    assert(request.report.host.model_bytes >= 30 * kMiB);
+  }
 }
 
 void test_partial_fit(const char *path) {
@@ -267,17 +297,71 @@ void test_preset_layers(const char *path) {
   assert(request.context.n_ctx == n_ctx);
 }
 
-// Fits that overlap each other and a log level change must neither crash nor
-// disturb each other's result.
-void test_concurrent(const char *path) {
-  std::atomic<bool> stop{false};
-  std::thread logger([&stop] {
-    while (!stop.load()) {
-      llama_dart_set_log_level(3);
+// A failed fit leaves n_ctx at 0 although it had already reduced the context.
+void test_failure_keeps_context(const char *path, bool gpu) {
+  ggml_backend_dev_t no_gpu[] = {nullptr};
+  fit_request cpu;
+  cpu.model.devices = no_gpu;
+  cpu.context.n_ctx = 0;
+  cpu.margins.assign(cpu.margins.size(), static_cast<size_t>(1) << 40);
+  assert(cpu.run(path, 512) == LLAMA_DART_FIT_STATUS_FAILURE);
+  assert(cpu.context.n_ctx == 0);
+  assert(cpu.model.n_gpu_layers == llama_model_default_params().n_gpu_layers);
+
+  if (!gpu) {
+    return;
+  }
+  fit_request full;
+  assert(full.run(path) == LLAMA_DART_FIT_STATUS_SUCCESS);
+  fit_request request;
+  request.context.n_ctx = 0;
+  request.model.n_gpu_layers = 4;
+  set_budget(request, full.report.devices[0], 1 * kMiB);
+  assert(request.run(path, 512) == LLAMA_DART_FIT_STATUS_FAILURE);
+  assert(request.context.n_ctx == 0);
+  assert(request.model.n_gpu_layers == 4);
+}
+
+// On v1.0.0 the loader counts a NextN layer that llama_model_n_layer leaves
+// out, and a fit sets n_gpu_layers on the loader's scale. The report has to
+// let a binding tell a fit that kept the last layer on the CPU from a full
+// offload.
+void test_nextn_layers(const char *path) {
+  fit_request full;
+  assert(full.run(path) == LLAMA_DART_FIT_STATUS_SUCCESS);
+  assert(full.report.n_layers == kBlocks);
+  assert(full.report.n_layers_skipped == 1);
+  const llama_dart_fit_device device = full.report.devices[0];
+  const int32_t all = static_cast<int32_t>(full.report.n_layers +
+                                           full.report.n_layers_skipped) + 1;
+  bool kept_one_layer_back = false;
+  for (int percent = 99; percent >= 60; --percent) {
+    fit_request request;
+    set_budget(request, device, projected_bytes(device) * percent / 100);
+    assert(request.run(path) == LLAMA_DART_FIT_STATUS_SUCCESS);
+    const int32_t layers = request.model.n_gpu_layers;
+    assert(layers <= all);
+    if (layers > 0 && layers < all &&
+        layers >= static_cast<int32_t>(request.report.n_layers) + 1) {
+      kept_one_layer_back = true;
     }
-  });
+  }
+  assert(kept_one_layer_back);
+}
+
+int g_sentinel;
+
+void sentinel_logger(ggml_log_level, const char *, void *user_data) {
+  assert(user_data == &g_sentinel);
+}
+
+// Fits that overlap each other must put back the logger that they found. The
+// installed logger is shared state: without the fit lock the fits take each
+// other's logger for the original, or restore it twice.
+void test_concurrent(const char *path) {
+  llama_log_set(sentinel_logger, &g_sentinel);
   std::vector<std::thread> fits;
-  for (int i = 0; i < 3; ++i) {
+  for (int i = 0; i < 4; ++i) {
     fits.emplace_back([path] {
       for (int run = 0; run < 3; ++run) {
         fit_request request;
@@ -289,8 +373,11 @@ void test_concurrent(const char *path) {
   for (std::thread &fit : fits) {
     fit.join();
   }
-  stop.store(true);
-  logger.join();
+  ggml_log_callback callback = nullptr;
+  void *user_data = nullptr;
+  llama_log_get(&callback, &user_data);
+  assert(callback == sentinel_logger && user_data == &g_sentinel);
+  llama_dart_set_log_level(4);
 }
 
 } // namespace
@@ -302,6 +389,7 @@ int main(int argc, char **argv) {
   llama_backend_init();
   llama_dart_set_log_level(4);
   const char *path = argc > 1 ? argv[1] : "fit_api_test_model.gguf";
+  const char *nextn_path = "fit_api_test_nextn_model.gguf";
   if (argc <= 1) {
     make_model(path);
   }
@@ -315,9 +403,15 @@ int main(int argc, char **argv) {
     test_nothing_fits(path);
     test_context_fit(path);
     test_preset_layers(path);
+#if LLAMADART_FIT_HAS_NGL_SKIP
+    make_model(nextn_path, true);
+    test_nextn_layers(nextn_path);
+    std::remove(nextn_path);
+#endif
   } else {
     test_cpu_only(path);
   }
+  test_failure_keeps_context(path, gpu);
   test_concurrent(path);
   std::printf("fit api test passed (%s)\n", gpu ? "gpu" : "cpu only");
   if (argc <= 1) {
