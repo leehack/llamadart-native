@@ -14,8 +14,11 @@
 llama_dart_system_memory llama_dart_read_system_memory(ggml_backend_dev_t dev) {
   llama_dart_system_memory result;
 #if defined(_WIN32)
-  const enum ggml_backend_dev_type type = ggml_backend_dev_type(dev);
-  const std::string name = ggml_backend_dev_name(dev);
+  // Through the properties, the one query that a device interface always has.
+  ggml_backend_dev_props props = {};
+  ggml_backend_dev_get_props(dev, &props);
+  const enum ggml_backend_dev_type type = props.type;
+  const std::string name = props.name == nullptr ? "" : props.name;
   if (type != GGML_BACKEND_DEVICE_TYPE_GPU &&
       type != GGML_BACKEND_DEVICE_TYPE_IGPU) {
     return result;
@@ -37,7 +40,8 @@ llama_dart_system_memory llama_dart_read_system_memory(ggml_backend_dev_t dev) {
     result.detail = "the Vulkan probe has no such device";
     return result;
   }
-  if (strcmp(probed_name, ggml_backend_dev_description(dev)) != 0) {
+  if (props.description == nullptr ||
+      strcmp(probed_name, props.description) != 0) {
     result.detail = "the Vulkan probe lists a different device at its index";
     return result;
   }
@@ -49,10 +53,7 @@ llama_dart_system_memory llama_dart_read_system_memory(ggml_backend_dev_t dev) {
   if (!llama_dart_d3dkmt::read_segments(luid, segments, result.detail)) {
     return result;
   }
-  size_t driver_free = 0;
-  size_t driver_total = 0;
-  ggml_backend_dev_memory(dev, &driver_free, &driver_total);
-  if (!llama_dart_adapter_free_bytes(segments, driver_total,
+  if (!llama_dart_adapter_free_bytes(segments, props.memory_total,
                                      type == GGML_BACKEND_DEVICE_TYPE_IGPU,
                                      &result.free_bytes)) {
     result.detail = "the adapter has no dedicated memory segment";
@@ -74,8 +75,10 @@ size_t llama_dart_device_free_bytes(ggml_backend_dev_t dev, size_t driver_free,
         llama_dart_effective_free(driver_free, system.free_bytes));
   case llama_dart_system_read::unavailable:
     if (strict) {
+      ggml_backend_dev_props props = {};
+      ggml_backend_dev_get_props(dev, &props);
       throw std::runtime_error(llama_dart_unreadable_memory_message(
-          ggml_backend_dev_name(dev), system.detail));
+          props.name == nullptr ? "" : props.name, system.detail));
     }
     return driver_free;
   case llama_dart_system_read::not_applicable:
