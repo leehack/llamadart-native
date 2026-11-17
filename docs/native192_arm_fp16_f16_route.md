@@ -82,7 +82,7 @@ elsewhere on upstream v1. New graph rows:
 | `route-unhinted`, 1 and 16 columns, F16 ones times `1 + 2^-12` | 256 on the F16 route, 256.0625 otherwise |
 | `route-src1-f32`, `route-src1-bf16` | 256.0625 (256 on the F16 trait) |
 | `conv-route`, `ggml_conv_2d_direct`, F16 kernel, 4 threads | 128.03125 in every element |
-| `flash-route`, keys +64 and −64, DK 64, query `1 + 2^-12`, V (1, −1) | `tanh(4096 s)` on the F16 route, `tanh(4097 s)` otherwise, `s = 1/8192` |
+| `flash-route`, keys +65504 and −65504, DK 1024, query 2^-26 (rounds to 0 in F16), V (1, −1), scale 1 | 0 on the F16 route, `tanh(0.9995)` otherwise, tolerance 0.1 |
 
 The test passes in graph and `--residual` modes on macOS arm64 (conversion-path
 build, and the shipped `macos-arm64-full` preset with FMLAL) and on Linux arm64

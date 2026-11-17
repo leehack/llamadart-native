@@ -601,37 +601,42 @@ void conv_route_case(ggml_backend_t backend, ggml_backend_set_n_threads_t set_th
   set_threads(backend, 1);
 }
 
-// Keys +c and -c over DK = 64 with a query of 1 + 2^-12 score 4096 and -4096
-// when the query rounds to F16 and 4097 and -4097 when it does not, so the
-// softmax weights, and the output of V = (1, -1), differ by about 1e-4.
+// A query of 2^-26 is under half the smallest F16 subnormal, so an F16 route
+// rounds it to zero and scores both keys 0, giving V = (1, -1) equal weights
+// and an output of 0. Kept in F32, keys +65504 and -65504 over DK = 1024 score
+// +-0.9995 and the output is tanh of that. The two outcomes are far apart,
+// unlike a rounding of the query by one F16 ulp.
 void flash_route_case(ggml_backend_t backend) {
-  constexpr int width = 64;
+  constexpr int width = 1024;
+  constexpr int value_width = 64;
+  constexpr float query = 0x1p-26f;
+  constexpr float key = 65504.0f;
   Graph graph(backend);
   auto *q = ggml_new_tensor_2d(graph.ctx, GGML_TYPE_F32, width, 1);
   auto *k = ggml_new_tensor_2d(graph.ctx, GGML_TYPE_F16, width, 2);
-  auto *v = ggml_new_tensor_2d(graph.ctx, GGML_TYPE_F16, width, 2);
-  constexpr float scale = 1.0f / 8192.0f;
-  auto *out = ggml_flash_attn_ext(graph.ctx, q, k, v, nullptr, scale, 0.0f, 0.0f);
+  auto *v = ggml_new_tensor_2d(graph.ctx, GGML_TYPE_F16, value_width, 2);
+  auto *out = ggml_flash_attn_ext(graph.ctx, q, k, v, nullptr, 1.0f, 0.0f, 0.0f);
   require_f32(out);
   graph.allocate(out);
-  std::vector<float> queries(width, route_query);
-  std::vector<ggml_fp16_t> keys(2 * width), values(2 * width);
+  std::vector<float> queries(width, query);
+  std::vector<ggml_fp16_t> keys(2 * width), values(2 * value_width);
   for (int i = 0; i < width; ++i) {
-    keys[i] = ggml_fp32_to_fp16(64.0f);
-    keys[width + i] = ggml_fp32_to_fp16(-64.0f);
+    keys[i] = ggml_fp32_to_fp16(key);
+    keys[width + i] = ggml_fp32_to_fp16(-key);
+  }
+  for (int i = 0; i < value_width; ++i) {
     values[i] = ggml_fp32_to_fp16(1.0f);
-    values[width + i] = ggml_fp32_to_fp16(-1.0f);
+    values[value_width + i] = ggml_fp32_to_fp16(-1.0f);
   }
   ggml_backend_tensor_set(q, queries.data(), 0, queries.size() * sizeof(float));
   ggml_backend_tensor_set(k, keys.data(), 0, keys.size() * sizeof(ggml_fp16_t));
   ggml_backend_tensor_set(v, values.data(), 0, values.size() * sizeof(ggml_fp16_t));
   graph.compute();
-  std::vector<float> actual(width);
+  std::vector<float> actual(value_width);
   ggml_backend_tensor_get(out, actual.data(), 0, actual.size() * sizeof(float));
-  const double score = 4096.0 * (f16_route ? 1.0 : static_cast<double>(route_query));
-  const double expected = std::tanh(score * scale);
+  const double expected = f16_route ? 0.0 : std::tanh(static_cast<double>(width) * key * query);
   for (float value : actual) {
-    if (!check_result(value, expected, 1e-5, "flash-route", width, 1)) {
+    if (!check_result(value, expected, 0.1, "flash-route", width, 1)) {
       break;
     }
   }
