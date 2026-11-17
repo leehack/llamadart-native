@@ -1,0 +1,21 @@
+diff --git a/ggml/src/ggml-cpu/ops.cpp b/ggml/src/ggml-cpu/ops.cpp
+index eed5d69e3..bf7a4e7ad 100644
+--- a/ggml/src/ggml-cpu/ops.cpp
++++ b/ggml/src/ggml-cpu/ops.cpp
+@@ -8800,7 +8800,14 @@ static void ggml_compute_forward_flash_attn_ext_f16_one_chunk(
+     const float m1 = powf(2.0f, -(max_bias / 2.0f) / n_head_log2);
+ 
+-    ggml_type         const k_vec_dot_type = ggml_get_type_traits_cpu(k->type)->vec_dot_type;
++    GGML_ASSERT(k->type < GGML_TYPE_COUNT && "llamadart F16 K.Q route");
++#if defined(__ARM_FEATURE_FP16_VECTOR_ARITHMETIC) && !defined(_MSC_VER)
++    // llamadart F16 K.Q route: an F16 K row takes the FP16 dot with Q rounded to F16, as before ggml-org/llama.cpp#31854
++    const bool kq_f16 = k->type == GGML_TYPE_F16;
++#else
++    const bool kq_f16 = false;
++#endif
++    ggml_type         const k_vec_dot_type = kq_f16 ? GGML_TYPE_F16 : ggml_get_type_traits_cpu(k->type)->vec_dot_type;
+     ggml_from_float_t const q_to_vec_dot   = ggml_get_type_traits_cpu(k_vec_dot_type)->from_float;
+-    ggml_vec_dot_t    const kq_vec_dot     = ggml_get_type_traits_cpu(k->type)->vec_dot;
++    ggml_vec_dot_t    const kq_vec_dot     = kq_f16 ? (ggml_vec_dot_t) ggml_vec_dot_f16 : ggml_get_type_traits_cpu(k->type)->vec_dot;
+     ggml_to_float_t   const v_to_float     = ggml_get_type_traits(v->type)->to_float;
+ 

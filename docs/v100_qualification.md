@@ -28,6 +28,7 @@ trigger **old unpatched FAIL / old patched PASS / candidate unpatched PASS**, wi
 other fixes held constant. Application, marker presence, issue closure and a
 successful build cannot replace that evidence. Patch bytes and their digests
 remain unchanged; [series.json](../patches/llama.cpp/series.json) is authoritative.
+0008 and 0009 are the only additions, below.
 
 | Carry and origin | Original trigger and upstream status | Candidate decision and proof/gap |
 | --- | --- | --- |
@@ -36,6 +37,8 @@ remain unchanged; [series.json](../patches/llama.cpp/series.json) is authoritati
 | 0004, [native #154](https://github.com/leehack/llamadart-native/issues/154), #153 / v0.8.0-1 | Old macOS/iOS bfloat Metal compiler rejects unary `constexpr` vector subscripts. [#31360](https://github.com/ggml-org/llama.cpp/pull/31360), `c9daee149d606adc30b4c5b7a3254697c9771e2b`, is integrated. | Retain patch for v0.8 validation. Existing `upstream_fix` path already skips v0.9 and v1; this PR does not retire it. [Old red/green receipts](v080_1_wrapper_rebuild.md) remain controls; exact v1 unpatched old-OS/bfloat compiler and physical iOS proof is missing. |
 | 0005, [native #174](https://github.com/leehack/llamadart-native/issues/174), #177/#182 | Non-SVE NEON FP16 dot overflow at magnitudes 80/90/100; macOS arm64 and optimized Android/Linux CPU modules. [#31734](https://github.com/ggml-org/llama.cpp/issues/31734) closed after [#31854](https://github.com/ggml-org/llama.cpp/pull/31854), `12ab5979869aecdf3593de260a99ca91263bf5a1`, changed default graph routing. | Retain. v1 still contains the old F16 kernel. Model-free direct-kernel controls fail when only 0005 is removed, while the new graph route passes. Keep exact blocked/flush/tail/nonfinite/F32-recompute controls and old rows; no retirement. |
 | 0006, [native #174](https://github.com/leehack/llamadart-native/issues/174), #179 | FP16 llamafile GEMM, >=8 columns, macOS arm64 / Linux armv8.2_2. Android has llamafile off; SVE/I8MM compile it out. Same upstream graph change leaves F16 x F16 tinyBLAS present. | Retain. Removing only 0006 fails direct GEMM overflow/512-K block/tail/last-cell controls while v1 graph passes. The narrow #174 policy exception is unchanged. Actual module/model throughput remains pending. |
+| 0008, [native #192](https://github.com/leehack/llamadart-native/issues/192) | v1 runs F16 `src0` matmuls on `ggml_vec_dot_f16_f32` ([#31854](https://github.com/ggml-org/llama.cpp/pull/31854), `12ab5979`): on ARM FP16 modules 0.16 to 0.6 of v0.9.0 for F16 weights (Neoverse-N1), with 0005/0006 unreachable from graphs. | Add. An unhinted F16 x F32 `GGML_OP_MUL_MAT` takes the v0.9.0 route (query rounded to F16) on FP16 vector arithmetic modules; F32/BF16/Q8/Q4 `src1` requests and `CONV_2D`/`CONV_3D` stay F32. Maintainer-approved exception; see [native192_arm_fp16_f16_route.md](native192_arm_fp16_f16_route.md). Neoverse-N1 (t2a) 0.99–1.07 outside FA-on depth decode (0.95–0.97); Android gate-1 rerun at #193 head: CPU ids identical to v0.9.0, C1 passes. x86 AVX2 (#188 candidate): 20 cells, worst 0.978. V2 and c4a pending. |
+| 0009, native #192 | Same change for the flash-attention one-chunk K.Q dot. | Add, same route for an F16 K. Removing it fails the `flash-route` row. |
 
 0003 was deleted by #185 when the v0.7 row went; it is not restored. See
 [native174_f16_dot_accumulation.md](native174_f16_dot_accumulation.md) for the
@@ -121,9 +124,11 @@ Talker request temperature, model suppress tokens and per-generation seed stay
 separate. Chatterbox's helper still identifies Multilingual by position tables;
 the owner keeps the corresponding capability/paired-sequence refusal.
 
-Graph tests read the actual loaded CPU type trait and require the route expected
-by the retained upstream row. v1 uses F16 weights with unrounded F32 queries;
-v0.8/v0.9 retain the exact F16 blocked oracle. The precision-setter adapter uses
+Graph tests require the route expected by the retained upstream row and the
+module: v1 without 0008 and 0009 uses F16 weights with unrounded F32 queries;
+with them, FP16 vector arithmetic modules round an unhinted query to F16 as
+v0.8/v0.9 do and use the exact F16 blocked oracle, and the `route-*`,
+`conv-route` and `flash-route` rows pin the route. The precision-setter adapter uses
 `ggml_prec_set_acc` when declared, with the old setter fallback retained.
 `--residual` calls the **same compiled CPU library's** old F16 dot and tinyBLAS
 kernels, preserving bit-exact dot/F32-recompute, tail, flush, nonfinite,
@@ -165,6 +170,11 @@ record. Zero audio initialization fails the new temperature test; a blind -1
 Pocket default also fails. Wrong/missing temperature probe and old context size
 fail compilation; bypassing scalar admission fails the no-by-value-call spy.
 These are component controls, not platform/model qualification.
+
+Throughput of F16 weights and F16 KV on ARM FP16 modules against v0.9.0 with
+0005/0006: without 0008 and 0009 M4 Max F16 pp512 0.25–0.28 and Neoverse-N1
+0.16; with them M4 Max 0.98–1.01 and Neoverse-N1 matmul-bound cells 0.99–1.07 (details and what is still pending in
+[native174_f16_dot_accumulation.md](native174_f16_dot_accumulation.md)).
 
 Local checks use CPU-only native fixtures generated by the tests, never
 pretrained models. Configure without `LLAMADART_EXIT_TEARDOWN_TEST_MODEL` or

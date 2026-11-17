@@ -59,6 +59,28 @@
       "apple_markers": [
         {"library": "libllamadart.dylib", "text": "llamadart fit log scope"}
       ]
+    },
+    {
+      "file": "0008-arm-fp16-unhinted-f16-matmul-route.patch",
+      "tracking": "https://github.com/leehack/llamadart-native/issues/192",
+      "upstream": "https://github.com/ggml-org/llama.cpp/pull/31854",
+      "android_markers": [
+        {"library": "libggml-cpu.so", "text": "llamadart F16 matmul route"}
+      ],
+      "apple_markers": [
+        {"library": "libllamadart.dylib", "text": "llamadart F16 matmul route"}
+      ]
+    },
+    {
+      "file": "0009-arm-fp16-fa-kq-f16-dot.patch",
+      "tracking": "https://github.com/leehack/llamadart-native/issues/192",
+      "upstream": "https://github.com/ggml-org/llama.cpp/pull/31854",
+      "android_markers": [
+        {"library": "libggml-cpu.so", "text": "llamadart F16 K.Q route"}
+      ],
+      "apple_markers": [
+        {"library": "libllamadart.dylib", "text": "llamadart F16 K.Q route"}
+      ]
     }
   ]
 }

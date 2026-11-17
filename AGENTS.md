@@ -78,6 +78,9 @@ See `docs/tts_voices.md` for the opt-in Chatterbox and Pocket TTS types, the
 predefined-voice exports and their ABI delta for the Dart bindings.
 See `docs/v070_native_contracts.md` for draft expert-cache isolation, dynamic
 export validation, ABI handoff and opt-in EmbeddingGemma-2 model qualification.
+See `docs/native192_arm_fp16_f16_route.md` for the F16 matmul and flash-attention
+route carried as patches 0008 and 0009 on ARM FP16 modules, its numerics and
+remaining gates.
 See `docs/v060_1_wrapper_rebuild.md` for the `v0.6.0-1` header additions and
 what each export returns after a caught exception.
 See `docs/v060_2_wrapper_rebuild.md` for the carried llama.cpp patches of
