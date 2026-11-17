@@ -380,6 +380,73 @@ void test_concurrent(const char *path) {
   llama_dart_set_log_level(4);
 }
 
+struct log_counts {
+  std::atomic<long> lines{0};
+  std::atomic<long> info{0};
+};
+
+log_counts g_loader_counts;
+thread_local bool g_on_loader_thread = false;
+
+void counting_logger(ggml_log_level level, const char *, void *) {
+  if (g_on_loader_thread) {
+    g_loader_counts.lines.fetch_add(1);
+    if (level == GGML_LOG_LEVEL_INFO) {
+      g_loader_counts.info.fetch_add(1);
+    }
+  }
+}
+
+void load_vocabulary_only(const char *path) {
+  llama_model_params params = llama_model_default_params();
+  params.vocab_only = true;
+  llama_model *model = llama_model_load_from_file(path, params);
+  assert(model != nullptr);
+  llama_model_free(model);
+}
+
+// A fit lowers the log levels of its own thread only. Another thread that
+// loads a model meanwhile must get its INFO lines as they are: llama.cpp's own
+// scope lowered the lines of every thread. Needs the carried patch 0007.
+void test_other_threads_keep_log_levels(const char *path) {
+  llama_log_set(counting_logger, nullptr);
+  g_on_loader_thread = true;
+  for (int run = 0; run < 20; ++run) {
+    load_vocabulary_only(path);
+  }
+  const long control_lines = g_loader_counts.lines.load();
+  const long control_info = g_loader_counts.info.load();
+  assert(control_info > 0);
+
+  g_loader_counts.lines = 0;
+  g_loader_counts.info = 0;
+  std::atomic<bool> fitting{false};
+  std::atomic<bool> fitted{false};
+  std::thread fit([&] {
+    fitting.store(true);
+    for (int run = 0; run < 3; ++run) {
+      fit_request request;
+      assert(request.run(path) == LLAMA_DART_FIT_STATUS_SUCCESS);
+    }
+    fitted.store(true);
+  });
+  while (!fitting.load()) {
+    std::this_thread::yield();
+  }
+  while (!fitted.load()) {
+    load_vocabulary_only(path);
+  }
+  fit.join();
+  g_on_loader_thread = false;
+
+  const long lines = g_loader_counts.lines.load();
+  const long info = g_loader_counts.info.load();
+  assert(lines > 0);
+  // The share of INFO lines is the same as without a fit, not close to zero.
+  assert(info * control_lines * 2 >= control_info * lines);
+  llama_dart_set_log_level(4);
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -413,6 +480,7 @@ int main(int argc, char **argv) {
   }
   test_failure_keeps_context(path, gpu);
   test_concurrent(path);
+  test_other_threads_keep_log_levels(path);
   std::printf("fit api test passed (%s)\n", gpu ? "gpu" : "cpu only");
   if (argc <= 1) {
     std::remove(path);

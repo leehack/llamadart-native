@@ -76,10 +76,13 @@ there.
 What remains: `llama_log_set` writes the callback and its user data
 separately. A thread that logs in the instant a fit installs or restores the
 logger can call the fit's callback with the previous user data (the fit's
-callback ignores it) or the original callback with new user data (the same
-value, as fits are serialized). A thread that calls `llama_log_set` itself
-during a fit has its logger overwritten when the fit restores the original.
-The patch does not remove the data race in `llama_log_set`, and TSan reports it.
+callback ignores it) or the original callback with a null user data, because
+the fit installs its callback with null user data. The second pair is harmless
+only if the original user data is null, as llamadart's is. A thread that calls
+`llama_log_set` itself during a fit has its logger overwritten when the fit
+restores the original. The patch does not remove the data race in
+`llama_log_set`, and TSan reports it. Installing the fit's callback while it is
+already installed, which the fit lock prevents, aborts at once.
 
 Teardown cannot cancel a fit, because its `no_alloc` loads report no progress.
 It waits for a running fit, up to the exit wait limit.
@@ -104,8 +107,10 @@ export list in `tools/validate_exports.py` grows from 94 to 96.
 
 `llamadart_fit_api_test` writes its own 32.5 MiB model. It checks the contract
 (null arguments, missing and unreadable models, a failed fit that must not
-change `n_ctx`) everywhere, and fits that overlap each other while a sentinel
-logger is installed: the logger must be the same one afterwards. With a GPU
+change `n_ctx`) everywhere, fits that overlap each other while a sentinel
+logger is installed (the logger must be the same one afterwards), and a thread
+that loads a model while another fits (it must keep its INFO lines; this needs
+patch 0007). With a GPU
 device it also checks the unchanged, partial, nothing-fits, context-reduction
 and preset cases against a budget set through `margins`, and on v1.0.0 a model
 with a NextN layer whose fit must keep the last layer back at a layer count
