@@ -88,6 +88,14 @@ void llama_dart_fit_apply_system_margins(const char *path_model,
                                          const llama_model_params &mparams,
                                          size_t *margins, size_t n_margins) {
 #if defined(_WIN32)
+  // A host with no Vulkan device has nothing to correct.
+  char probed_name[8];
+  uint8_t probed_luid[8];
+  bool probed_valid = false;
+  if (!llama_dart_vulkan_device_luid(0, probed_name, sizeof(probed_name),
+                                     probed_luid, &probed_valid)) {
+    return;
+  }
   // The model's device list comes before the vocabulary-only branch of the
   // loader, so this load reads no weights and creates no buffers.
   llama_model_params probe = mparams;
@@ -97,7 +105,8 @@ void llama_dart_fit_apply_system_margins(const char *path_model,
   std::unique_ptr<llama_model, decltype(&llama_model_free)> model(
       llama_model_load_from_file(path_model, probe), &llama_model_free);
   if (model == nullptr) {
-    throw std::runtime_error("cannot read the model's device list");
+    // The fit reports an unreadable model as its own error.
+    return;
   }
   const int32_t n_devices = llama_model_n_devices(model.get());
   if (n_devices < 0 || static_cast<size_t>(n_devices) > n_margins) {
