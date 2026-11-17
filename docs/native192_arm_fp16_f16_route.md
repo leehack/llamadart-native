@@ -47,8 +47,8 @@ carries them.
 - The guard also puts the Android SVE2 module on its SVE `ggml_vec_dot_f16`
   again. That module was not built or run for this change.
 - x86 and modules without FP16 vector arithmetic are unchanged. Windows arm64
-  builds with ClangCL (`_MSC_VER`), so it keeps upstream's throughput
-  regression.
+  builds without FP16 vector arithmetic (and ClangCL defines `_MSC_VER`), so it
+  is unchanged.
 
 Numerics: ARM FP16 CPU graphs return to `v0.9.0` (query rounded to F16, 0005 and
 0006 live). They differ from upstream's CPU reference by that rounding until
@@ -120,7 +120,8 @@ Each of these needs the PR head:
 - CI, independent audit (native kernel change), and the Android ISA audit for
   the changed `ggml-cpu.c` and `ops.cpp`.
 - c4a throughput: `cand/pub090` at 0.97 or more outside the FA-on
-  depth-decode cells (t2a done, above).
+  depth-decode cells, except armv82 Q8 tg128 FA-on at 0.967, within the
+  identical-module null band (t2a done, above).
 - The test on every published CPU module, the Nemotron CPU-FA rows, ON_DEVICE CPU
   rows, CPU smoke, a Qwen3-TTS cancel-latency check and the FA-off cross-layout
   NMSE gate.
