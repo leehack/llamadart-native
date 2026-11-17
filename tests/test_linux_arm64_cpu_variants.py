@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import argparse
+import os
+import shlex
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import textwrap
 import unittest
 from unittest import mock
 
@@ -12,6 +15,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 
 import build  # noqa: E402
+import ci_ubuntu_apt as private_apt  # noqa: E402
+from workflow_text import job_block, step_running  # noqa: E402
 import validate_linux_arm64_cpu_isa as isa  # noqa: E402
 
 
@@ -398,20 +403,66 @@ class CommandLineFlagWiringTest(unittest.TestCase):
 
 
 class WorkflowWiringTest(unittest.TestCase):
+    def assert_pr_arm64_dependencies(self, job: str) -> None:
+        step = step_running(job, "sudo python3 tools/ci_ubuntu_apt.py")
+        script = textwrap.dedent(step.split("        run: |\n", 1)[1])
+        script = script.replace("${{ matrix.arch }}", "arm64")
+        # Exercise the actual branch with sudo replaced by an argument recorder.
+        result = subprocess.run(
+            ["bash", "-eo", "pipefail", "-c", 'sudo() { printf "%s\\n" "$*"; }\n' + script],
+            env={**os.environ, "PINNED": "false"}, capture_output=True, text=True, timeout=5,
+        )
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual(["python3 tools/ci_ubuntu_apt.py linux-arm64"], result.stdout.splitlines())
+        argv = shlex.split(result.stdout.strip())[1:]
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            mock.patch.object(sys, "argv", argv),
+            mock.patch.object(private_apt, "TMP_ROOT", directory),
+            mock.patch.object(private_apt, "prerequisites", return_value=b"fixture"),
+            mock.patch.object(private_apt, "configure", return_value=Path(directory) / "apt.conf"),
+            mock.patch.object(private_apt.subprocess, "run") as package_run,
+        ):
+            self.assertEqual(0, private_apt.main())
+        # Independent contract: never obtain expected packages from COMMANDS.
+        self.assertEqual([
+            ["/usr/bin/apt-get", "update"],
+            ["/usr/bin/apt-get", "install", "-y", "ninja-build"],
+            ["/usr/bin/apt-get", "install", "-y", "gcc-aarch64-linux-gnu",
+             "g++-aarch64-linux-gnu", "qemu-user", "llvm"],
+        ], [call.args[0] for call in package_run.call_args_list])
+
     def test_pr_and_release_lanes_check_the_packaged_arm64_variants(self) -> None:
         check = 'run: tools/check_linux_arm64_cpu_variants.sh "${RUNNER_TEMP}/llamadart-clean-arm64"'
-        pr_job = (ROOT / ".github/workflows/validate_wrapper.yml").read_text().split("\n  linux-artifact-contract:\n")[1]
-        pr_job = pr_job.split("\n  wrapper-contract:\n")[0]
+        pr_job = job_block("validate_wrapper.yml", "linux-artifact-contract")
         release_job = (ROOT / ".github/workflows/native_release.yml").read_text().split("\n  build-linux:\n")[1]
         release_job = release_job.split("\n  build-linux-hip:\n")[0]
         for job in (pr_job, release_job):
             self.assertIn(check, job)
-            self.assertIn("qemu-user llvm", job)
+        self.assert_pr_arm64_dependencies(pr_job)
+        self.assertIn("qemu-user llvm", release_job)
         self.assertIn("if: ${{ matrix.arch == 'arm64' && matrix.include_core }}", release_job)
         script = (ROOT / "tools/check_linux_arm64_cpu_variants.sh").read_text()
         self.assertIn("tools/build.py\" list --linux-arm64-cpu-variant-libs", script)
         for name, _march, _features in build.LINUX_ARM64_CPU_VARIANTS:
             self.assertIn(f"libggml-cpu-{name}.so", script)
+
+    def test_pr_dependency_contract_rejects_required_package_omissions(self) -> None:
+        job = job_block("validate_wrapper.yml", "linux-artifact-contract")
+        for missing in ("qemu-user", "llvm"):
+            commands = tuple(tuple(arg for arg in command if arg != missing)
+                             for command in private_apt.COMMANDS["linux-arm64"])
+            with self.subTest(missing=missing), \
+                    mock.patch.dict(private_apt.COMMANDS, {"linux-arm64": commands}), \
+                    self.assertRaisesRegex(AssertionError, missing):
+                self.assert_pr_arm64_dependencies(job)
+
+    def test_pr_dependency_contract_rejects_wrong_private_lane(self) -> None:
+        job = job_block("validate_wrapper.yml", "linux-artifact-contract")
+        mutant = job.replace("tools/ci_ubuntu_apt.py linux-arm64", "tools/ci_ubuntu_apt.py kleidiai")
+        self.assertNotEqual(job, mutant)
+        with self.assertRaisesRegex(AssertionError, "linux-arm64"):
+            self.assert_pr_arm64_dependencies(mutant)
 
     def test_qemu_smoke_covers_every_selection_outcome(self) -> None:
         script = (ROOT / "tools/check_linux_arm64_cpu_variants.sh").read_text()

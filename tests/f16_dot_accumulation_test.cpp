@@ -1,8 +1,17 @@
 #include "ggml.h"
 #include "ggml-alloc.h"
 #include "ggml-backend.h"
-#if !defined(LLAMADART_TEST_CPU_BACKEND)
 #include "ggml-cpu.h"
+#include "ggml-cpu-impl.h"
+#include "llamafile/sgemm.h"
+#if defined(LLAMADART_TEST_CPU_BACKEND)
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <dlfcn.h>
+#endif
+#else
+extern "C" void ggml_vec_dot_f16(int, float *, size_t, ggml_fp16_t *, size_t, ggml_fp16_t *, size_t, int);
 #endif
 
 #include <algorithm>
@@ -21,6 +30,18 @@ void require(bool condition, const char *message) {
     std::fprintf(stderr, "FAIL: %s\n", message);
     std::exit(1);
   }
+}
+
+void require_f32(ggml_tensor *tensor) {
+#if LLAMADART_GGML_HAS_PREC_ACC
+  require(ggml_prec_set_acc(tensor, GGML_PREC_F32), "F32 accumulator unavailable");
+#else
+  if (tensor->op == GGML_OP_FLASH_ATTN_EXT) {
+    ggml_flash_attn_ext_set_prec(tensor, GGML_PREC_F32);
+  } else {
+    ggml_mul_mat_set_prec(tensor, GGML_PREC_F32);
+  }
+#endif
 }
 
 float rounded_f16(float value) {
@@ -44,6 +65,13 @@ double round_f16(double value) {
 // Whether the CPU module multiplies and adds F16 dot products in F16: FP16
 // vector arithmetic without SVE (upstream widens to F32 under SVE).
 bool f16_sums = false;
+bool f32_query = false;
+bool residual = false;
+using direct_dot_t = void (*)(int, float *, size_t, ggml_fp16_t *, size_t, ggml_fp16_t *, size_t, int);
+direct_dot_t direct_dot = nullptr;
+decltype(&llamafile_sgemm) direct_gemm = nullptr;
+bool residual_gemm = false;
+ggml_threadpool *residual_pool = nullptr;
 
 // Patch 0005 keeps upstream's single-column F16 dot where it is finite: four
 // accumulators of eight lanes take one multiply-add per 32-element step, for
@@ -185,7 +213,7 @@ void values_case(ggml_backend_t backend, const std::vector<float> &key_values,
   auto *k = ggml_view_2d(graph.ctx, padded, width, rows, padded->nb[1], 0);
   auto *q = ggml_new_tensor_2d(graph.ctx, GGML_TYPE_F32, width, cols);
   auto *out = ggml_mul_mat(graph.ctx, k, q);
-  ggml_mul_mat_set_prec(out, GGML_PREC_F32);
+  require_f32(out);
   graph.allocate(out);
 
   std::vector<float> keys(static_cast<size_t>(stride) * rows, NAN);
@@ -205,15 +233,16 @@ void values_case(ggml_backend_t backend, const std::vector<float> &key_values,
       queries[static_cast<size_t>(c) * width + i] = qv;
     }
     actual_k[i] = weight_type == GGML_TYPE_F16 ? rounded_f16(kv) : kv;
-    // The F16 CPU type trait rounds the F32 query before its dot product.
-    actual_q[i] = weight_type == GGML_TYPE_F16 ? rounded_f16(qv) : qv;
+    // Old rows round the query to F16; v1 keeps it F32. Direct residual
+    // kernels always consume F16, independent of default graph reachability.
+    actual_q[i] = weight_type == GGML_TYPE_F16 && (residual || !f32_query) ? rounded_f16(qv) : qv;
     const double product = actual_k[i] * actual_q[i];
     reference += product;
     absolute_sum += std::fabs(product);
   }
   double expected = reference;
   double tolerance = 1e-7 + 2e-6 * absolute_sum;
-  if (cols == 1 && weight_type == GGML_TYPE_F16 && f16_sums) {
+  if (cols == 1 && weight_type == GGML_TYPE_F16 && f16_sums && (residual || !f32_query)) {
     const double blocked = blocked_f16_dot(actual_k, actual_q);
     expected = std::isfinite(blocked) ? static_cast<float>(blocked)
                                       : f32_recompute_dot(actual_k, actual_q);
@@ -225,9 +254,29 @@ void values_case(ggml_backend_t backend, const std::vector<float> &key_values,
     ggml_backend_tensor_set(padded, keys.data(), 0, keys.size() * sizeof(float));
   }
   ggml_backend_tensor_set(q, queries.data(), 0, queries.size() * sizeof(float));
-  graph.compute();
   std::vector<float> actual(static_cast<size_t>(rows) * cols);
-  ggml_backend_tensor_get(out, actual.data(), 0, actual.size() * sizeof(float));
+  if (residual && weight_type == GGML_TYPE_F16) {
+    std::vector<ggml_fp16_t> half_queries(queries.size());
+    std::transform(queries.begin(), queries.end(), half_queries.begin(), ggml_fp32_to_fp16);
+    if (cols == 1) {
+      for (int r = 0; r < rows; ++r) {
+        direct_dot(width, &actual[r], 0, half_keys.data() + r * stride, 0,
+                   half_queries.data(), 0, 1);
+      }
+    } else {
+      if (!residual_gemm) return;
+      ggml_compute_params params{};
+      params.nth = 1;
+      params.threadpool = residual_pool;
+      require(direct_gemm(&params, rows, cols, width, half_keys.data(), stride,
+                          half_queries.data(), width, actual.data(), rows,
+                          GGML_TYPE_F16, GGML_TYPE_F16, GGML_TYPE_F32),
+              "requested residual F16 GEMM declined the shape");
+    }
+  } else {
+    graph.compute();
+    ggml_backend_tensor_get(out, actual.data(), 0, actual.size() * sizeof(float));
+  }
   for (float value : actual) {
     if (!check_result(value, expected, tolerance, name, width, cols)) {
       break;
@@ -241,7 +290,7 @@ constexpr int gemm_block = 512;
 constexpr int gemm_block_steps = gemm_block / 8;
 
 enum class Pattern {
-  positive, cancellation, large_product, maximum, subnormal,
+  positive, cancellation, large_product, maximum, subnormal, f32_query_precision,
   // Every lane of every GEMM block sums exactly to 65504, the F16 maximum.
   block_maximum,
   // As block_maximum but each lane sums to 65536, which overflows in F16.
@@ -263,7 +312,10 @@ void dot_case(ggml_backend_t backend, int width, float magnitude, Pattern patter
   for (int i = 0; i < width; ++i) {
     float kv = magnitude * (1.0f + 0.1f * (i % 5));
     float qv = magnitude * (1.0f + 0.1f * ((i * 3) % 5));
-    if (pattern == Pattern::cancellation) {
+    if (pattern == Pattern::f32_query_precision) {
+      kv = 1.0f;
+      qv = 1.0001f; // distinguish F32 query routing from F16 rounding
+    } else if (pattern == Pattern::cancellation) {
       kv = magnitude;
       qv = i < width / 2 ? magnitude : -magnitude;
     } else if (pattern == Pattern::large_product) {
@@ -361,7 +413,7 @@ void gemm_tile_case(ggml_backend_t backend) {
   auto *k = ggml_view_2d(graph.ctx, padded, width, rows, padded->nb[1], 0);
   auto *q = ggml_new_tensor_2d(graph.ctx, GGML_TYPE_F32, width, cols);
   auto *out = ggml_mul_mat(graph.ctx, k, q);
-  ggml_mul_mat_set_prec(out, GGML_PREC_F32);
+  require_f32(out);
   graph.allocate(out);
 
   std::vector<ggml_fp16_t> keys(static_cast<size_t>(stride) * rows, ggml_fp32_to_fp16(NAN));
@@ -388,9 +440,21 @@ void gemm_tile_case(ggml_backend_t backend) {
   }
   ggml_backend_tensor_set(padded, keys.data(), 0, keys.size() * sizeof(ggml_fp16_t));
   ggml_backend_tensor_set(q, queries.data(), 0, queries.size() * sizeof(float));
-  graph.compute();
   std::vector<float> actual(static_cast<size_t>(rows) * cols);
-  ggml_backend_tensor_get(out, actual.data(), 0, actual.size() * sizeof(float));
+  if (residual) {
+    if (!residual_gemm) return;
+    std::vector<ggml_fp16_t> half_queries(queries.size());
+    std::transform(queries.begin(), queries.end(), half_queries.begin(), ggml_fp32_to_fp16);
+    ggml_compute_params params{};
+    params.nth = 1;
+    params.threadpool = residual_pool;
+    require(direct_gemm(&params, rows, cols, width, keys.data(), stride,
+                        half_queries.data(), width, actual.data(), rows,
+                        GGML_TYPE_F16, GGML_TYPE_F16, GGML_TYPE_F32), "residual tile declined");
+  } else {
+    graph.compute();
+    ggml_backend_tensor_get(out, actual.data(), 0, actual.size() * sizeof(float));
+  }
   for (int c = 0; c < cols; ++c) {
     for (int r = 0; r < rows; ++r) {
       double expected = 0.0;
@@ -418,10 +482,10 @@ void attention_case(ggml_backend_t backend, bool flash, int queries_count) {
   ggml_tensor *out;
   if (flash) {
     out = ggml_flash_attn_ext(graph.ctx, q, k, v, nullptr, scale, 0.0f, 0.0f);
-    ggml_flash_attn_ext_set_prec(out, GGML_PREC_F32);
+    require_f32(out);
   } else {
     auto *scores = ggml_mul_mat(graph.ctx, k, q);
-    ggml_mul_mat_set_prec(scores, GGML_PREC_F32);
+    require_f32(scores);
     auto *probabilities = ggml_soft_max_ext(graph.ctx, scores, nullptr, scale, 0.0f);
     out = ggml_mul_mat(graph.ctx, v, probabilities);
   }
@@ -452,7 +516,7 @@ void attention_case(ggml_backend_t backend, bool flash, int queries_count) {
   for (int r = 0; r < keys_count; ++r) {
     probabilities[r] /= denominator;
     // Ordinary F16 V matmul also rounds its probability input to F16.
-    const double p = flash ? probabilities[r] : rounded_f16(static_cast<float>(probabilities[r]));
+    const double p = flash || f32_query ? probabilities[r] : rounded_f16(static_cast<float>(probabilities[r]));
     for (int i = 0; i < width; ++i) {
       const float value = 1.0f + ((i + r) % 7) * 0.125f;
       value_data[flash ? static_cast<size_t>(r) * width + i
@@ -466,7 +530,8 @@ void attention_case(ggml_backend_t backend, bool flash, int queries_count) {
   graph.compute();
   std::vector<float> actual(static_cast<size_t>(width) * queries_count);
   ggml_backend_tensor_get(out, actual.data(), 0, actual.size() * sizeof(float));
-  // Flash attention accumulates V in F16 on one of its CPU paths.
+  // Compatibility rows accumulate V in F16 on one CPU path. Preserve the
+  // existing bound; this tiny graph is not the Nemotron3 CPU-FA model gate.
   const double tolerance = flash ? 4e-3 : 1e-3;
   for (size_t j = 0; j < actual.size(); ++j) {
     if (!check_result(actual[j], expected[j % width], tolerance,
@@ -478,7 +543,41 @@ void attention_case(ggml_backend_t backend, bool flash, int queries_count) {
 
 }  // namespace
 
-int main() {
+int main(int argc, char **argv) {
+  residual = argc == 2 && std::strcmp(argv[1], "--residual") == 0;
+  decltype(&ggml_get_type_traits_cpu) get_traits = nullptr;
+  decltype(&ggml_cpu_has_llamafile) has_llamafile = nullptr;
+#if defined(LLAMADART_TEST_CPU_BACKEND)
+#ifdef _WIN32
+  auto module = LoadLibraryA(LLAMADART_TEST_CPU_BACKEND);
+  const auto symbol = [module](const char *name) { return GetProcAddress(module, name); };
+#else
+  auto module = dlopen(LLAMADART_TEST_CPU_BACKEND, RTLD_NOW | RTLD_LOCAL);
+  const auto symbol = [module](const char *name) { return dlsym(module, name); };
+#endif
+  require(module != nullptr, "could not inspect requested CPU module");
+  get_traits = reinterpret_cast<decltype(get_traits)>(symbol("ggml_get_type_traits_cpu"));
+  has_llamafile = reinterpret_cast<decltype(has_llamafile)>(symbol("ggml_cpu_has_llamafile"));
+  direct_dot = reinterpret_cast<direct_dot_t>(symbol("ggml_vec_dot_f16"));
+  direct_gemm = reinterpret_cast<decltype(direct_gemm)>(symbol("llamafile_sgemm"));
+#else
+  get_traits = ggml_get_type_traits_cpu;
+  has_llamafile = ggml_cpu_has_llamafile;
+  direct_dot = ggml_vec_dot_f16;
+#if LLAMADART_TEST_LLAMAFILE
+  direct_gemm = llamafile_sgemm;
+#endif
+#endif
+  require(get_traits != nullptr, "CPU type traits unavailable");
+  const auto query_type = get_traits(GGML_TYPE_F16)->vec_dot_type;
+  require(query_type == GGML_TYPE_F16 || query_type == GGML_TYPE_F32, "unknown F16 query routing");
+  f32_query = query_type == GGML_TYPE_F32;
+  require(f32_query == static_cast<bool>(LLAMADART_TEST_F32_QUERY),
+          "F16 query route disagrees with the qualified upstream row");
+  residual_gemm = direct_gemm && has_llamafile && has_llamafile();
+  std::printf("F16 graph query type: %s; mode: %s; residual GEMM: %s\n",
+              f32_query ? "F32" : "F16", residual ? "direct kernels" : "graph",
+              residual_gemm ? "enabled" : "not built");
 #if defined(LLAMADART_TEST_CPU_BACKEND)
   ggml_backend_reg_t reg = ggml_backend_load(LLAMADART_TEST_CPU_BACKEND);
   std::printf("CPU module: %s\n", LLAMADART_TEST_CPU_BACKEND);
@@ -508,7 +607,34 @@ int main() {
     fp16_va |= std::strcmp(feature->name, "FP16_VA") == 0;
     sve |= std::strcmp(feature->name, "SVE") == 0;
   }
+  auto pool_new = reinterpret_cast<decltype(&ggml_threadpool_new)>(
+      ggml_backend_reg_get_proc_address(reg, "ggml_threadpool_new"));
+  auto pool_free = reinterpret_cast<decltype(&ggml_threadpool_free)>(
+      ggml_backend_reg_get_proc_address(reg, "ggml_threadpool_free"));
+  if (residual_gemm && residual) {
+    require(pool_new && pool_free, "residual threadpool API unavailable");
+    auto params = ggml_threadpool_params_default(1);
+    residual_pool = pool_new(&params);
+    require(residual_pool != nullptr, "residual threadpool allocation failed");
+    auto set_pool = reinterpret_cast<decltype(&ggml_backend_cpu_set_threadpool)>(
+        ggml_backend_reg_get_proc_address(reg, "ggml_backend_cpu_set_threadpool"));
+    require(set_pool != nullptr, "residual backend threadpool setter unavailable");
+    set_pool(backend, residual_pool);
+    // Let the backend initialize the pool's active graph/thread count. Calling
+    // an internal GEMM against a newly allocated idle pool would deadlock.
+    dot_case(backend, 8, 1.0f, Pattern::positive, GGML_TYPE_F32, "pool-init");
+  }
   f16_sums = fp16_va && !sve;
+  if (residual && !f16_sums) {
+    std::printf("SKIP: residual FP16 NEON kernel unavailable on requested module\n");
+    return 77;
+  }
+  if (residual) {
+    require(direct_dot != nullptr, "residual F16 kernel symbol missing");
+    if (has_llamafile && has_llamafile()) {
+      require(direct_gemm != nullptr, "compiled llamafile kernel symbol missing");
+    }
+  }
   std::printf("\nSingle-column F16 dot expectation: %s\n",
               f16_sums ? "upstream F16 sums in 64-step blocks" : "exact");
 
@@ -516,6 +642,7 @@ int main() {
     dot_case(backend, 64, static_cast<float>(magnitude), Pattern::positive,
              GGML_TYPE_F16, "upstream-positive");
   }
+  dot_case(backend, 64, 0.0f, Pattern::f32_query_precision, GGML_TYPE_F16, "query-precision");
   const int widths[] = {1, 7, 8, 15, 16, 31, 32, 33, 63, 64, 65, 127, 128, 129};
   for (int width : widths) {
     dot_case(backend, width, 100.0f, Pattern::positive, GGML_TYPE_F16, "tail-positive");
@@ -572,7 +699,7 @@ int main() {
     }
   }
   // Elsewhere F32 sums of these rows drift past the exact-sum tolerance.
-  if (f16_sums) {
+  if (f16_sums && (residual || !f32_query)) {
     constexpr int short_width = 2 * dot_step + 5;
     constexpr int long_width = 2 * dot_block + dot_step + 5;
     spread_case(backend, 64, -1, "spread");
@@ -584,7 +711,7 @@ int main() {
     spread_case(backend, long_width, 5 * dot_step + 3, "spread-blocks-recompute");
   }
   // Upstream's other F16 dot paths assert a finite sum in debug builds.
-  if (f16_sums) {
+  if (f16_sums && (residual || !f32_query)) {
     for (int width : {2 * dot_step + 5, 2 * dot_block + dot_step + 5}) {
       for (int index : {9, width - 3}) {
         nonfinite_input_case(backend, width, index, NAN, "nan-input");
@@ -609,18 +736,29 @@ int main() {
   }
   gemm_tile_case(backend);
   dot_case(backend, 64, 100.0f, Pattern::positive, GGML_TYPE_F32, "gemm-f32-control", 8);
-  for (int queries_count : {1, 8}) {
+  for (int queries_count : residual ? std::vector<int>{} : std::vector<int>{1, 8}) {
     attention_case(backend, false, queries_count);
     attention_case(backend, true, queries_count);
   }
   ggml_backend_free(backend);
+  if (residual_pool) pool_free(residual_pool);
 #if defined(LLAMADART_TEST_CPU_BACKEND)
   ggml_backend_unload(reg);
+#ifdef _WIN32
+  FreeLibrary(module);
+#else
+  dlclose(module);
+#endif
 #endif
   if (failures != 0) {
     std::fprintf(stderr, "FAIL: %d checks\n", failures);
     return 1;
   }
-  std::printf("PASS: finite F16 dot and GEMM, tails, controls and ordinary/flash attention\n");
+  if (residual) {
+    std::printf("PASS: direct F16 dot, blocked/recompute and tails; GEMM %s\n",
+                residual_gemm ? "tile controls passed" : "not executed (not built)");
+  } else {
+    std::printf("PASS: F16 graph routing, tails and ordinary/flash attention\n");
+  }
   return 0;
 }

@@ -2363,7 +2363,9 @@ static enum llama_dart_tts_status llama_dart_tts_start_impl(
   }
 #endif
 
-  mtmd_helper_gen_audio_inp input{};
+  const auto audio_info = mtmd_gen_audio_get_info(tts->mtmd);
+  auto input = llama_dart_audio_input_compat(tts->model_type,
+                                             audio_info.model_variant);
   input.seq_id = tts->sequence_id;
   input.prompt = prompt.empty() ? request->text : prompt.c_str();
   input.prompt_len = prompt.empty() ? request->text_length : prompt.size();
