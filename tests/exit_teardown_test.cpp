@@ -2307,6 +2307,102 @@ int test_model_tts(const char *path, const char *mmproj_path) {
   return 0;
 }
 
+// Exits with a live ASR session over tracked contexts that nothing frees. The
+// session owns an audio stream and its encoder state, so teardown must free it
+// before the mtmd context and the model.
+int test_model_asr_stream(const char *path, const char *mmproj_path) {
+  model_fixture fixture = load_model(path);
+  const mtmd_context_params params = mtmd_context_params_default();
+  mtmd_context *mtmd =
+      llama_dart_mtmd_init_from_file(mmproj_path, fixture.model, &params);
+  assert(mtmd != nullptr);
+  assert(llama_dart_exit_tracked_count() == 3);
+  const uint32_t modes = llama_dart_asr_stream_supported_modes();
+  llama_dart_asr_stream_info info{};
+  info.struct_size = sizeof(info);
+  assert(llama_dart_asr_stream_get_info(fixture.context, mtmd, modes, &info) ==
+         LLAMA_DART_ASR_STREAM_STATUS_OK);
+  assert(llama_dart_exit_tracked_count() == 3);
+
+  llama_dart_asr_stream_status status =
+      LLAMA_DART_ASR_STREAM_STATUS_INVALID_ARGUMENT;
+  llama_dart_asr_stream *stream = llama_dart_asr_stream_init(
+      fixture.context, mtmd, modes, nullptr, &status);
+  assert(stream != nullptr && status == LLAMA_DART_ASR_STREAM_STATUS_OK);
+  assert(llama_dart_exit_tracked_count() == 4);
+  llama_dart_asr_stream_free(stream);
+  assert(llama_dart_exit_tracked_count() == 3);
+
+  stream = llama_dart_asr_stream_init(fixture.context, mtmd, modes, nullptr,
+                                      &status);
+  assert(stream != nullptr && status == LLAMA_DART_ASR_STREAM_STATUS_OK);
+  const std::vector<float> silence(
+      static_cast<size_t>(info.sample_rate) / 2, 0.0f);
+  size_t accepted = 0;
+  assert(llama_dart_asr_stream_push(stream, silence.data(), silence.size(),
+                                    &accepted) ==
+             LLAMA_DART_ASR_STREAM_STATUS_OK &&
+         accepted == silence.size());
+  llama_dart_asr_stream_progress progress{};
+  progress.struct_size = sizeof(progress);
+  for (int step = 0; step < 4; ++step) {
+    assert(llama_dart_asr_stream_step(stream, &progress) ==
+           LLAMA_DART_ASR_STREAM_STATUS_OK);
+  }
+  assert(llama_dart_exit_tracked_count() == 4);
+  return 0;
+}
+
+// A session over contexts that teardown does not track is left alone.
+int test_model_asr_stream_untracked(const char *path, const char *mmproj_path) {
+  model_options options;
+  options.tracked = false;
+  // Metal aborts at exit over a model that is left loaded.
+  options.cpu_only = true;
+  model_fixture fixture = load_model(path, options);
+  mtmd_context_params params = mtmd_context_params_default();
+  params.use_gpu = false;
+  mtmd_context *mtmd = mtmd_init_from_file(mmproj_path, fixture.model, params);
+  assert(mtmd != nullptr);
+  llama_dart_asr_stream_status status =
+      LLAMA_DART_ASR_STREAM_STATUS_INVALID_ARGUMENT;
+  llama_dart_asr_stream *stream = llama_dart_asr_stream_init(
+      fixture.context, mtmd, llama_dart_asr_stream_supported_modes(), nullptr,
+      &status);
+  assert(stream != nullptr && status == LLAMA_DART_ASR_STREAM_STATUS_OK);
+  assert(llama_dart_exit_tracked_count() == 1);
+
+  std::thread([] { llama_dart_exit_call_begin(); }).join();
+  llama_dart_exit_set_wait_ms(30000);
+  const auto started = std::chrono::steady_clock::now();
+  llama_dart_exit_teardown();
+  assert(elapsed_ms(started) < 5000);
+  assert(llama_dart_exit_tracked_count() == 1);
+  return 0;
+}
+
+// A projector without a stream (Qwen3-ASR) is refused and tracks nothing.
+int test_model_asr_stream_refused(const char *path, const char *mmproj_path) {
+  model_fixture fixture = load_model(path);
+  const mtmd_context_params params = mtmd_context_params_default();
+  mtmd_context *mtmd =
+      llama_dart_mtmd_init_from_file(mmproj_path, fixture.model, &params);
+  assert(mtmd != nullptr);
+  assert(llama_dart_exit_tracked_count() == 3);
+  const uint32_t modes = llama_dart_asr_stream_supported_modes();
+  llama_dart_asr_stream_info info{};
+  info.struct_size = sizeof(info);
+  assert(llama_dart_asr_stream_get_info(fixture.context, mtmd, modes, &info) ==
+         LLAMA_DART_ASR_STREAM_STATUS_UNSUPPORTED);
+  llama_dart_asr_stream_status status = LLAMA_DART_ASR_STREAM_STATUS_OK;
+  assert(llama_dart_asr_stream_init(fixture.context, mtmd, modes, nullptr,
+                                    &status) == nullptr);
+  assert(status == LLAMA_DART_ASR_STREAM_STATUS_UNSUPPORTED);
+  assert(llama_dart_last_error() == nullptr);
+  assert(llama_dart_exit_tracked_count() == 3);
+  return 0;
+}
+
 void throw_on_free(void *) { throw std::runtime_error("free failed"); }
 
 void throw_number_on_free(void *) { throw 42; }
@@ -3185,6 +3281,15 @@ int main(int argc, char **argv) {
       }
       if (scenario == "model-tts") {
         return test_model_tts(first, second);
+      }
+      if (scenario == "model-asr-stream") {
+        return test_model_asr_stream(first, second);
+      }
+      if (scenario == "model-asr-stream-untracked") {
+        return test_model_asr_stream_untracked(first, second);
+      }
+      if (scenario == "model-asr-stream-refused") {
+        return test_model_asr_stream_refused(first, second);
       }
     }
   }

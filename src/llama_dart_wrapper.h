@@ -39,7 +39,8 @@ struct mtmd_input_text;
 // stage before any object of a higher one, so an object goes before the
 // objects it uses.
 enum llama_dart_exit_stage {
-    // Per-request state over a context: speculative, TTS and sampler state.
+    // Per-request state over a context: speculative, TTS, live ASR and sampler
+    // state.
     LLAMA_DART_EXIT_STAGE_SESSION = 0,
     // ggml schedulers.
     LLAMA_DART_EXIT_STAGE_SCHEDULER = 1,
@@ -235,6 +236,8 @@ LLAMADART_API void llama_dart_set_log_level(int level);
 // - llama_dart_ggml_backend_sched_graph_compute returns GGML_STATUS_FAILED;
 // - a function that returns llama_dart_tts_status returns
 //   LLAMA_DART_TTS_STATUS_UPSTREAM_ERROR and fails the task;
+// - a function that returns llama_dart_asr_stream_status returns
+//   LLAMA_DART_ASR_STREAM_STATUS_UPSTREAM_ERROR and fails the session;
 // - a function that returns nothing only records the message.
 //
 // Where the failure value is also what llama.cpp returns for a failure of its
@@ -244,7 +247,7 @@ LLAMADART_API void llama_dart_set_log_level(int level);
 // Read it from the same thread before anything else runs there.
 //
 // The functions that free an object (llama_dart_exit_free and the
-// llama_dart_tts and speculative free functions) are the
+// llama_dart_tts, llama_dart_asr_stream and speculative free functions) are the
 // exception: they set the last error when they catch an exception and do not
 // clear it otherwise, because a Dart finalizer may run one on a thread
 // between a call that failed there and the read of its error. Call
@@ -260,7 +263,9 @@ LLAMADART_API void llama_dart_set_log_level(int level);
 // llama_dart_cancel_flag_abort_callback, the llama_dart_vulkan_ functions,
 // which report through their own status, and the llama_dart_tts_ functions
 // that only read or set fields of the task (api_version, request_default,
-// supported_model_types, cancel, get_output_info, read_pcm, last_error).
+// supported_model_types, cancel, get_output_info, read_pcm, last_error), and
+// the llama_dart_asr_stream_ functions api_version, supported_modes,
+// params_default, cancel and last_error.
 // They leave the last error unchanged.
 //
 // After a caught exception, the objects that were passed to the call may be
@@ -279,6 +284,7 @@ LLAMADART_API void llama_dart_set_log_level(int level);
 //   it.
 // - Speculative, MTP and n-gram state: free it.
 // - A TTS task: it is FAILED. Free it and the llama context it ran on.
+// - A live ASR session: it is FAILED. Free it and the llama context it ran on.
 // - A ggml backend, scheduler or buffer (the llama_dart_ggml_backend_
 //   functions other than the two device queries): free it.
 // - Nothing changes for the model or vocabulary of llama_dart_tokenize,
@@ -401,14 +407,14 @@ LLAMADART_API int32_t llama_dart_vulkan_get_device_info(
 // Objects are tracked, before the creating call returns, by
 // llama_dart_model_load_from_file, llama_dart_init_from_model,
 // llama_dart_mtmd_init_from_file and the llama_dart_tts,
-// llama_dart_speculative init function,
+// llama_dart_asr_stream and llama_dart_speculative init functions,
 // and by llama_dart_exit_track.
 //
 // Teardown waits a bounded time for the calls in flight and then frees the
 // tracked objects in llama_dart_exit_stage order, latest tracked first within
 // a stage. If a call is still in flight when the wait ends, it frees nothing.
-// It leaves TTS, speculative and MTP state alone while the llama or mtmd
-// context that state was created over is not tracked: a caller that creates
+// It leaves TTS, live ASR, speculative and MTP state alone while the llama or
+// mtmd context that state was created over is not tracked: a caller that creates
 // contexts with the upstream functions may be using them in calls teardown
 // cannot see. With nothing to free and no creating call or free in flight, it
 // does not wait.
@@ -421,7 +427,7 @@ LLAMADART_API int32_t llama_dart_vulkan_get_device_info(
 //   name, llama_dart_mtmd_encode_chunk_cancellable, and the three
 //   llama_dart_mtmd_bitmap_init functions;
 // - the libllamadart functions that create, free, or run a task, draft or
-//   batch on, TTS, speculative, MTP or n-gram state;
+//   batch on, TTS, live ASR, speculative, MTP or n-gram state;
 // - llama_dart_sampler_sample_and_accept_n;
 // or between llama_dart_exit_call_begin and llama_dart_exit_call_end.
 //
@@ -1224,6 +1230,207 @@ LLAMADART_API int32_t llama_dart_sampler_sample_and_accept_n(
     int32_t draft_count,
     llama_token * out_tokens,
     int32_t out_capacity);
+
+// Live speech-to-text (llamadart-native#148). A session turns 16 kHz mono PCM
+// into text while the audio arrives, over the experimental mtmd_audio_stream
+// of llama.cpp. libllamadart drives the stream, the decode of its rows and the
+// greedy sampling, one bounded unit of work per llama_dart_asr_stream_step.
+// The caller keeps the llama and mtmd contexts; the mtmd context must have been
+// created with the text model. Other calls on the llama context must stay
+// idle until the session finishes, is cancelled or is reset.
+//
+// Every function but api_version, supported_modes, params_default, cancel and
+// last_error runs behind the exit-teardown guard and the exception barrier of
+// llama_dart_exit_*. A function that returns llama_dart_asr_stream_status
+// returns UPSTREAM_ERROR when it catches an exception and fails the session
+// like any other upstream error: it is FAILED, and a caller frees it and the
+// llama context it ran on. The session is tracked in
+// LLAMA_DART_EXIT_STAGE_SESSION before init returns and is freed by
+// llama_dart_asr_stream_free or llama_dart_exit_free. Like a TTS task, exit
+// teardown leaves it alone while its llama or mtmd context is untracked.
+#define LLAMA_DART_ASR_STREAM_API_VERSION 1
+
+// Opaque live ASR session owned by libllamadart.
+struct llama_dart_asr_stream;
+
+enum llama_dart_asr_stream_status {
+    LLAMA_DART_ASR_STREAM_STATUS_OK = 0,
+    LLAMA_DART_ASR_STREAM_STATUS_INVALID_ARGUMENT = -1,
+    // The model, projector, mode or option has no live transcription here.
+    LLAMA_DART_ASR_STREAM_STATUS_UNSUPPORTED = -2,
+    LLAMA_DART_ASR_STREAM_STATUS_INVALID_STATE = -3,
+    LLAMA_DART_ASR_STREAM_STATUS_UPSTREAM_ERROR = -5,
+    LLAMA_DART_ASR_STREAM_STATUS_CANCELLED = -6,
+    // The context cannot hold more audio. The state is FINISHED and the text
+    // so far stays readable.
+    LLAMA_DART_ASR_STREAM_STATUS_CONTEXT_FULL = -7,
+};
+
+// How a model transcribes, not which model it is. A caller names the modes it
+// handles in accepted_modes (a mask of 1u << mode), so a later mode never
+// reaches one that does not know it.
+enum llama_dart_asr_stream_mode {
+    LLAMA_DART_ASR_STREAM_MODE_NONE = 0,
+    // One text token per 80 ms of audio, a few tokens after it (Voxtral
+    // Realtime). The context grows with the audio and never shifts.
+    LLAMA_DART_ASR_STREAM_MODE_TOKEN_DELAY = 1,
+    // The text of a 0.96 s chunk of audio at a time, under the prompt of the
+    // model's "asr" chat template (LFM3-Audio). The sequence restarts at a
+    // quiet chunk after 15 s and always after 30 s.
+    LLAMA_DART_ASR_STREAM_MODE_PROMPTED_CHUNKS = 2,
+};
+
+enum llama_dart_asr_stream_state {
+    // The queue holds no audio and the input has not been finished.
+    LLAMA_DART_ASR_STREAM_STATE_NEEDS_AUDIO = 0,
+    LLAMA_DART_ASR_STREAM_STATE_WORKING = 1,
+    // The input was finished and its text is complete, or the model ended it,
+    // or the context is full.
+    LLAMA_DART_ASR_STREAM_STATE_FINISHED = 2,
+    LLAMA_DART_ASR_STREAM_STATE_CANCELLED = 3,
+    LLAMA_DART_ASR_STREAM_STATE_FAILED = 4,
+};
+
+struct llama_dart_asr_stream_info {
+    // Set to sizeof(struct llama_dart_asr_stream_info) before calling get_info.
+    uint32_t struct_size;
+    uint32_t api_version;
+    int32_t mode;
+    // Mono float PCM at this rate: 16000.
+    int32_t sample_rate;
+    int32_t channels;
+    // Audio per step of text: 80 for TOKEN_DELAY, 960 for PROMPTED_CHUNKS.
+    int32_t text_interval_ms;
+    // Audio the model needs before it writes the text of the first of it.
+    int32_t delay_ms;
+    // Audio one session can take, or 0 when it is not bounded by the context
+    // (PROMPTED_CHUNKS restarts its sequence). For TOKEN_DELAY it is the rows
+    // of the context after the prefix, 80 ms each.
+    int64_t max_session_ms;
+};
+
+struct llama_dart_asr_stream_params {
+    // Set by llama_dart_asr_stream_params_default. Callers should start from it.
+    uint32_t struct_size;
+    // Audio push holds before it takes no more (default 30000).
+    int32_t max_buffered_ms;
+    // The context sequence the session decodes in (default 0). A restart of
+    // the transcript removes this sequence from the context's memory.
+    llama_seq_id sequence_id;
+};
+
+struct llama_dart_asr_stream_progress {
+    // Set to sizeof(struct llama_dart_asr_stream_progress) before each step.
+    uint32_t struct_size;
+    int32_t state;
+    // Sequence restarts so far. PROMPTED_CHUNKS drops its sequence and starts
+    // over, and a word at the cut can be lost. read_text after every step to
+    // tell which restart a piece of text follows.
+    int32_t segment_breaks;
+    int32_t tokens_sampled;
+    // Audio the queue still holds, and audio handed to the model so far.
+    int64_t samples_buffered;
+    int64_t samples_consumed;
+    // Bytes read_text would return now.
+    int64_t text_available;
+};
+
+// Returns the version of the session contract.
+LLAMADART_API uint32_t llama_dart_asr_stream_api_version(void);
+
+// Returns the mask of modes this build can drive (1u << mode for each).
+LLAMADART_API uint32_t llama_dart_asr_stream_supported_modes(void);
+
+LLAMADART_API struct llama_dart_asr_stream_params
+llama_dart_asr_stream_params_default(void);
+
+// Reads what the loaded model can do, without creating a session. UNSUPPORTED
+// when the projector has no text stream (Qwen3-ASR and every model that
+// llama.cpp cannot stream), when the model only prefills a chat turn (Gemma 4,
+// LFM3-Omni, LFM3-Audio without its "asr" template), when its mode is not in
+// accepted_modes, when n_batch cannot hold the first batch (39 rows for
+// TOKEN_DELAY) or when the audio is not 16 kHz. llama_dart_asr_stream_init is
+// authoritative: it returns UNSUPPORTED for anything it cannot open. The
+// fields of info are set only for OK.
+LLAMADART_API enum llama_dart_asr_stream_status llama_dart_asr_stream_get_info(
+    const struct llama_context * llama,
+    const struct mtmd_context * mtmd,
+    uint32_t accepted_modes,
+    struct llama_dart_asr_stream_info * out_info);
+
+// Creates a session. The caller retains the llama and mtmd contexts. params
+// may be NULL for the defaults. Returns NULL with *out_status set when it
+// cannot.
+LLAMADART_API struct llama_dart_asr_stream * llama_dart_asr_stream_init(
+    struct llama_context * llama,
+    struct mtmd_context * mtmd,
+    uint32_t accepted_modes,
+    const struct llama_dart_asr_stream_params * params,
+    enum llama_dart_asr_stream_status * out_status);
+
+LLAMADART_API void llama_dart_asr_stream_free(struct llama_dart_asr_stream * stream);
+
+// Copies up to sample_count samples into the session's queue and reports in
+// *out_accepted how many it took: fewer than offered when the queue reaches
+// max_buffered_ms. It never drops audio; offer the rest after steps have
+// drained the queue. INVALID_STATE after finish, in a final state or after a
+// failure.
+LLAMADART_API enum llama_dart_asr_stream_status llama_dart_asr_stream_push(
+    struct llama_dart_asr_stream * stream,
+    const float * samples,
+    size_t sample_count,
+    size_t * out_accepted);
+
+// Ends the input: the model pads and transcribes what is queued, and the
+// session reaches FINISHED once its text is out. The pause flush of
+// mtmd_audio_stream_flush(end = false) is not exposed, because it changes the
+// transcript. Calling it twice is INVALID_STATE.
+LLAMADART_API enum llama_dart_asr_stream_status llama_dart_asr_stream_finish(
+    struct llama_dart_asr_stream * stream);
+
+// One bounded unit of work: at most one step of audio from the queue to the
+// model, one upstream stream step, and when it returns rows one decode and one
+// sample. It is a single call in flight for exit teardown, so teardown and a
+// cancel wait for at most one step. OK with the state in progress (also when
+// the model needs more audio); CANCELLED after a cancel; CONTEXT_FULL when the
+// context has no room for the rows (state FINISHED). Once the state is
+// FINISHED, CANCELLED or FAILED a step returns INVALID_STATE (CANCELLED for a
+// cancelled session) until the session is reset.
+LLAMADART_API enum llama_dart_asr_stream_status llama_dart_asr_stream_step(
+    struct llama_dart_asr_stream * stream,
+    struct llama_dart_asr_stream_progress * out_progress);
+
+// Moves the UTF-8 text produced since the last read into out, complete code
+// points only, without a terminating zero, and sets *out_len to its size. out
+// may be NULL to query the size; otherwise capacity must be at least 4. Text
+// stays readable after FINISHED and CONTEXT_FULL, and is dropped by reset.
+LLAMADART_API enum llama_dart_asr_stream_status llama_dart_asr_stream_read_text(
+    struct llama_dart_asr_stream * stream,
+    char * out,
+    size_t capacity,
+    size_t * out_len);
+
+// May be called from any thread. The next step returns CANCELLED, releases the
+// stream and the sequence and produces no more text.
+LLAMADART_API void llama_dart_asr_stream_cancel(struct llama_dart_asr_stream * stream);
+
+// Attaches a caller-owned cancel byte. Any thread may set *flag to nonzero; a
+// step reads it on entry and then behaves as after cancel, even if *flag
+// returns to zero. The session drops the flag when it ends, is reset or is
+// freed; *flag must stay readable until then.
+LLAMADART_API enum llama_dart_asr_stream_status llama_dart_asr_stream_set_cancel_flag(
+    struct llama_dart_asr_stream * stream,
+    const int8_t * flag);
+
+// Drops the upstream stream, the sequence, the queue and the text, so the
+// session can take a new input. Works in every state.
+LLAMADART_API enum llama_dart_asr_stream_status llama_dart_asr_stream_reset(
+    struct llama_dart_asr_stream * stream);
+
+// Returns a session-owned diagnostic string, valid until the next call on the
+// session.
+LLAMADART_API const char * llama_dart_asr_stream_last_error(
+    const struct llama_dart_asr_stream * stream);
 
 #ifdef __cplusplus
 }
