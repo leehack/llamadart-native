@@ -94,6 +94,7 @@ DEFAULT_REQUIRED_SYMBOLS = [
     "llama_dart_tts_get_info_ext",
     "llama_dart_tts_init_ext",
     "llama_dart_tts_start_with_voice",
+    "llama_dart_tts_start_streaming",
     "llama_dart_tts_get_voice_count",
     "llama_dart_tts_get_voice_name",
     "llama_dart_cancel_flag_abort_callback",

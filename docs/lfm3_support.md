@@ -15,7 +15,7 @@ issue #130; it claims no model, device or consumer qualification.
 | Text (LFM3-1.7B) | `LLM_ARCH_LFM3` in libllama | None: the generic load, decode and sampling exports. |
 | VL (LFM3-VL-2B) | `lfm3vl` projector in mtmd | None: the generic `llama_dart_mtmd_` exports. The image-token limit stays Gemma 4 only. |
 | Audio input, ASR (LFM3-Audio, LFM3-Omni) | `lfm3a` encoder in mtmd | None: the generic `llama_dart_mtmd_` exports. |
-| Speech output (LFM3-Audio, LFM3-Omni) | `MTMD_GEN_AUDIO_TYPE_LFM3A` | Added, opt-in: complete PCM only. |
+| Speech output (LFM3-Audio, LFM3-Omni) | `MTMD_GEN_AUDIO_TYPE_LFM3A` | Added, opt-in; streamed PCM through `llama_dart_tts_start_streaming`, see [tts_streaming.md](tts_streaming.md). |
 | d1 (d1-2B, d1-Omni-2B) | `LLM_ARCH_LFM3`, non-causal, `lfm3-d1` and `lfm3-d1-omni` decision types | None: decision scoring is the consumer's. |
 | Video (VL, d1, Omni soundtrack) | `mtmd_helper_video_*`, needs the `ffmpeg` binary | Not wrapped. |
 
@@ -68,7 +68,8 @@ Metal, and ASR transcribes the speech back to its text.
 
 Each needs its own contract, not a flag on the TTS task:
 
-- Streaming PCM (`stream`, `mtmd_helper_gen_audio_flush`).
+- Streaming PCM is exposed by `llama_dart_tts_start_streaming`, see
+  [tts_streaming.md](tts_streaming.md); text and audio interleaving is not.
 - Omni mixed text and audio, and sequence continuation (`n_past`, `out_mode`,
   `mtmd_helper_gen_audio_next_is_text`, `mtmd_helper_gen_audio_get_logit_bias`):
   the caller samples the text slots.

@@ -191,6 +191,7 @@ void capabilities_are_exact_per_model_type() {
   constexpr uint32_t kLanguage = LLAMA_DART_TTS_CAPABILITY_LANGUAGE;
   constexpr uint32_t kSpeaker = LLAMA_DART_TTS_CAPABILITY_SPEAKER_REFERENCE;
   constexpr uint32_t kVoice = LLAMA_DART_TTS_CAPABILITY_VOICE;
+  constexpr uint32_t kStream = LLAMA_DART_TTS_CAPABILITY_STREAMING_PCM;
   llama_dart_tts_model_traits none;
   llama_dart_tts_model_traits all;
   all.speaker_encoder = true;
@@ -202,14 +203,15 @@ void capabilities_are_exact_per_model_type() {
   voices.predefined_voices = true;
   const auto qwen3 = LLAMA_DART_TTS_MODEL_TYPE_QWEN3;
   assert(llama_dart_tts_model_capabilities(qwen3, encoder) ==
-         (kLanguage | kSpeaker));
-  assert(llama_dart_tts_model_capabilities(qwen3, none) == kLanguage);
+         (kLanguage | kSpeaker | kStream));
+  assert(llama_dart_tts_model_capabilities(qwen3, none) ==
+         (kLanguage | kStream));
   // A voice is not selectable on Qwen3-TTS, so start_with_voice is UNSUPPORTED.
   assert((llama_dart_tts_model_capabilities(qwen3, all) & kVoice) == 0);
   for (const auto &traits : {none, all}) {
     assert(llama_dart_tts_model_capabilities(
                LLAMA_DART_TTS_MODEL_TYPE_LFM3_AUDIO, traits) ==
-           (kLanguage | kVoice));
+           (kLanguage | kVoice | kStream));
     assert(llama_dart_tts_model_capabilities(LLAMA_DART_TTS_MODEL_TYPE_SOPRANO,
                                              traits) == 0);
     assert(llama_dart_tts_model_capabilities(LLAMA_DART_TTS_MODEL_TYPE_NONE,
@@ -218,6 +220,8 @@ void capabilities_are_exact_per_model_type() {
                                              traits) == 0);
   }
   const auto chatterbox = LLAMA_DART_TTS_MODEL_TYPE_CHATTERBOX;
+  // Chatterbox decodes its whole utterance in one flow decode at the end, so
+  // it never reports streaming.
   assert(llama_dart_tts_model_capabilities(chatterbox, all) ==
          (kLanguage | kSpeaker | kVoice));
   // Turbo: a speaker encoder and the shipped voice, no language.
@@ -229,10 +233,13 @@ void capabilities_are_exact_per_model_type() {
   assert(llama_dart_tts_model_capabilities(chatterbox, voices) == kVoice);
   const auto pocket = LLAMA_DART_TTS_MODEL_TYPE_POCKET_TTS;
   // The language of Pocket TTS is that of its weights.
-  assert(llama_dart_tts_model_capabilities(pocket, all) == (kSpeaker | kVoice));
-  assert(llama_dart_tts_model_capabilities(pocket, voices) == kVoice);
-  assert(llama_dart_tts_model_capabilities(pocket, encoder) == kSpeaker);
-  assert(llama_dart_tts_model_capabilities(pocket, none) == 0);
+  assert(llama_dart_tts_model_capabilities(pocket, all) ==
+         (kSpeaker | kVoice | kStream));
+  assert(llama_dart_tts_model_capabilities(pocket, voices) ==
+         (kVoice | kStream));
+  assert(llama_dart_tts_model_capabilities(pocket, encoder) ==
+         (kSpeaker | kStream));
+  assert(llama_dart_tts_model_capabilities(pocket, none) == kStream);
 }
 
 void a_generator_the_caller_did_not_accept_has_no_capabilities() {
