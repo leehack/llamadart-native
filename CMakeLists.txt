@@ -525,9 +525,10 @@ if (LLAMADART_BUILD_TESTS)
     target_include_directories(llamadart_fit_api_test PRIVATE
         src third_party/llama.cpp/include third_party/llama.cpp/ggml/include)
     target_link_libraries(llamadart_fit_api_test PRIVATE llamadart_lib Threads::Threads)
-    if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    if (GGML_BACKEND_DL AND NOT APPLE)
         target_compile_definitions(llamadart_fit_api_test PRIVATE
             LLAMADART_TEST_CPU_BACKEND="$<TARGET_FILE:ggml-cpu>")
+        add_dependencies(llamadart_fit_api_test ggml-cpu)
     endif()
     add_test(NAME llamadart_fit_api_test COMMAND llamadart_fit_api_test)
     set_tests_properties(llamadart_fit_api_test PROPERTIES TIMEOUT 300)

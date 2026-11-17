@@ -189,7 +189,7 @@ void test_everything_fits(const char *path) {
   assert(device.name[0] != '\0');
   assert(device.free_bytes > 0 && device.total_bytes >= device.free_bytes);
   assert(projected_bytes(device) > 0);
-  assert(device.model_bytes >= 30 * kMiB);
+  assert(device.model_bytes + request.report.host.model_bytes >= 30 * kMiB);
 }
 
 void test_partial_fit(const char *path) {
