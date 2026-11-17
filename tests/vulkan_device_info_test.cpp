@@ -28,6 +28,8 @@ struct fake_device {
   bool storage_16bit;
   VkDriverId driver_id;
   uint8_t uuid;
+  uint8_t luid = 0;
+  bool luid_valid = false;
 };
 
 struct fake_loader {
@@ -125,8 +127,10 @@ VKAPI_ATTR void VKAPI_CALL fake_get_properties2(
       reinterpret_cast<VkPhysicalDeviceSubgroupProperties *>(next)
           ->subgroupSize = device.subgroup_size;
     } else if (next->sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES) {
-      memset(reinterpret_cast<VkPhysicalDeviceIDProperties *>(next)->deviceUUID,
-             device.uuid, VK_UUID_SIZE);
+      auto *id = reinterpret_cast<VkPhysicalDeviceIDProperties *>(next);
+      memset(id->deviceUUID, device.uuid, VK_UUID_SIZE);
+      memset(id->deviceLUID, device.luid, VK_LUID_SIZE);
+      id->deviceLUIDValid = device.luid_valid ? VK_TRUE : VK_FALSE;
     } else if (next->sType ==
                    VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES &&
                device.api_version >= VK_API_VERSION_1_2) {
@@ -399,6 +403,36 @@ void test_selection() {
   assert(names(probe({lavapipe()})).empty());
 }
 
+// The LUID maps a device to its Windows display adapter, so it must follow the
+// device it belongs to, also when a preferred driver moves it to the end.
+void test_luid() {
+  g_loader = fake_loader();
+  fake_device first = gpu("first", VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU, 1);
+  first.luid = 0x11;
+  first.luid_valid = true;
+  fake_device radv = gpu("radv", VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU, 4);
+  radv.luid = 0x22;
+  radv.luid_valid = true;
+  fake_device amdvlk = gpu("amdvlk", VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU, 4,
+                           VK_DRIVER_ID_AMD_OPEN_SOURCE);
+  amdvlk.luid = 0x22;
+  amdvlk.luid_valid = true;
+  fake_device unknown = gpu("unknown", VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU, 5);
+  unknown.luid = 0x33;
+
+  auto result = probe({amdvlk, first, radv, unknown});
+  assert(names(result) == list({"first", "radv", "unknown"}));
+  for (int i = 0; i < 2; ++i) {
+    const uint8_t expected = i == 0 ? 0x11 : 0x22;
+    assert(result.identities[i].luid_valid);
+    for (int k = 0; k < VK_LUID_SIZE; ++k) {
+      assert(result.identities[i].luid[k] == expected);
+    }
+  }
+  // The driver says the LUID is not valid, whatever the bytes are.
+  assert(!result.identities[2].luid_valid);
+}
+
 void test_visible_devices() {
   g_loader = fake_loader();
   const std::vector<fake_device> devices = {
@@ -521,6 +555,7 @@ int main() {
   test_device_1_0();
   test_unavailable();
   test_selection();
+  test_luid();
   test_visible_devices();
   test_capacity();
   test_exports();

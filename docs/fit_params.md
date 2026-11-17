@@ -38,6 +38,52 @@ The header has the full contract. What a binding must know:
 - `mparams` and `cparams` are written only on `SUCCESS`.
 - The report is measured at the fitted parameters. It holds at most
   `LLAMA_DART_FIT_MAX_DEVICES` devices.
+- On Windows the free memory of a Vulkan GPU counts other processes (next
+  section), and a fit whose adapter memory cannot be read fails with
+  `LLAMA_DART_STATUS_EXCEPTION` instead of running on the driver's number.
+
+## Free memory on Windows
+
+ggml-vulkan computes free memory as `heapBudget - heapUsage` from
+`VK_EXT_memory_budget`. Both are per process, and on WDDM the budget comes from
+the OS video memory manager, which does not deduct memory that other processes
+hold: on an L4 it stayed at 21,827.5 MiB while a process held 16,332 MiB, so the
+fit chose a load that did not fit
+([llamadart#2034](https://github.com/leehack/llamadart/issues/2034)).
+
+The wrapper therefore reads the display adapter's own numbers, for every
+process, with `D3DKMTQueryStatistics` (resolved from `gdi32.dll` at run time,
+no static import) and the Vulkan device's LUID. For a discrete GPU it sums
+`BytesResident` over the segments that are not aperture; the capacity is the
+smaller of the driver's total and the sum of `CommitLimit`. Free memory is
+`capacity - resident`, not the driver-reserved memory `nvidia-smi` also counts:
+it matched NVML within 5 to 38 MiB under CUDA, D3D12 and Vulkan holders, and
+its used figure is a constant 434 MiB below NVML's. An integrated GPU counts all
+segments.
+
+The effective free memory is the smaller of the driver's number and the
+adapter's. `common_fit_params` takes no free-memory input but uses a device's
+free memory only as `free - margin`, so the wrapper adds `driver_free -
+effective_free` to that device's entry of `margins` before the fit, and the
+report's `free_bytes`, `llama_dart_ggml_backend_dev_memory` and
+`llama_dart_ggml_backend_dev_get_props` return the effective number. The code
+is in `src/llama_dart_device_memory.cpp`, with the rules in
+`src/llama_dart_device_memory_internal.h` and the system call in
+`src/llama_dart_d3dkmt_internal.h`.
+
+- **The fit never runs blind.** A Vulkan GPU or integrated GPU of the model
+  whose adapter cannot be read (no LUID, a probe that does not list the same
+  device, `D3DKMTQueryStatistics` missing or failing) fails the fit with an
+  exception that names the device and the cause. The two device queries above
+  fall back to the driver's number, because a listing has no fit to refuse.
+- The fit reads the model's device list with one more `vocab_only` load of the
+  same file before it measures; it loads no weights.
+- Not covered: CUDA devices (no LUID mapping) and other APIs that are not
+  Vulkan, and a driver that is not WDDM.
+- Memory that idle applications hold counts as used, although WDDM could take
+  it back.
+- `llama_dart_fit_api_version()` stays 1. A `v1.0.0` runtime has the fit but not
+  this correction; bindings that need it check the release tag.
 
 ## Layer counts on v1.0.0
 
@@ -121,6 +167,19 @@ host's share instead. Without a GPU it checks the CPU-only case. The
 `model-fit-wait` scenario of `llamadart_exit_teardown_test` checks that exit
 teardown waits for a fit in flight.
 
-CI runs the test on the macOS runners (Metal), on Linux and on Windows arm64
-(CPU-only). No CUDA, Vulkan, HIP or Windows x64 GPU run executes the fit; that
-needs the hardware runs of the llamadart plan.
+`llamadart_device_memory_test` checks the Windows rules in plain functions on
+every platform: the adapter segment arithmetic (aperture segments, integrated
+adapters, an empty or exhausted adapter), the minimum of the two numbers, the
+`Vulkan<index>` names, and the margins (each device gets its own correction, a
+device without a reading is untouched, a device that needs one and has none
+throws). `llamadart_vulkan_device_info_test` checks that the probe keeps each
+device's LUID and its validity after the driver-priority reorder. On Windows
+the first test also calls `D3DKMTQueryStatistics` for every DXGI adapter, which
+checks the call and the buffer layout; the runners have no GPU, so not the
+numbers.
+
+CI runs the fit test on the macOS runners (Metal), on Linux and on Windows arm64
+(CPU-only). No CUDA, Vulkan, HIP or Windows x64 GPU run executes the fit, and
+the wrapper's call to the Windows correction in `llama_dart_fit_params` has no
+CI test. That needs the hardware runs of the llamadart plan: a Windows Vulkan GPU
+with other processes holding CUDA, D3D12 and Vulkan memory.
