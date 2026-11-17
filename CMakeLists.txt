@@ -5,6 +5,7 @@ find_package(Threads REQUIRED)
 
 option(LLAMADART_BUILD_TESTS "Build libllamadart wrapper tests" OFF)
 option(LLAMADART_BUILD_TTS_SMOKE "Build the local Qwen3-TTS smoke tool" OFF)
+option(LLAMADART_BUILD_ASR_STREAM_SMOKE "Build the local live ASR smoke tool" OFF)
 option(LLAMADART_BUILD_EMBEDDING_SMOKE "Build the local EmbeddingGemma-2 qualification tool" OFF)
 option(LLAMADART_BUILD_KLEIDIAI_TESTS "Build standalone KleidiAI dispatch and compute qualification" OFF)
 
@@ -474,6 +475,20 @@ if (LLAMADART_BUILD_TESTS)
     )
     add_test(NAME llamadart_tts_types_test COMMAND llamadart_tts_types_test)
 
+    add_executable(llamadart_asr_stream_api_test tests/asr_stream_api_test.c)
+    target_link_libraries(llamadart_asr_stream_api_test PRIVATE llamadart_lib)
+    target_include_directories(llamadart_asr_stream_api_test PRIVATE src)
+    add_test(NAME llamadart_asr_stream_api_test COMMAND llamadart_asr_stream_api_test)
+
+    add_executable(llamadart_asr_stream_meter_test tests/asr_stream_meter_test.cpp)
+    target_compile_features(llamadart_asr_stream_meter_test PRIVATE cxx_std_17)
+    target_include_directories(llamadart_asr_stream_meter_test PRIVATE
+        src
+        third_party/llama.cpp/include
+        third_party/llama.cpp/ggml/include
+    )
+    add_test(NAME llamadart_asr_stream_meter_test COMMAND llamadart_asr_stream_meter_test)
+
     add_executable(llamadart_tts_stream_test tests/tts_stream_test.cpp)
     target_compile_features(llamadart_tts_stream_test PRIVATE cxx_std_17)
     target_include_directories(llamadart_tts_stream_test PRIVATE
@@ -786,6 +801,31 @@ if (LLAMADART_BUILD_TESTS)
             endforeach()
         endif()
 
+        # Live ASR sessions need a model with a text stream and one without.
+        set(LLAMADART_ASR_STREAM_TEST_MODEL "" CACHE FILEPATH
+            "LFM3-Audio or Voxtral Realtime GGUF for the live ASR exit teardown tests")
+        set(LLAMADART_ASR_STREAM_TEST_MMPROJ "" CACHE FILEPATH
+            "Matching projector for the live ASR exit teardown tests")
+        set(LLAMADART_ASR_STREAM_REFUSED_MODEL "" CACHE FILEPATH
+            "Qwen3-ASR GGUF, whose projector has no stream")
+        set(LLAMADART_ASR_STREAM_REFUSED_MMPROJ "" CACHE FILEPATH
+            "Matching Qwen3-ASR projector")
+        if (LLAMADART_ASR_STREAM_TEST_MODEL AND LLAMADART_ASR_STREAM_TEST_MMPROJ)
+            foreach(scenario model-asr-stream model-asr-stream-untracked
+                    model-asr-stream-owner-close)
+                add_test(NAME llamadart_exit_teardown_${scenario}
+                    COMMAND llamadart_exit_teardown_test ${scenario}
+                        "${LLAMADART_ASR_STREAM_TEST_MODEL}"
+                        "${LLAMADART_ASR_STREAM_TEST_MMPROJ}")
+            endforeach()
+        endif()
+        if (LLAMADART_ASR_STREAM_REFUSED_MODEL AND LLAMADART_ASR_STREAM_REFUSED_MMPROJ)
+            add_test(NAME llamadart_exit_teardown_model-asr-stream-refused
+                COMMAND llamadart_exit_teardown_test model-asr-stream-refused
+                    "${LLAMADART_ASR_STREAM_REFUSED_MODEL}"
+                    "${LLAMADART_ASR_STREAM_REFUSED_MMPROJ}")
+        endif()
+
         add_test(NAME llamadart_cancel_flag_decode
             COMMAND llamadart_cancel_flag_test decode "${exit_teardown_model}")
         set_tests_properties(llamadart_cancel_flag_decode PROPERTIES
@@ -813,7 +853,7 @@ if (LLAMADART_BUILD_TESTS)
 
     # Contract assertions must execute against optimized Release libraries too.
     foreach(test_target llamadart_owner_api_test llamadart_owner_reentrancy_test llamadart_speculative_api_test llamadart_tts_api_test
-            llamadart_tts_types_test llamadart_tts_stream_test
+            llamadart_tts_types_test llamadart_tts_stream_test llamadart_asr_stream_api_test llamadart_asr_stream_meter_test
             llamadart_build_identity_test llamadart_upstream_abi_test llamadart_cancel_flag_test
             llamadart_tts_eval_test llamadart_tts_seed_test llamadart_tts_sampler_test
             llamadart_exit_teardown_test
@@ -894,6 +934,17 @@ if (LLAMADART_BUILD_TTS_SMOKE)
     target_compile_definitions(llamadart_tts_voice_smoke PRIVATE
         LLAMADART_MTMD_HAS_GEN_VOICES=$<BOOL:${LLAMADART_MTMD_HAS_GEN_VOICES}>)
     target_include_directories(llamadart_tts_voice_smoke PRIVATE
+        third_party/llama.cpp/include
+        third_party/llama.cpp/tools/mtmd
+        src
+    )
+endif()
+
+if (LLAMADART_BUILD_ASR_STREAM_SMOKE)
+    add_executable(llamadart_asr_stream_smoke tools/asr_stream_smoke.cpp)
+    target_compile_features(llamadart_asr_stream_smoke PRIVATE cxx_std_17)
+    target_link_libraries(llamadart_asr_stream_smoke PRIVATE llamadart_lib)
+    target_include_directories(llamadart_asr_stream_smoke PRIVATE
         third_party/llama.cpp/include
         third_party/llama.cpp/tools/mtmd
         src

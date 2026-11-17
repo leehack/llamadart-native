@@ -651,6 +651,18 @@ build/tts-smoke/llamadart_tts_voice_smoke \
   /tmp/voice-smoke --speaker /path/to/reference.wav --gpu
 ```
 
+## Live ASR Session
+
+`llama_dart_asr_stream_*` transcribes 16 kHz mono PCM while it arrives, over
+llama.cpp's experimental `mtmd_audio_stream_*`, for LFM3-Audio (with its `asr`
+chat template) and Voxtral Realtime. The session owns the decode and the greedy
+sampling and is tracked in the exit-teardown `SESSION` stage; each `step` is one
+bounded unit of work, so teardown and cancel wait for at most one step. Callers
+name the modes they handle in a mask, as for TTS. Qwen3-ASR, models that only
+prefill a chat turn (Gemma 4, LFM3-Omni) and non-16 kHz input are refused, and
+the pause flush is not exposed. Contract, limits and the local smoke:
+[docs/asr_stream.md](docs/asr_stream.md).
+
 ## Windows Build Notes
 
 MSVC release builds keep interprocedural optimization enabled by default, but
