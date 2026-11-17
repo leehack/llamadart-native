@@ -65,7 +65,12 @@ double round_f16(double value) {
 // Whether the CPU module multiplies and adds F16 dot products in F16: FP16
 // vector arithmetic without SVE (upstream widens to F32 under SVE).
 bool f16_sums = false;
+// Whether the module's F16 trait takes an F32 query (upstream v1).
 bool f32_query = false;
+// Whether an unhinted F16 x F32 matmul or flash-attention K.Q rounds its query
+// to F16: always on the F16 trait, and under patches 0008 and 0009 on FP16
+// vector arithmetic modules.
+bool f16_route = false;
 bool residual = false;
 using direct_dot_t = void (*)(int, float *, size_t, ggml_fp16_t *, size_t, ggml_fp16_t *, size_t, int);
 direct_dot_t direct_dot = nullptr;
@@ -233,16 +238,15 @@ void values_case(ggml_backend_t backend, const std::vector<float> &key_values,
       queries[static_cast<size_t>(c) * width + i] = qv;
     }
     actual_k[i] = weight_type == GGML_TYPE_F16 ? rounded_f16(kv) : kv;
-    // Old rows round the query to F16; v1 keeps it F32. Direct residual
-    // kernels always consume F16, independent of default graph reachability.
-    actual_q[i] = weight_type == GGML_TYPE_F16 && (residual || !f32_query) ? rounded_f16(qv) : qv;
+    // Direct residual kernels always consume F16, independent of the graph route.
+    actual_q[i] = weight_type == GGML_TYPE_F16 && (residual || f16_route) ? rounded_f16(qv) : qv;
     const double product = actual_k[i] * actual_q[i];
     reference += product;
     absolute_sum += std::fabs(product);
   }
   double expected = reference;
   double tolerance = 1e-7 + 2e-6 * absolute_sum;
-  if (cols == 1 && weight_type == GGML_TYPE_F16 && f16_sums && (residual || !f32_query)) {
+  if (cols == 1 && weight_type == GGML_TYPE_F16 && f16_sums && (residual || f16_route)) {
     const double blocked = blocked_f16_dot(actual_k, actual_q);
     expected = std::isfinite(blocked) ? static_cast<float>(blocked)
                                       : f32_recompute_dot(actual_k, actual_q);
@@ -516,7 +520,7 @@ void attention_case(ggml_backend_t backend, bool flash, int queries_count) {
   for (int r = 0; r < keys_count; ++r) {
     probabilities[r] /= denominator;
     // Ordinary F16 V matmul also rounds its probability input to F16.
-    const double p = flash || f32_query ? probabilities[r] : rounded_f16(static_cast<float>(probabilities[r]));
+    const double p = flash || !f16_route ? probabilities[r] : rounded_f16(static_cast<float>(probabilities[r]));
     for (int i = 0; i < width; ++i) {
       const float value = 1.0f + ((i + r) % 7) * 0.125f;
       value_data[flash ? static_cast<size_t>(r) * width + i
@@ -540,6 +544,104 @@ void attention_case(ggml_backend_t backend, bool flash, int queries_count) {
     }
   }
 }
+
+#if LLAMADART_GGML_HAS_PREC_ACC
+constexpr float route_query = 1.0f + 1.0f / 4096.0f;
+
+void check_all(const std::vector<float> &actual, double expected, const char *name, int cols) {
+  for (float value : actual) {
+    if (!check_result(value, expected, 0.0, name, 0, cols)) {
+      break;
+    }
+  }
+}
+
+// F16 ones times a query of 1 + 2^-12, which only an F16 route rounds away: 256
+// when the query is rounded to F16, 256.0625 when it stays F32. A src1
+// precision request of F32 or BF16 keeps it F32 on upstream's route (patch
+// 0008 honors it); the F16 trait ignores the request.
+void route_case(ggml_backend_t backend, int cols, ggml_prec hint, const char *name) {
+  Graph graph(backend);
+  auto *w = ggml_new_tensor_2d(graph.ctx, GGML_TYPE_F16, 256, 64);
+  auto *q = ggml_new_tensor_2d(graph.ctx, GGML_TYPE_F32, 256, cols);
+  auto *out = ggml_mul_mat(graph.ctx, w, q);
+  if (hint != GGML_PREC_UNDEFINED) {
+    require(ggml_prec_set_src(out, hint, 1), "src1 precision request unavailable");
+  }
+  graph.allocate(out);
+  std::vector<ggml_fp16_t> weights(256 * 64, ggml_fp32_to_fp16(1.0f));
+  std::vector<float> queries(static_cast<size_t>(256) * cols, route_query);
+  ggml_backend_tensor_set(w, weights.data(), 0, weights.size() * sizeof(ggml_fp16_t));
+  ggml_backend_tensor_set(q, queries.data(), 0, queries.size() * sizeof(float));
+  graph.compute();
+  std::vector<float> actual(static_cast<size_t>(64) * cols);
+  ggml_backend_tensor_get(out, actual.data(), 0, actual.size() * sizeof(float));
+  const bool f32_input = hint == GGML_PREC_UNDEFINED ? !f16_route : f32_query;
+  check_all(actual, f32_input ? 256.0625 : 256.0, name, cols);
+}
+
+// The conv patches reach the matmul as a tensor without an op, whose src1 is the
+// op's own work buffer; it must keep upstream's F32 route on every thread.
+void conv_route_case(ggml_backend_t backend, ggml_backend_set_n_threads_t set_threads) {
+  constexpr int threads = 4;
+  set_threads(backend, threads);
+  Graph graph(backend);
+  auto *kernel = ggml_new_tensor_4d(graph.ctx, GGML_TYPE_F16, 4, 4, 8, 16);
+  auto *input = ggml_new_tensor_4d(graph.ctx, GGML_TYPE_F32, 64, 64, 8, 1);
+  auto *out = ggml_conv_2d_direct(graph.ctx, kernel, input, 4, 4, 0, 0, 1, 1);
+  graph.allocate(out);
+  std::vector<ggml_fp16_t> weights(4 * 4 * 8 * 16, ggml_fp32_to_fp16(1.0f));
+  std::vector<float> values(static_cast<size_t>(64) * 64 * 8, route_query);
+  ggml_backend_tensor_set(kernel, weights.data(), 0, weights.size() * sizeof(ggml_fp16_t));
+  ggml_backend_tensor_set(input, values.data(), 0, values.size() * sizeof(float));
+  graph.compute();
+  std::vector<float> actual(ggml_nelements(out));
+  ggml_backend_tensor_get(out, actual.data(), 0, actual.size() * sizeof(float));
+  check_all(actual, f32_query ? 128.03125 : 128.0, "conv-route", threads);
+  set_threads(backend, 1);
+}
+
+// A query of 2^-26 is under half the smallest F16 subnormal, so an F16 route
+// rounds it to zero and scores both keys 0, giving V = (1, -1) equal weights
+// and an output of 0. Kept in F32, keys +65504 and -65504 over DK = 1024 score
+// +-0.9995 and the output is tanh of that. The two outcomes are far apart,
+// unlike a rounding of the query by one F16 ulp.
+void flash_route_case(ggml_backend_t backend) {
+  constexpr int width = 1024;
+  constexpr int value_width = 64;
+  constexpr float query = 0x1p-26f;
+  constexpr float key = 65504.0f;
+  Graph graph(backend);
+  auto *q = ggml_new_tensor_2d(graph.ctx, GGML_TYPE_F32, width, 1);
+  auto *k = ggml_new_tensor_2d(graph.ctx, GGML_TYPE_F16, width, 2);
+  auto *v = ggml_new_tensor_2d(graph.ctx, GGML_TYPE_F16, value_width, 2);
+  auto *out = ggml_flash_attn_ext(graph.ctx, q, k, v, nullptr, 1.0f, 0.0f, 0.0f);
+  require_f32(out);
+  graph.allocate(out);
+  std::vector<float> queries(width, query);
+  std::vector<ggml_fp16_t> keys(2 * width), values(2 * value_width);
+  for (int i = 0; i < width; ++i) {
+    keys[i] = ggml_fp32_to_fp16(key);
+    keys[width + i] = ggml_fp32_to_fp16(-key);
+  }
+  for (int i = 0; i < value_width; ++i) {
+    values[i] = ggml_fp32_to_fp16(1.0f);
+    values[value_width + i] = ggml_fp32_to_fp16(-1.0f);
+  }
+  ggml_backend_tensor_set(q, queries.data(), 0, queries.size() * sizeof(float));
+  ggml_backend_tensor_set(k, keys.data(), 0, keys.size() * sizeof(ggml_fp16_t));
+  ggml_backend_tensor_set(v, values.data(), 0, values.size() * sizeof(ggml_fp16_t));
+  graph.compute();
+  std::vector<float> actual(value_width);
+  ggml_backend_tensor_get(out, actual.data(), 0, actual.size() * sizeof(float));
+  const double expected = f16_route ? 0.0 : std::tanh(static_cast<double>(width) * key * query);
+  for (float value : actual) {
+    if (!check_result(value, expected, 0.1, "flash-route", width, 1)) {
+      break;
+    }
+  }
+}
+#endif
 
 }  // namespace
 
@@ -625,6 +727,11 @@ int main(int argc, char **argv) {
     dot_case(backend, 8, 1.0f, Pattern::positive, GGML_TYPE_F32, "pool-init");
   }
   f16_sums = fp16_va && !sve;
+#if defined(_MSC_VER)
+  f16_route = !f32_query;
+#else
+  f16_route = !f32_query || fp16_va;
+#endif
   if (residual && !f16_sums) {
     std::printf("SKIP: residual FP16 NEON kernel unavailable on requested module\n");
     return 77;
@@ -635,8 +742,9 @@ int main(int argc, char **argv) {
       require(direct_gemm != nullptr, "compiled llamafile kernel symbol missing");
     }
   }
-  std::printf("\nSingle-column F16 dot expectation: %s\n",
-              f16_sums ? "upstream F16 sums in 64-step blocks" : "exact");
+  std::printf("\nSingle-column F16 dot expectation: %s; graph query: %s\n",
+              f16_sums ? "upstream F16 sums in 64-step blocks" : "exact",
+              f16_route ? "rounded to F16" : "F32");
 
   for (int magnitude = 30; magnitude <= 100; magnitude += 10) {
     dot_case(backend, 64, static_cast<float>(magnitude), Pattern::positive,
@@ -699,7 +807,7 @@ int main(int argc, char **argv) {
     }
   }
   // Elsewhere F32 sums of these rows drift past the exact-sum tolerance.
-  if (f16_sums && (residual || !f32_query)) {
+  if (f16_sums && (residual || f16_route)) {
     constexpr int short_width = 2 * dot_step + 5;
     constexpr int long_width = 2 * dot_block + dot_step + 5;
     spread_case(backend, 64, -1, "spread");
@@ -711,7 +819,7 @@ int main(int argc, char **argv) {
     spread_case(backend, long_width, 5 * dot_step + 3, "spread-blocks-recompute");
   }
   // Upstream's other F16 dot paths assert a finite sum in debug builds.
-  if (f16_sums && (residual || !f32_query)) {
+  if (f16_sums && (residual || f16_route)) {
     for (int width : {2 * dot_step + 5, 2 * dot_block + dot_step + 5}) {
       for (int index : {9, width - 3}) {
         nonfinite_input_case(backend, width, index, NAN, "nan-input");
@@ -736,6 +844,17 @@ int main(int argc, char **argv) {
   }
   gemm_tile_case(backend);
   dot_case(backend, 64, 100.0f, Pattern::positive, GGML_TYPE_F32, "gemm-f32-control", 8);
+#if LLAMADART_GGML_HAS_PREC_ACC
+  if (!residual) {
+    for (int cols : {1, 16}) {
+      route_case(backend, cols, GGML_PREC_UNDEFINED, "route-unhinted");
+      route_case(backend, cols, GGML_PREC_F32, "route-src1-f32");
+      route_case(backend, cols, GGML_PREC_BF16, "route-src1-bf16");
+    }
+    conv_route_case(backend, set_threads);
+    flash_route_case(backend);
+  }
+#endif
   for (int queries_count : residual ? std::vector<int>{} : std::vector<int>{1, 8}) {
     attention_case(backend, false, queries_count);
     attention_case(backend, true, queries_count);
