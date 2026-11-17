@@ -3403,6 +3403,7 @@ struct llama_dart_asr_stream {
 
   llama_dart_asr_stream(size_t capacity_samples, size_t step_samples)
       : meter(capacity_samples, step_samples) {}
+  ~llama_dart_asr_stream();
 };
 
 static bool llama_dart_asr_cancelled(llama_dart_asr_stream *stream) {
@@ -3428,6 +3429,15 @@ static void llama_dart_asr_release(llama_dart_asr_stream *stream) {
   }
   stream->meter.clear();
   stream->cancel_flag = nullptr;
+}
+
+// A session that init abandons, such as one whose upstream stream opened and
+// whose sampler then threw, still owns them.
+llama_dart_asr_stream::~llama_dart_asr_stream() {
+  try {
+    llama_dart_asr_release(this);
+  } catch (...) {
+  }
 }
 
 static llama_dart_asr_stream_status
@@ -3714,12 +3724,11 @@ static llama_dart_asr_stream *llama_dart_asr_stream_init_impl(
     report(LLAMA_DART_ASR_STREAM_STATUS_UPSTREAM_ERROR);
     return nullptr;
   }
+  // track_created owns the session from here: it frees it when tracking
+  // throws, and a closing owner takes it through the registry entry.
   llama_dart_asr_stream *created = llama_dart_exit_track_created(
-      stream.get(), llama_dart_asr_stream_free_object,
+      stream.release(), llama_dart_asr_stream_free_object,
       LLAMA_DART_EXIT_STAGE_SESSION, llama, mtmd);
-  if (created != nullptr) {
-    stream.release();
-  }
   report(created == nullptr ? LLAMA_DART_ASR_STREAM_STATUS_UPSTREAM_ERROR
                             : LLAMA_DART_ASR_STREAM_STATUS_OK);
   return created;

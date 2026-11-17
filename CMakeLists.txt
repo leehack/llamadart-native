@@ -811,7 +811,8 @@ if (LLAMADART_BUILD_TESTS)
         set(LLAMADART_ASR_STREAM_REFUSED_MMPROJ "" CACHE FILEPATH
             "Matching Qwen3-ASR projector")
         if (LLAMADART_ASR_STREAM_TEST_MODEL AND LLAMADART_ASR_STREAM_TEST_MMPROJ)
-            foreach(scenario model-asr-stream model-asr-stream-untracked)
+            foreach(scenario model-asr-stream model-asr-stream-untracked
+                    model-asr-stream-owner-close)
                 add_test(NAME llamadart_exit_teardown_${scenario}
                     COMMAND llamadart_exit_teardown_test ${scenario}
                         "${LLAMADART_ASR_STREAM_TEST_MODEL}"
