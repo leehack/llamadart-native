@@ -13,6 +13,7 @@
 #include "llama_dart_tts_types_internal.h"
 
 #include "common.h"
+#include "fit.h"
 #include "llama-ext.h"
 #include "log.h"
 #include "mtmd.h"
@@ -58,6 +59,10 @@
 static std::atomic<int> g_dart_log_level{3}; // Default to WARN
 // Track last non-CONT severity so continuation lines inherit proper level.
 static std::atomic<int> g_last_non_cont_level{GGML_LOG_LEVEL_NONE};
+// common_fit_params swaps the global llama log callback while it measures.
+// Fits and llama_dart_set_log_level take this lock so that neither restores a
+// callback the other has replaced.
+static std::mutex g_dart_fit_log_mutex;
 
 static int llama_dart_common_log_verbosity(int level) {
   switch (level) {
@@ -1494,6 +1499,7 @@ static void llama_dart_tts_free_object(void *object);
 static void llama_dart_speculative_free_object(void *object);
 
 LLAMADART_API void llama_dart_set_log_level(int level) {
+  std::lock_guard<std::mutex> fit_lock(g_dart_fit_log_mutex);
   if (level < 0) {
     level = 0;
   } else if (level > 4) {
@@ -1658,6 +1664,96 @@ LLAMADART_API int32_t llama_dart_mtmd_supports_image_token_limit(
     }
     llama_dart_exit_creating_call call;
     return llama_dart_image_token_limit_supported(mmproj_fname, max_tokens);
+  });
+}
+
+LLAMADART_API uint32_t llama_dart_fit_api_version(void) { return 1; }
+
+#if LLAMADART_FIT_HAS_PATH_LIST
+static std::vector<std::string> llama_dart_fit_model_path(const char *path) {
+  return {path};
+}
+#else
+static const char *llama_dart_fit_model_path(const char *path) { return path; }
+#endif
+
+static void llama_dart_fit_fill_report(const char *path_model,
+                                       const llama_model_params &mparams,
+                                       const llama_context_params &cparams,
+                                       llama_dart_fit_report *report) {
+  std::vector<ggml_backend_dev_t> devices;
+  uint32_t n_layers = 0;
+  uint32_t n_layers_skipped = 0;
+  uint32_t n_ctx_train = 0;
+  uint32_t n_expert = 0;
+#if LLAMADART_FIT_HAS_NGL_SKIP
+  const auto memory = common_get_device_memory_data(
+      llama_dart_fit_model_path(path_model), &mparams, &cparams, devices,
+      n_layers, n_layers_skipped, n_ctx_train, n_expert, GGML_LOG_LEVEL_ERROR);
+#else
+  const auto memory = common_get_device_memory_data(
+      llama_dart_fit_model_path(path_model), &mparams, &cparams, devices,
+      n_layers, n_ctx_train, n_expert, GGML_LOG_LEVEL_ERROR);
+#endif
+  (void)n_layers_skipped;
+  (void)n_expert;
+  if (memory.size() != devices.size() + 1) {
+    throw std::runtime_error("unexpected device memory breakdown");
+  }
+  const auto copy = [](const common_device_memory_data &from, const char *name,
+                       llama_dart_fit_device &to) {
+    to = {};
+    std::strncpy(to.name, name, sizeof(to.name) - 1);
+    to.total_bytes = from.total;
+    to.free_bytes = from.free;
+    to.model_bytes = from.model;
+    to.context_bytes = from.context;
+    to.compute_bytes = from.compute;
+  };
+  *report = {};
+  report->n_layers = n_layers;
+  report->n_ctx_train = n_ctx_train;
+  report->n_devices = static_cast<uint32_t>(
+      std::min<size_t>(devices.size(), LLAMA_DART_FIT_MAX_DEVICES));
+  for (uint32_t i = 0; i < report->n_devices; ++i) {
+    copy(memory[i], ggml_backend_dev_name(devices[i]), report->devices[i]);
+  }
+  copy(memory.back(), "Host", report->host);
+}
+
+LLAMADART_API int32_t llama_dart_fit_params(
+    const char *path_model, struct llama_model_params *mparams,
+    struct llama_context_params *cparams, float *tensor_split,
+    struct llama_model_tensor_buft_override *tensor_buft_overrides,
+    const size_t *margins, uint32_t n_ctx_min,
+    struct llama_dart_fit_report *report) {
+  return llama_dart_barrier<int32_t>(LLAMA_DART_STATUS_EXCEPTION, [=] {
+    if (path_model == nullptr || mparams == nullptr || cparams == nullptr ||
+        tensor_split == nullptr || tensor_buft_overrides == nullptr ||
+        margins == nullptr) {
+      throw std::invalid_argument("fit needs a model path, parameters and buffers");
+    }
+    llama_dart_exit_creating_call call;
+    std::lock_guard<std::mutex> lock(g_dart_fit_log_mutex);
+    std::vector<size_t> fit_margins(margins, margins + llama_max_devices());
+    llama_model_params fitted_model = *mparams;
+    llama_context_params fitted_context = *cparams;
+    const common_params_fit_status status = common_fit_params(
+        llama_dart_fit_model_path(path_model), &fitted_model, &fitted_context,
+        tensor_split, tensor_buft_overrides, fit_margins.data(), n_ctx_min,
+        nullptr, GGML_LOG_LEVEL_ERROR);
+    if (status != COMMON_PARAMS_FIT_STATUS_SUCCESS) {
+      return static_cast<int32_t>(status == COMMON_PARAMS_FIT_STATUS_FAILURE
+                                      ? LLAMA_DART_FIT_STATUS_FAILURE
+                                      : LLAMA_DART_FIT_STATUS_ERROR);
+    }
+    if (report != nullptr) {
+      llama_dart_fit_fill_report(path_model, fitted_model, fitted_context,
+                                 report);
+    }
+    *mparams = fitted_model;
+    *cparams = fitted_context;
+    return static_cast<int32_t>(LLAMA_DART_FIT_STATUS_SUCCESS);
   });
 }
 
