@@ -38,11 +38,16 @@ The header has the full contract. What a binding must know:
 - `mparams` and `cparams` are written only on `SUCCESS`.
 - The report is measured at the fitted parameters. It holds at most
   `LLAMA_DART_FIT_MAX_DEVICES` devices.
-- On Windows the free memory of a Vulkan GPU counts other processes (next
+- On Windows the free memory of a Vulkan or CUDA GPU counts other processes (next
   section), and a fit whose adapter memory cannot be read fails with
   `LLAMA_DART_STATUS_EXCEPTION` instead of running on the driver's number.
 
 ## Free memory on Windows
+
+ggml-cuda reports `cudaMemGetInfo`, which on a WDDM adapter is the same
+per-process budget (NVIDIA documents that it returns what the Windows video
+memory manager says): on the L4 it was 21,663.5 MiB for `CUDA0` and for raw
+`Vulkan0` while another process held 16.3 GiB.
 
 ggml-vulkan computes free memory as `heapBudget - heapUsage` from
 `VK_EXT_memory_budget`. Both are per process, and on WDDM the budget comes from
@@ -61,6 +66,15 @@ it matched NVML within 5 to 38 MiB under CUDA, D3D12 and Vulkan holders, and
 its used figure is a constant 434 MiB below NVML's. An integrated GPU counts all
 segments.
 
+A CUDA device has no LUID in ggml's properties, so the wrapper takes it from
+`cuDeviceGetLuid` of the already loaded `nvcuda.dll` (`GetModuleHandleW` and
+`GetProcAddress`, never `LoadLibrary`; no CUDA link). It calls `cuInit(0)`
+first, which is idempotent, and uses the ggml index as the driver ordinal after
+checking that `cuDeviceGetCount` equals the registry's device count and that
+`cuDeviceGetName` equals the device's description. The CUDA LUID is the DXGI
+and Vulkan adapter's, so the segments and arithmetic above apply unchanged and
+`CUDA0` and `Vulkan0` of one card report the same free memory.
+
 The effective free memory is the smaller of the driver's number and the
 adapter's. `common_fit_params` takes no free-memory input but uses a device's
 free memory only as `free - margin`, so the wrapper adds `driver_free -
@@ -71,15 +85,22 @@ is in `src/llama_dart_device_memory.cpp`, with the rules in
 `src/llama_dart_device_memory_internal.h` and the system call in
 `src/llama_dart_d3dkmt_internal.h`.
 
-- **The fit never runs blind.** A Vulkan GPU or integrated GPU of the model
-  whose adapter cannot be read (no LUID, a probe that does not list the same
-  device, `D3DKMTQueryStatistics` missing or failing) fails the fit with an
+- **The fit never runs blind.** A Vulkan or CUDA GPU or integrated GPU of the
+  model whose adapter cannot be read (no LUID, a probe that does not list the
+  same device, `nvcuda.dll` not loaded, a `cuInit` or `cuDeviceGet*` error,
+  `D3DKMTQueryStatistics` missing or failing) fails the fit with an
   exception that names the device and the cause. The two device queries above
   fall back to the driver's number, because a listing has no fit to refuse.
 - The fit reads the model's device list with one more `vocab_only` load of the
   same file before it measures; it loads no weights.
-- Not covered: CUDA devices (no LUID mapping) and other APIs that are not
-  Vulkan, and a driver that is not WDDM.
+- Refused, not corrected: any `GGML_CUDA_DEVICES` count other than the physical
+  count (driver and registry counts differ, including virtual devices) and a
+  CUDA device with no WDDM adapter (TCC mode, no LUID). Their fit fails with the
+  device named.
+- Not covered: APIs other than Vulkan and CUDA, and a driver that is not WDDM.
+- The fit's early return when the model has nothing to correct looks at the
+  ggml registry (any `Vulkan<i>` or `CUDA<i>` GPU), not at the Vulkan probe, so
+  a CUDA host without a usable Vulkan loader is still corrected.
 - Memory that idle applications hold counts as used, although WDDM could take
   it back.
 - `llama_dart_fit_api_version()` stays 1. A `v1.0.0` runtime has the fit but not
@@ -170,7 +191,9 @@ teardown waits for a fit in flight.
 `llamadart_device_memory_test` checks the Windows rules in plain functions on
 every platform: the adapter segment arithmetic (aperture segments, integrated
 adapters, an empty or exhausted adapter), the minimum of the two numbers, the
-`Vulkan<index>` names, and the margins (each device gets its own correction, a
+`Vulkan<index>` and `CUDA<index>` names, the CUDA-to-LUID mapping with fake
+driver calls (each failure has its own detail), the Vulkan and CUDA branches of
+the system reading, and the margins (each device gets its own correction, a
 device without a reading is untouched, a device that needs one and has none
 throws). `llamadart_vulkan_device_info_test` checks that the probe keeps each
 device's LUID and its validity after the driver-priority reorder. On Windows
@@ -182,4 +205,5 @@ CI runs the fit test on the macOS runners (Metal), on Linux and on Windows arm64
 (CPU-only). No CUDA, Vulkan, HIP or Windows x64 GPU run executes the fit, and
 the wrapper's call to the Windows correction in `llama_dart_fit_params` has no
 CI test. That needs the hardware runs of the llamadart plan: a Windows Vulkan GPU
-with other processes holding CUDA, D3D12 and Vulkan memory.
+with other processes holding CUDA, D3D12 and Vulkan memory, and the same on a
+CUDA backend (with and without `ggml-vulkan.dll`).
