@@ -9,7 +9,7 @@
 #include <vector>
 
 // System-wide free memory of a GPU device that counts other processes. Only a
-// Windows Vulkan GPU has one; every other device is not_applicable.
+// Windows Vulkan or CUDA GPU has one; every other device is not_applicable.
 llama_dart_system_memory llama_dart_read_system_memory(ggml_backend_dev_t dev);
 
 // The free memory of a device: the driver's number, lowered to the system's
