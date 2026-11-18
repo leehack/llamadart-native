@@ -129,8 +129,8 @@ struct fake_cuda {
   int init_calls = 0;
   int last_ordinal = -1;
   std::string names[2] = {"NVIDIA L4", "NVIDIA A10"};
-  unsigned char luids[2][8] = {{0x5D, 0x50, 0, 0, 0, 0, 0, 0},
-                               {0x6E, 0x61, 0, 0, 0, 0, 0, 0}};
+  unsigned char luids[2][8] = {{0x5D, 0x50, 0, 0, 0x12, 0x34, 0x56, 0x78},
+                               {0x6E, 0x61, 0, 0, 0x9A, 0xBC, 0xDE, 0xF0}};
   int name_ordinal = -1;
   int luid_ordinal = -1;
 } g_cuda;
@@ -202,14 +202,15 @@ void expect_mapping_failure(const llama_dart_cuda_api &api, int32_t index,
 }
 
 void test_cuda_luid_mapping_failures() {
-  {
+  for (int field = 0; field < 5; ++field) {
     llama_dart_cuda_api api = fake_api();
-    api.device_luid = nullptr;
-    expect_mapping_failure(api, 0, 2, "NVIDIA L4", "nvcuda.dll is not loaded");
-  }
-  {
-    llama_dart_cuda_api api = fake_api();
-    api.init = nullptr;
+    switch (field) {
+      case 0: api.init = nullptr; break;
+      case 1: api.device_count = nullptr; break;
+      case 2: api.device_get = nullptr; break;
+      case 3: api.device_name = nullptr; break;
+      case 4: api.device_luid = nullptr; break;
+    }
     expect_mapping_failure(api, 0, 2, "NVIDIA L4", "nvcuda.dll is not loaded");
   }
   {
@@ -225,6 +226,11 @@ void test_cuda_luid_mapping_failures() {
   {
     const llama_dart_cuda_api api = fake_api();
     g_cuda.count = 1;
+    expect_mapping_failure(api, 0, 2, "NVIDIA L4", "GGML_CUDA_DEVICES");
+  }
+  {
+    const llama_dart_cuda_api api = fake_api();
+    g_cuda.count = 3;
     expect_mapping_failure(api, 0, 2, "NVIDIA L4", "GGML_CUDA_DEVICES");
   }
   {

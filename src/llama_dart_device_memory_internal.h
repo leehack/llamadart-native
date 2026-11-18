@@ -162,7 +162,8 @@ static inline bool llama_dart_cuda_device_luid(const llama_dart_cuda_api &api,
   if (count != registered_count) {
     *detail = "the driver lists " + std::to_string(count) +
               " devices but ggml registers " + std::to_string(registered_count) +
-              " (virtual devices from GGML_CUDA_DEVICES share a card)";
+              " (the driver and ggml count devices differently, e.g. from "
+              "GGML_CUDA_DEVICES)";
     return false;
   }
   if (index < 0 || index >= count) {
