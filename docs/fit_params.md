@@ -190,7 +190,9 @@ teardown waits for a fit in flight.
 `llamadart_device_memory_test` checks the Windows rules in plain functions on
 every platform: the adapter segment arithmetic (aperture segments, integrated
 adapters, an empty or exhausted adapter), the minimum of the two numbers, the
-`Vulkan<index>` names, and the margins (each device gets its own correction, a
+`Vulkan<index>` and `CUDA<index>` names, the CUDA-to-LUID mapping with fake
+driver calls (each failure has its own detail), the Vulkan and CUDA branches of
+the system reading, and the margins (each device gets its own correction, a
 device without a reading is untouched, a device that needs one and has none
 throws). `llamadart_vulkan_device_info_test` checks that the probe keeps each
 device's LUID and its validity after the driver-priority reorder. On Windows
@@ -202,4 +204,5 @@ CI runs the fit test on the macOS runners (Metal), on Linux and on Windows arm64
 (CPU-only). No CUDA, Vulkan, HIP or Windows x64 GPU run executes the fit, and
 the wrapper's call to the Windows correction in `llama_dart_fit_params` has no
 CI test. That needs the hardware runs of the llamadart plan: a Windows Vulkan GPU
-with other processes holding CUDA, D3D12 and Vulkan memory.
+with other processes holding CUDA, D3D12 and Vulkan memory, and the same on a
+CUDA backend (with and without `ggml-vulkan.dll`).
