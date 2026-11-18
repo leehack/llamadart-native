@@ -8,6 +8,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tools'))
 import validate_android_artifacts as validator
 import llama_cpp_patches as patches
+import build
 
 RUNTIME = set(validator.EXCEPTION_RUNTIME_SYMBOLS)
 
@@ -73,7 +74,7 @@ class ExceptionRuntimeTests(unittest.TestCase):
     def test_a_backend_module_alone_is_accepted(self):
         self.assertEqual([], validator.exception_runtime_errors({'libggml-opencl.so': (set(), set())}))
 
-    def run_tool(self, libraries, omitted_marker=None):
+    def run_tool(self, libraries, omitted_marker=None, omitted_library=None):
         with tempfile.TemporaryDirectory() as temp:
             out_dir = Path(temp) / 'out'
             out_dir.mkdir()
@@ -82,7 +83,8 @@ class ExceptionRuntimeTests(unittest.TestCase):
             for name, (defined, imported) in libraries.items():
                 markers = [marker['text'] for entry in patches.load_series()
                            for marker in entry.get('android_markers', [])
-                           if marker['library'] == name and marker['text'] != omitted_marker]
+                           if marker['library'] in (name, 'libggml-cpu.so' if name.startswith('libggml-cpu') else name)
+                           and not (marker['text'] == omitted_marker and omitted_library in (None, name))]
                 (out_dir / name).write_bytes('\0'.join(markers).encode())
                 (listings / f'{name}.syms').write_text(dynamic_symbols(defined, imported))
             readelf = Path(temp) / 'llvm-readelf'
@@ -110,6 +112,42 @@ class ExceptionRuntimeTests(unittest.TestCase):
         self.assertEqual(1, result.returncode, result.stderr)
         self.assertIn('libggml-cpu.so: built without 0005-arm-f16-dot-f32-accumulation.patch',
                       result.stderr)
+
+    def arm64_bundle(self):
+        libraries = shared_runtime()
+        del libraries['libggml-cpu.so']
+        for name in build.android_arm64_cpu_variant_libs():
+            libraries[name] = (set(), {'__cxa_throw'})
+        return libraries
+
+    def test_tool_accepts_every_shipped_arm64_cpu_variant_with_its_markers(self):
+        result = self.run_tool(self.arm64_bundle())
+        self.assertEqual(0, result.returncode, result.stderr)
+
+    def test_tool_rejects_an_arm64_cpu_variant_without_a_marker(self):
+        for variant in build.android_arm64_cpu_variant_libs():
+            result = self.run_tool(
+                self.arm64_bundle(), omitted_marker='llamadart F16 matmul route',
+                omitted_library=variant)
+            self.assertEqual(1, result.returncode, variant)
+            self.assertIn(
+                f'{variant}: built without 0008-arm-fp16-unhinted-f16-matmul-route.patch',
+                result.stderr)
+
+    def test_tool_rejects_a_bundle_missing_an_arm64_cpu_variant(self):
+        libraries = self.arm64_bundle()
+        missing = build.android_arm64_cpu_variant_libs()[-1]
+        del libraries[missing]
+        result = self.run_tool(libraries)
+        self.assertEqual(1, result.returncode, result.stderr)
+        self.assertIn(f'{missing}: not in the bundle', result.stderr)
+
+    def test_tool_rejects_a_bundle_with_no_cpu_module(self):
+        libraries = shared_runtime()
+        del libraries['libggml-cpu.so']
+        result = self.run_tool(libraries)
+        self.assertEqual(1, result.returncode, result.stderr)
+        self.assertIn('libggml-cpu.so: not in', result.stderr)
 
     def test_tool_rejects_a_second_definition(self):
         libraries = shared_runtime()
