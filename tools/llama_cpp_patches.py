@@ -259,28 +259,50 @@ def manifest_entries(
     ]
 
 
+CPU_LIBRARY = "libggml-cpu.so"
+
+
+def _cpu_modules(out_dir: Path) -> list[str]:
+    # Android arm64 ships the CPU backend only as libggml-cpu-<variant>.so, and
+    # every variant compiles the patched sources.
+    names = [path.name for path in out_dir.glob("libggml-cpu-*.so")]
+    if (out_dir / CPU_LIBRARY).is_file():
+        names.append(CPU_LIBRARY)
+    return sorted(names)
+
+
 def marker_errors(
-    key: str, out_dir: Path, patches_dir: Path, upstream: Path, require_library: bool = False
+    key: str,
+    out_dir: Path,
+    patches_dir: Path,
+    upstream: Path,
+    require_library: bool = False,
+    every_cpu_module: bool = False,
 ) -> list[str]:
     """Names each bundled library that lacks the text a carried patch compiles in."""
     errors: list[str] = []
     for entry in required_series(upstream, patches_dir):
         for marker in entry.get(key, []):
-            library = out_dir / marker["library"]
-            if require_library and not library.is_file():
-                errors.append(f"{marker['library']}: not in {out_dir}")
-            elif library.is_file() and marker["text"].encode() not in library.read_bytes():
-                errors.append(
-                    f"{marker['library']}: built without {entry['file']} "
-                    f"(no {marker['text']!r})"
-                )
+            required = require_library
+            names = [marker["library"]]
+            if every_cpu_module and marker["library"] == CPU_LIBRARY:
+                names, required = _cpu_modules(out_dir) or names, True
+            for name in names:
+                library = out_dir / name
+                if required and not library.is_file():
+                    errors.append(f"{name}: not in {out_dir}")
+                elif library.is_file() and marker["text"].encode() not in library.read_bytes():
+                    errors.append(
+                        f"{name}: built without {entry['file']} (no {marker['text']!r})"
+                    )
     return errors
 
 
 def android_marker_errors(
     out_dir: Path, patches_dir: Path = PATCHES_DIR, upstream: Path = UPSTREAM_DIR
 ) -> list[str]:
-    return marker_errors("android_markers", out_dir, patches_dir, upstream)
+    return marker_errors(
+        "android_markers", out_dir, patches_dir, upstream, every_cpu_module=True)
 
 
 def apple_marker_errors(

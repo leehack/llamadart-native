@@ -5,6 +5,7 @@ import argparse
 import subprocess
 from pathlib import Path
 
+import build
 import llama_cpp_patches
 
 
@@ -101,6 +102,17 @@ def exception_runtime_errors(symbols: dict[str, tuple[set[str], set[str]]]) -> l
     return errors
 
 
+def cpu_variant_errors(libraries: list[Path]) -> list[str]:
+    names = {library.name for library in libraries}
+    if not any(name.startswith("libggml-cpu-android_") for name in names):
+        return []
+    return [
+        f"{name}: not in the bundle"
+        for name in build.android_arm64_cpu_variant_libs()
+        if name not in names
+    ]
+
+
 def main() -> None:
     args = parse_args()
     if not args.readelf.is_file():
@@ -116,6 +128,7 @@ def main() -> None:
     symbols = {library.name: read_dynamic_symbols(args.readelf, library) for library in libraries}
     errors.extend(exception_runtime_errors(symbols))
     errors.extend(llama_cpp_patches.android_marker_errors(args.out_dir))
+    errors.extend(cpu_variant_errors(libraries))
     for symbol in EXCEPTION_RUNTIME_SYMBOLS:
         for name, (defined, _) in sorted(symbols.items()):
             if symbol in defined:

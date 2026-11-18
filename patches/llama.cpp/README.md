@@ -94,7 +94,10 @@ qualification, and those must keep building.
 
 `tools/validate_android_artifacts.py` fails an Android bundle in which a
 library lacks the `text` of an `android_markers` entry. It reads the built
-library, so it does not matter why the patch is missing. The release runs it
+library, so it does not matter why the patch is missing. A marker on
+`libggml-cpu.so` is checked in every `libggml-cpu*.so` of the bundle (Android
+arm64 ships only the `libggml-cpu-android_*.so` variants), and the bundle must
+hold one. The release runs it
 on every Android bundle and `validate_wrapper.yml` on the pinned upstream, so
 a patch that upstream has outgrown fails the pull request that moves the
 upstream, or the manually dispatched release (`native_release.yml`, or
