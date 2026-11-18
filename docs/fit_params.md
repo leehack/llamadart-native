@@ -93,9 +93,10 @@ is in `src/llama_dart_device_memory.cpp`, with the rules in
   fall back to the driver's number, because a listing has no fit to refuse.
 - The fit reads the model's device list with one more `vocab_only` load of the
   same file before it measures; it loads no weights.
-- Refused, not corrected: CUDA virtual devices (`GGML_CUDA_DEVICES` splits one
-  card, so the driver and registry counts differ) and a CUDA device with no
-  WDDM adapter (TCC mode, no LUID). Their fit fails with the device named.
+- Refused, not corrected: any `GGML_CUDA_DEVICES` count other than the physical
+  count (driver and registry counts differ, including virtual devices) and a
+  CUDA device with no WDDM adapter (TCC mode, no LUID). Their fit fails with the
+  device named.
 - Not covered: APIs other than Vulkan and CUDA, and a driver that is not WDDM.
 - The fit's early return when the model has nothing to correct looks at the
   ggml registry (any `Vulkan<i>` or `CUDA<i>` GPU), not at the Vulkan probe, so

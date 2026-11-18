@@ -132,8 +132,8 @@ static inline std::string llama_dart_cuda_error(const char *call, int code) {
 
 // The adapter LUID of the ggml device CUDA<index>. ggml-cuda numbers its
 // devices like the driver API, so the index is the driver ordinal, unless
-// GGML_CUDA_DEVICES splits a card into virtual devices: then the counts differ
-// and the card's memory is not the device's, so the mapping is refused.
+// GGML_CUDA_DEVICES sets a count other than the physical count: then the
+// driver and registry counts differ, so the mapping is refused.
 // cuInit is idempotent and makes the mapping independent of the caller's
 // order of CUDA calls.
 static inline bool llama_dart_cuda_device_luid(const llama_dart_cuda_api &api,
