@@ -101,6 +101,14 @@ there.
     It dispatches `native_release.yml` for an exact unbuilt stable release and
     never publishes assets or mutates the repository itself.
 
+## CI Triage
+
+- A cancelled job with no runner name and no steps never ran. Read
+  `gh api repos/leehack/llamadart-native/check-runs/<job id>/annotations`:
+  "not acquired by Runner" is a hosted-runner allocation failure, so
+  `gh run rerun <run id> --failed`; do not file it as a test hang. A hung test
+  fails its job with `***Timeout` and the test name (`ctest --timeout 300`).
+
 ## Change Boundaries
 
 - Prefer updating submodule refs over patching vendored upstream code directly.
