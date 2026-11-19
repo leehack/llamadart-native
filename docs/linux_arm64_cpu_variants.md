@@ -88,7 +88,8 @@ the first CPU device registered.
 
 ## ISA containment
 
-`tools/check_linux_arm64_cpu_variants.sh <bundle-dir>` runs both checks below.
+`tools/check_linux_arm64_cpu_variants.sh <bundle-dir>` checks carried CPU
+patch markers in the baseline and every variant, then runs both checks below.
 `linux-artifact-contract (arm64, *)` in `validate_wrapper.yml` runs it on every
 qualified upstream, and the release's Linux arm64 core lane runs it before
 upload.

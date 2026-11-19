@@ -420,10 +420,22 @@ struct log_counts {
   std::atomic<long> info{0};
 };
 
+struct fit_log_gate {
+  std::atomic<bool> measuring{false};
+  std::atomic<bool> loader_done{false};
+};
+
 log_counts g_loader_counts;
 thread_local bool g_on_loader_thread = false;
+thread_local fit_log_gate *g_fit_log_gate = nullptr;
 
-void counting_logger(ggml_log_level level, const char *, void *) {
+void counting_logger(ggml_log_level level, const char *text, void *) {
+  if (g_fit_log_gate != nullptr && std::strstr(text, "loaded meta data with") &&
+      !g_fit_log_gate->measuring.exchange(true)) {
+    while (!g_fit_log_gate->loader_done.load()) {
+      std::this_thread::yield();
+    }
+  }
   if (g_on_loader_thread) {
     g_loader_counts.lines.fetch_add(1);
     if (level == GGML_LOG_LEVEL_INFO) {
@@ -455,22 +467,21 @@ void test_other_threads_keep_log_levels(const char *path) {
 
   g_loader_counts.lines = 0;
   g_loader_counts.info = 0;
-  std::atomic<bool> fitting{false};
+  fit_log_gate gate;
   std::atomic<bool> fitted{false};
   std::thread fit([&] {
-    fitting.store(true);
-    for (int run = 0; run < 3; ++run) {
-      fit_request request;
-      assert(request.run(path) == LLAMA_DART_FIT_STATUS_SUCCESS);
-    }
+    g_fit_log_gate = &gate;
+    fit_request request;
+    assert(request.run(path) == LLAMA_DART_FIT_STATUS_SUCCESS);
     fitted.store(true);
   });
-  while (!fitting.load()) {
+  while (!gate.measuring.load() && !fitted.load()) {
     std::this_thread::yield();
   }
-  while (!fitted.load()) {
-    load_vocabulary_only(path);
-  }
+  assert(gate.measuring.load());
+  // The fit is stopped inside its logger, so this load overlaps the scope.
+  load_vocabulary_only(path);
+  gate.loader_done.store(true);
   fit.join();
   g_on_loader_thread = false;
 
@@ -479,6 +490,45 @@ void test_other_threads_keep_log_levels(const char *path) {
   assert(lines > 0);
   // The share of INFO lines is the same as without a fit, not close to zero.
   assert(info * control_lines * 2 >= control_info * lines);
+  llama_dart_set_log_level(4);
+}
+
+struct fit_probe_logs {
+  int info = 0;
+  int errors = 0;
+};
+
+void fit_probe_logger(ggml_log_level level, const char *, void *user_data) {
+  auto &logs = *static_cast<fit_probe_logs *>(user_data);
+  if (level == GGML_LOG_LEVEL_INFO) {
+    ++logs.info;
+  } else if (level == GGML_LOG_LEVEL_ERROR) {
+    ++logs.errors;
+  }
+}
+
+void test_fit_probe_log_scope(const char *path) {
+  fit_probe_logs logs;
+  llama_log_set(fit_probe_logger, &logs);
+  load_vocabulary_only(path);
+  assert(logs.info > 0);
+
+  logs = {};
+  const auto params = llama_model_default_params();
+  llama_model *model = llama_dart_test_load_fit_probe(path, &params);
+  assert(model != nullptr);
+  llama_model_free(model);
+  assert(logs.info == 0);
+  assert(llama_dart_test_load_fit_probe("fit_api_test_missing_model.gguf",
+                                        &params) == nullptr);
+  assert(logs.errors > 0);
+
+  ggml_log_callback callback = nullptr;
+  void *user_data = nullptr;
+  llama_log_get(&callback, &user_data);
+  assert(callback == fit_probe_logger && user_data == &logs);
+  load_vocabulary_only(path);
+  assert(logs.info > 0);
   llama_dart_set_log_level(4);
 }
 
@@ -639,7 +689,11 @@ void test_windows_adapter_paths(const char *path) {
   ggml_backend_dev_t vulkan_only[] = {&vulkan, nullptr};
   fit_request vulkan_fit;
   vulkan_fit.model.devices = vulkan_only;
+  fit_probe_logs logs;
+  llama_log_set(fit_probe_logger, &logs);
   assert(vulkan_fit.run(path) == LLAMA_DART_FIT_STATUS_SUCCESS);
+  assert(logs.info == 0);
+  llama_dart_set_log_level(4);
   assert(g_fake_cuda_reads == 0);
   assert(g_fake_vulkan_reads == 2);
   assert(vulkan_fit.report.n_devices == 1);
@@ -728,6 +782,7 @@ int main(int argc, char **argv) {
   }
   test_failure_keeps_context(path, gpu);
   test_concurrent(path);
+  test_fit_probe_log_scope(path);
   test_other_threads_keep_log_levels(path);
 #if defined(_WIN32)
   test_windows_adapter_paths(path);

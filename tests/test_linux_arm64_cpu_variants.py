@@ -443,6 +443,7 @@ class WorkflowWiringTest(unittest.TestCase):
         self.assertIn("qemu-user llvm", release_job)
         self.assertIn("if: ${{ matrix.arch == 'arm64' && matrix.include_core }}", release_job)
         script = (ROOT / "tools/check_linux_arm64_cpu_variants.sh").read_text()
+        self.assertIn('check-linux-arm64-cpu --dir "$BUNDLE"', script)
         self.assertIn("tools/build.py\" list --linux-arm64-cpu-variant-libs", script)
         for name, _march, _features in build.LINUX_ARM64_CPU_VARIANTS:
             self.assertIn(f"libggml-cpu-{name}.so", script)

@@ -263,8 +263,7 @@ CPU_LIBRARY = "libggml-cpu.so"
 
 
 def _cpu_modules(out_dir: Path) -> list[str]:
-    # Android arm64 ships the CPU backend only as libggml-cpu-<variant>.so, and
-    # every variant compiles the patched sources.
+    # Every CPU variant compiles the same patched sources.
     names = [path.name for path in out_dir.glob("libggml-cpu-*.so")]
     if (out_dir / CPU_LIBRARY).is_file():
         names.append(CPU_LIBRARY)
@@ -277,16 +276,20 @@ def marker_errors(
     patches_dir: Path,
     upstream: Path,
     require_library: bool = False,
-    every_cpu_module: bool = False,
+    cpu_modules: list[str] | None = None,
+    only_cpu: bool = False,
 ) -> list[str]:
     """Names each bundled library that lacks the text a carried patch compiles in."""
     errors: list[str] = []
     for entry in required_series(upstream, patches_dir):
         for marker in entry.get(key, []):
+            library_name = marker["library"]
+            if only_cpu and library_name != CPU_LIBRARY:
+                continue
             required = require_library
-            names = [marker["library"]]
-            if every_cpu_module and marker["library"] == CPU_LIBRARY:
-                names, required = _cpu_modules(out_dir) or names, True
+            names = [library_name]
+            if cpu_modules is not None and library_name == CPU_LIBRARY:
+                names, required = cpu_modules, True
             for name in names:
                 library = out_dir / name
                 if required and not library.is_file():
@@ -299,10 +302,21 @@ def marker_errors(
 
 
 def android_marker_errors(
-    out_dir: Path, patches_dir: Path = PATCHES_DIR, upstream: Path = UPSTREAM_DIR
+    out_dir: Path, patches_dir: Path = PATCHES_DIR, upstream: Path = UPSTREAM_DIR,
+    *, include_cpu: bool = True,
 ) -> list[str]:
     return marker_errors(
-        "android_markers", out_dir, patches_dir, upstream, every_cpu_module=True)
+        "android_markers", out_dir, patches_dir, upstream,
+        cpu_modules=_cpu_modules(out_dir) if include_cpu else [])
+
+
+def linux_arm64_cpu_marker_errors(
+    out_dir: Path, patches_dir: Path, upstream: Path,
+) -> list[str]:
+    # Linux arm64 compiles the same CPU sources as Android arm64.
+    return marker_errors(
+        "android_markers", out_dir, patches_dir, upstream,
+        cpu_modules=_cpu_modules(out_dir), only_cpu=True)
 
 
 def apple_marker_errors(
@@ -345,6 +359,10 @@ def main() -> int:
     apple = commands.add_parser("check-apple", help="fail if an Apple bundle lacks a patch marker")
     apple.add_argument("--upstream", type=Path, default=UPSTREAM_DIR)
     apple.add_argument("--dir", type=Path, required=True)
+    linux_cpu = commands.add_parser(
+        "check-linux-arm64-cpu", help="check carried patch markers in Linux arm64 CPU modules")
+    linux_cpu.add_argument("--upstream", type=Path, default=UPSTREAM_DIR)
+    linux_cpu.add_argument("--dir", type=Path, required=True)
     args = parser.parse_args()
     try:
         if args.command == "apply":
@@ -353,8 +371,9 @@ def main() -> int:
             for reason in skipped:
                 print(f"skipped {reason}", file=sys.stderr)
             print(";".join(paths))
-        elif args.command == "check-apple":
-            errors = apple_marker_errors(args.dir, args.patches, args.upstream)
+        elif args.command in ("check-apple", "check-linux-arm64-cpu"):
+            check = apple_marker_errors if args.command == "check-apple" else linux_arm64_cpu_marker_errors
+            errors = check(args.dir, args.patches, args.upstream)
             for error in errors:
                 print(error, file=sys.stderr)
             return 1 if errors else 0

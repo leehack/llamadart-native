@@ -74,7 +74,7 @@ class ExceptionRuntimeTests(unittest.TestCase):
     def test_a_backend_module_alone_is_accepted(self):
         self.assertEqual([], validator.exception_runtime_errors({'libggml-opencl.so': (set(), set())}))
 
-    def run_tool(self, libraries, omitted_marker=None, omitted_library=None):
+    def run_tool(self, libraries, omitted_marker=None, omitted_library=None, flags=()):
         with tempfile.TemporaryDirectory() as temp:
             out_dir = Path(temp) / 'out'
             out_dir.mkdir()
@@ -98,7 +98,7 @@ class ExceptionRuntimeTests(unittest.TestCase):
             (Path(temp) / 'segments').write_text(SEGMENTS)
             return subprocess.run(
                 [sys.executable, str(ROOT / 'tools/validate_android_artifacts.py'),
-                 '--readelf', str(readelf), str(out_dir)],
+                 '--readelf', str(readelf), *flags, str(out_dir)],
                 capture_output=True, text=True)
 
     def test_tool_accepts_the_shared_runtime_and_names_its_library(self):
@@ -148,6 +148,27 @@ class ExceptionRuntimeTests(unittest.TestCase):
         result = self.run_tool(libraries)
         self.assertEqual(1, result.returncode, result.stderr)
         self.assertIn('libggml-cpu.so: not in', result.stderr)
+
+    def test_requires_a_cpu_even_with_no_marker_requirements(self):
+        self.assertEqual(
+            ['libggml-cpu.so: not in the bundle'],
+            validator.cpu_variant_errors([Path('libggml-opencl.so')]))
+
+    def test_opencl_packaging_skips_markers_on_unshipped_cpu_variants(self):
+        libraries = self.arm64_bundle()
+        libraries['libggml-opencl.so'] = (set(), set())
+        result = self.run_tool(
+            libraries, omitted_marker='llamadart F16 matmul route',
+            flags=('--backend-only',))
+        self.assertEqual(0, result.returncode, result.stderr)
+
+    def test_backend_only_validation_keeps_non_cpu_marker_checks(self):
+        libraries = {'libggml-vulkan.so': (set(), set())}
+        result = self.run_tool(
+            libraries, omitted_marker='has no vkGetBufferDeviceAddress',
+            flags=('--backend-only',))
+        self.assertEqual(1, result.returncode, result.stderr)
+        self.assertIn('libggml-vulkan.so: built without', result.stderr)
 
     def test_tool_rejects_a_second_definition(self):
         libraries = shared_runtime()

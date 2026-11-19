@@ -290,7 +290,11 @@ jobs:
             exit 1
           fi
 
-          python3 tools/validate_android_artifacts.py --readelf "$READELF" "$OUT_DIR"
+          ARTIFACT_ARGS=()
+          if [ "${{ matrix.include_core }}" = "false" ]; then
+            ARTIFACT_ARGS+=(--backend-only)
+          fi
+          python3 tools/validate_android_artifacts.py --readelf "$READELF" "${ARTIFACT_ARGS[@]}" "$OUT_DIR"
 
           if [ "${{ matrix.include_core }}" = "true" ]; then
             test -f "$OUT_DIR/libllamadart.so" || { echo "Missing $OUT_DIR/libllamadart.so"; exit 1; }

@@ -27,7 +27,14 @@ struct llama_dart_test_fit_row {
   uint64_t compute_bytes;
 };
 
+struct llama_model;
+struct llama_model_params;
+
 extern "C" {
+
+LLAMADART_API llama_model *
+llama_dart_test_load_fit_probe(const char *path_model,
+                               const llama_model_params *mparams);
 
 LLAMADART_API void llama_dart_test_set_fit_rows(
     const llama_dart_test_fit_row *rows, size_t count);

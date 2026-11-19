@@ -13,6 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 sys.path.insert(0, str(ROOT / "scripts"))
 
+import build  # noqa: E402
 import llama_cpp_patches as patches  # noqa: E402
 import verify_release_provenance as provenance  # noqa: E402
 
@@ -254,6 +255,34 @@ class ApplyTests(unittest.TestCase):
         result = self.check_apple(fixture)
         self.assertEqual(1, result.returncode, result.stderr)
         self.assertIn("libthing.dylib", result.stderr)
+
+    def test_check_linux_arm64_cpu_checks_each_variant_and_the_baseline(self) -> None:
+        fixture = self.fixture(**{"0001_edit_b": EDIT_B})
+        fixture.series[0]["android_markers"] = [
+            {"library": "libggml-cpu.so", "text": "CPU marker"},
+            {"library": "libggml-vulkan.so", "text": "Android marker"},
+        ]
+        fixture.write_series()
+        fixture.output.mkdir()
+        (fixture.output / "libggml-vulkan.so").write_bytes(b"Linux Vulkan module")
+        cpu_names = ["libggml-cpu.so", *build.linux_arm64_cpu_variant_libs()]
+        for name in cpu_names:
+            (fixture.output / name).write_bytes(b"CPU marker")
+        command = [
+            sys.executable, str(ROOT / "tools/llama_cpp_patches.py"),
+            "--patches", str(fixture.patches), "check-linux-arm64-cpu",
+            "--upstream", str(fixture.upstream), "--dir", str(fixture.output),
+        ]
+        good = subprocess.run(command, capture_output=True, text=True)
+        self.assertEqual(0, good.returncode, good.stderr)
+        for name in cpu_names:
+            with self.subTest(library=name):
+                module = fixture.output / name
+                module.write_bytes(b"without it")
+                bad = subprocess.run(command, capture_output=True, text=True)
+                self.assertEqual(1, bad.returncode, bad.stderr)
+                self.assertIn(f"{name}: built without 0001-edit-b.patch", bad.stderr)
+                module.write_bytes(b"CPU marker")
 
     def test_an_unchanged_copy_keeps_its_timestamp(self) -> None:
         fixture = self.fixture(**{"0001_edit_b": EDIT_B})
