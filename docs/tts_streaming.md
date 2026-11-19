@@ -30,7 +30,7 @@ enum llama_dart_tts_status llama_dart_tts_start_streaming(
   `COMPLETED` PCM equals that of `llama_dart_tts_start` with the same request
   and seed.
 - After `CANCELLED`, `FAILED` and `llama_dart_tts_reset`, both reads return
-  `INVALID_STATE`. A step that observes a cancel appends nothing.
+  `INVALID_STATE`.
 - A task started with `start` or `start_with_voice` is unchanged: reads before
   `COMPLETED` return `INVALID_STATE`.
 - Both reads run inside `llama_dart_exit_call` for every task, so exit teardown

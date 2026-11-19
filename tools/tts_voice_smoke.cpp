@@ -423,6 +423,29 @@ int main(int argc, char **argv) {
             !tts_stream_smoke::streamed_cancel(tts.get(), request, voices.back().c_str())) {
             return 1;
         }
+        // Partial terminal window check: cap at 9 frames so an 8-frame window
+        // emits first (15,360 samples) and final flush emits the non-empty
+        // 9th-frame delta, matching the capped plain synthesis sample-for-sample.
+        llama_dart_tts_request partial_tail_request = request;
+        partial_tail_request.max_frames = 9;
+        synthesis plain_tail;
+        if (!synthesize(tts.get(), partial_tail_request, nullptr, info.sample_rate, &plain_tail) ||
+            !plain_tail.progress.truncated || plain_tail.progress.frames_generated != 9) {
+            return die("Pocket TTS partial-tail fixture did not reach the 9-frame cap");
+        }
+        tts_stream_smoke::expectation tail_expected;
+        tail_expected.first_frames = 8;
+        tail_expected.first_samples = 15360;
+        tail_expected.min_growth_steps = 2;
+        tts_stream_smoke::streamed_run tail_streamed;
+        if (!tts_stream_smoke::run_streamed(tts.get(), partial_tail_request, nullptr, info.sample_rate,
+                                            tail_expected, &tail_streamed)) {
+            return 1;
+        }
+        if (tail_streamed.pcm.size() <= static_cast<size_t>(tail_expected.first_samples) ||
+            !same_pcm(tail_streamed.pcm, plain_tail.pcm)) {
+            return die("Pocket TTS partial-tail streamed PCM missed the terminal delta or differed from plain");
+        }
     }
 
     int cancel_frames = -1;

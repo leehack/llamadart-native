@@ -1172,7 +1172,9 @@ LLAMADART_API enum llama_dart_tts_status llama_dart_tts_start_with_voice(
 // TTS 8 frames and each text chunk, LFM3-Audio every frame). The step that ends
 // generation (end of speech or max_frames) flushes the decoder and appends its
 // tail, so the COMPLETED PCM equals that of llama_dart_tts_start with the same
-// request and seed. A step that observes a cancel appends nothing. Does not
+// request and seed. Both llama_dart_tts_get_output_info and
+// llama_dart_tts_read_pcm return INVALID_STATE after CANCELLED, FAILED, or
+// llama_dart_tts_reset. Does not
 // change any struct, status value or llama_dart_tts_api_version.
 LLAMADART_API enum llama_dart_tts_status llama_dart_tts_start_streaming(
     struct llama_dart_tts * tts,
