@@ -1,4 +1,5 @@
 #include "llama_dart_wrapper.h"
+#include "llama_dart_fit_test_hooks.h"
 #include "gguf.h"
 
 #include <algorithm>
@@ -447,6 +448,384 @@ void test_other_threads_keep_log_levels(const char *path) {
   llama_dart_set_log_level(4);
 }
 
+void test_commit_headroom_contract(const char *path) {
+  struct guard_reset {
+    ~guard_reset() { llama_dart_test_set_fit_commit_config(nullptr); }
+  } reset;
+
+  const std::vector<llama_dart_test_fit_row> c7_rows = {
+      {"CUDA0", true, false, 24152440832ll, 22715891712ll, 4131828531ull,
+       16911433728ull, 301989888ull},
+      {"Host", false, true, 34355970048ll, 29416341504ll, 1919000576ull,
+       7046430720ull, 289406976ull},
+  };
+  const uint64_t c7_total_bytes =
+      4131828531ull + 16911433728ull + 301989888ull + 1919000576ull +
+      7046430720ull + 289406976ull;
+
+  const auto run_with_config = [&](const llama_dart_test_fit_commit_config &cfg,
+                                   bool with_report, int32_t preset_ngl = -1) {
+    llama_dart_test_set_fit_commit_config(&cfg);
+    fit_request req;
+    req.model.n_gpu_layers = preset_ngl;
+    req.context.n_ctx = 2048;
+    req.report.n_layers = 777;
+    const int32_t rc = llama_dart_fit_params(
+        path, &req.model, &req.context, req.split.data(), req.overrides.data(),
+        req.margins.data(), UINT32_MAX, with_report ? &req.report : nullptr);
+    return std::make_pair(rc, req);
+  };
+
+  // 1. Surplus passes.
+  {
+    llama_dart_test_fit_commit_config cfg;
+    cfg.enabled = true;
+    cfg.force_wddm_cuda_selected = true;
+    cfg.override_measurement = true;
+    cfg.rows = c7_rows.data();
+    cfg.n_rows = c7_rows.size();
+    cfg.commit_limit_pages = (c7_total_bytes / 4096ull) + 1024ull;
+    cfg.commit_total_pages = 0;
+    cfg.page_size = 4096;
+    auto [rc, req] = run_with_config(cfg, true);
+    assert(rc == LLAMA_DART_FIT_STATUS_SUCCESS);
+    assert(req.report.n_devices == 1);
+  }
+
+  // 2. Exact equality passes.
+  {
+    const std::vector<llama_dart_test_fit_row> exact_rows = {
+        {"CUDA0", true, false, 1000000ll, 1000000ll, 4096ull, 0ull, 0ull},
+        {"Host", false, true, 1000000ll, 1000000ll, 4096ull, 0ull, 0ull},
+    };
+    llama_dart_test_fit_commit_config cfg;
+    cfg.enabled = true;
+    cfg.force_wddm_cuda_selected = true;
+    cfg.override_measurement = true;
+    cfg.rows = exact_rows.data();
+    cfg.n_rows = exact_rows.size();
+    cfg.commit_limit_pages = 10;
+    cfg.commit_total_pages = 8;
+    cfg.page_size = 4096;
+    auto [rc, req] = run_with_config(cfg, true);
+    assert(rc == LLAMA_DART_FIT_STATUS_SUCCESS);
+  }
+
+  // 3. 1-byte deficit fails with FAILURE, both with report and report==nullptr,
+  // leaving mparams/cparams/report untouched and recording commit error.
+  for (bool with_report : {true, false}) {
+    const std::vector<llama_dart_test_fit_row> deficit_rows = {
+        {"CUDA0", true, false, 1000000ll, 1000000ll, 4097ull, 0ull, 0ull},
+        {"Host", false, true, 1000000ll, 1000000ll, 4096ull, 0ull, 0ull},
+    };
+    llama_dart_test_fit_commit_config cfg;
+    cfg.enabled = true;
+    cfg.force_wddm_cuda_selected = true;
+    cfg.override_measurement = true;
+    cfg.rows = deficit_rows.data();
+    cfg.n_rows = deficit_rows.size();
+    cfg.commit_limit_pages = 10;
+    cfg.commit_total_pages = 8;
+    cfg.page_size = 4096;
+    auto [rc, req] = run_with_config(cfg, with_report, 4);
+    assert(rc == LLAMA_DART_FIT_STATUS_FAILURE);
+    assert(req.model.n_gpu_layers == 4);
+    assert(req.context.n_ctx == 2048);
+    assert(req.report.n_layers == 777);
+    const char *err = llama_dart_last_error();
+    assert(err != nullptr && std::string(err).find("commit") != std::string::npos);
+  }
+
+  // 4. Zero headroom fails with FAILURE.
+  {
+    llama_dart_test_fit_commit_config cfg;
+    cfg.enabled = true;
+    cfg.force_wddm_cuda_selected = true;
+    cfg.override_measurement = true;
+    cfg.rows = c7_rows.data();
+    cfg.n_rows = c7_rows.size();
+    cfg.commit_limit_pages = 100;
+    cfg.commit_total_pages = 100;
+    cfg.page_size = 4096;
+    auto [rc, req] = run_with_config(cfg, true);
+    assert(rc == LLAMA_DART_FIT_STATUS_FAILURE);
+  }
+
+  // 5. C4 recorded numbers pass under C7's commit headroom.
+  {
+    const std::vector<llama_dart_test_fit_row> c4_rows = {
+        {"CUDA0", true, false, 24152440832ll, 1630961664ll, 0ull, 0ull,
+         33554432ull},
+        {"Host", false, true, 34355970048ll, 29240696832ll, 6050807808ull,
+         4563402752ull, 356515840ull},
+    };
+    llama_dart_test_fit_commit_config cfg;
+    cfg.enabled = true;
+    cfg.force_wddm_cuda_selected = true;
+    cfg.override_measurement = true;
+    cfg.rows = c4_rows.data();
+    cfg.n_rows = c4_rows.size();
+    cfg.commit_limit_pages = (33788ull * kMiB) / 4096ull;
+    cfg.commit_total_pages = (6212ull * kMiB) / 4096ull;
+    cfg.page_size = 4096;
+    auto [rc, req] = run_with_config(cfg, true);
+    assert(rc == LLAMA_DART_FIT_STATUS_SUCCESS);
+  }
+
+  // 6. Unreadable counter, zero page size, counter overflow, projection overflow
+  // all return LLAMA_DART_STATUS_EXCEPTION (not FAILURE).
+  {
+    llama_dart_test_fit_commit_config cfg;
+    cfg.enabled = true;
+    cfg.force_wddm_cuda_selected = true;
+    cfg.override_measurement = true;
+    cfg.rows = c7_rows.data();
+    cfg.n_rows = c7_rows.size();
+    cfg.counter_ok = false;
+    cfg.counter_error = "injected K32GetPerformanceInfo failure";
+    auto [rc, req] = run_with_config(cfg, true);
+    assert(rc == LLAMA_DART_STATUS_EXCEPTION);
+    assert(req.report.n_layers == 777);
+  }
+  {
+    llama_dart_test_fit_commit_config cfg;
+    cfg.enabled = true;
+    cfg.force_wddm_cuda_selected = true;
+    cfg.override_measurement = true;
+    cfg.rows = c7_rows.data();
+    cfg.n_rows = c7_rows.size();
+    cfg.commit_limit_pages = UINT64_MAX;
+    cfg.commit_total_pages = 0;
+    cfg.page_size = 4096;
+    auto [rc, req] = run_with_config(cfg, true);
+    assert(rc == LLAMA_DART_STATUS_EXCEPTION);
+  }
+  {
+    const std::vector<llama_dart_test_fit_row> overflow_rows = {
+        {"CUDA0", true, false, 1000000ll, 1000000ll, UINT64_MAX, 1ull, 0ull},
+        {"Host", false, true, 1000000ll, 1000000ll, 0ull, 0ull, 0ull},
+    };
+    llama_dart_test_fit_commit_config cfg;
+    cfg.enabled = true;
+    cfg.force_wddm_cuda_selected = true;
+    cfg.override_measurement = true;
+    cfg.rows = overflow_rows.data();
+    cfg.n_rows = overflow_rows.size();
+    cfg.commit_limit_pages = 1000;
+    cfg.commit_total_pages = 0;
+    cfg.page_size = 4096;
+    auto [rc, req] = run_with_config(cfg, true);
+    assert(rc == LLAMA_DART_STATUS_EXCEPTION);
+  }
+
+  // 7. CUDA beyond output slot 16 (17 devices) is still summed.
+  {
+    std::vector<std::string> names;
+    std::vector<llama_dart_test_fit_row> many_rows;
+    names.reserve(17);
+    for (int i = 0; i < 17; ++i) {
+      names.push_back("CUDA" + std::to_string(i));
+    }
+    for (int i = 0; i < 17; ++i) {
+      many_rows.push_back(
+          {names[i].c_str(), true, false, 1000000ll, 1000000ll,
+           i == 16 ? 8192ull : 0ull, 0ull, 0ull});
+    }
+    many_rows.push_back(
+        {"Host", false, true, 1000000ll, 1000000ll, 4096ull, 0ull, 0ull});
+    llama_dart_test_fit_commit_config cfg;
+    cfg.enabled = true;
+    cfg.force_wddm_cuda_selected = true;
+    cfg.override_measurement = true;
+    cfg.rows = many_rows.data();
+    cfg.n_rows = many_rows.size();
+    cfg.commit_limit_pages = 2; // 8192 bytes < 12288 bytes
+    cfg.commit_total_pages = 0;
+    cfg.page_size = 4096;
+    auto [rc, req] = run_with_config(cfg, true);
+    assert(rc == LLAMA_DART_FIT_STATUS_FAILURE);
+  }
+
+  // 8. Multiple CUDA rows (CUDA0 + CUDA1 + Host) are summed.
+  {
+    const std::vector<llama_dart_test_fit_row> multi_rows = {
+        {"CUDA0", true, false, 1000000ll, 1000000ll, 4096ull, 0ull, 0ull},
+        {"CUDA1", true, false, 1000000ll, 1000000ll, 4096ull, 0ull, 0ull},
+        {"Host", false, true, 1000000ll, 1000000ll, 4096ull, 0ull, 0ull},
+    };
+    llama_dart_test_fit_commit_config cfg;
+    cfg.enabled = true;
+    cfg.force_wddm_cuda_selected = true;
+    cfg.override_measurement = true;
+    cfg.rows = multi_rows.data();
+    cfg.n_rows = multi_rows.size();
+    cfg.commit_limit_pages = 2; // 8192 bytes < 12288 bytes
+    cfg.commit_total_pages = 0;
+    cfg.page_size = 4096;
+    auto [rc, req] = run_with_config(cfg, true);
+    assert(rc == LLAMA_DART_FIT_STATUS_FAILURE);
+  }
+
+  // 9. Vulkan-only / CPU-only control does not enforce WDDM CUDA commit guard.
+  {
+    const std::vector<llama_dart_test_fit_row> vulkan_rows = {
+        {"Vulkan0", true, false, 1000000ll, 1000000ll, 1000000ull, 0ull, 0ull},
+        {"Host", false, true, 1000000ll, 1000000ll, 1000000ull, 0ull, 0ull},
+    };
+    llama_dart_test_fit_commit_config cfg;
+    cfg.enabled = true;
+    cfg.force_wddm_cuda_selected = false;
+    cfg.override_measurement = true;
+    cfg.rows = vulkan_rows.data();
+    cfg.n_rows = vulkan_rows.size();
+    cfg.commit_limit_pages = 1;
+    cfg.commit_total_pages = 0;
+    cfg.page_size = 4096;
+    auto [rc, req] = run_with_config(cfg, true);
+    assert(rc == LLAMA_DART_FIT_STATUS_SUCCESS);
+  }
+}
+
+#if defined(_WIN32)
+namespace {
+int fake_win_cuda_init(unsigned) { return 0; }
+int fake_win_cuda_count(int *count) {
+  *count = 1;
+  return 0;
+}
+int fake_win_cuda_get(int *dev, int ord) {
+  *dev = ord;
+  return 0;
+}
+int fake_win_cuda_name(char *name, int len, int) {
+  std::snprintf(name, static_cast<size_t>(len), "NVIDIA L4");
+  return 0;
+}
+int fake_win_cuda_luid(char *luid, unsigned *mask, int) {
+  static const unsigned char kLuid[8] = {0x5D, 0x50, 0, 0, 0x12, 0x34, 0x56, 0x78};
+  std::memcpy(luid, kLuid, 8);
+  *mask = 1;
+  return 0;
+}
+
+bool g_fake_kmt_fail = false;
+
+long __stdcall fake_win_kmt_query(void *raw) {
+  if (g_fake_kmt_fail) {
+    return -1073741823L; // STATUS_UNSUCCESSFUL
+  }
+  auto *buf = static_cast<unsigned char *>(raw);
+  uint32_t type = 0;
+  std::memcpy(&type, buf + 0, sizeof(type));
+  if (type == 0) {
+    const uint32_t nb_segments = 1;
+    std::memcpy(buf + 24, &nb_segments, sizeof(nb_segments));
+    return 0;
+  }
+  if (type == 3) {
+    // Independently specified D3DKMT_QUERYSTATISTICS_SEGMENT_INFORMATION offsets:
+    // Result starts at byte 24: CommitLimit (+0), BytesCommitted (+8),
+    // BytesResident (+16), Aperture (+40).
+    const uint64_t commit_limit = 22595ull * kMiB;
+    const uint64_t bytes_committed = 100ull * kMiB; // distinct from resident!
+    const uint64_t bytes_resident = 16332ull * kMiB;
+    const uint32_t aperture = 0;
+    std::memcpy(buf + 24 + 0, &commit_limit, sizeof(commit_limit));
+    std::memcpy(buf + 24 + 8, &bytes_committed, sizeof(bytes_committed));
+    std::memcpy(buf + 24 + 16, &bytes_resident, sizeof(bytes_resident));
+    std::memcpy(buf + 24 + 40, &aperture, sizeof(aperture));
+    return 0;
+  }
+  return -1;
+}
+} // namespace
+
+void test_windows_fake_device_kmt_and_commit(const char *path) {
+  // Call the real Windows system commit reader once.
+  const uint64_t real_commit =
+      llama_dart_test_read_system_commit_available_bytes();
+  assert(real_commit > 0);
+
+  struct guard_reset {
+    ~guard_reset() {
+      g_fake_kmt_fail = false;
+      llama_dart_test_set_win_dev_config(nullptr);
+      llama_dart_test_set_fit_commit_config(nullptr);
+    }
+  } reset;
+
+  const size_t kDriverFree = 21663ull * kMiB;
+  const size_t kDriverTotal = 23033ull * kMiB;
+  const size_t kExpectedFree = 6263ull * kMiB; // 22595 - 16332
+
+  llama_dart_test_win_dev_config win_cfg;
+  win_cfg.enabled = true;
+  win_cfg.name = "CUDA0";
+  win_cfg.description = "NVIDIA L4";
+  win_cfg.type = GGML_BACKEND_DEVICE_TYPE_GPU;
+  win_cfg.memory_free = kDriverFree;
+  win_cfg.memory_total = kDriverTotal;
+  win_cfg.has_cuda_api = true;
+  win_cfg.cuda_init = fake_win_cuda_init;
+  win_cfg.cuda_device_count = fake_win_cuda_count;
+  win_cfg.cuda_device_get = fake_win_cuda_get;
+  win_cfg.cuda_device_name = fake_win_cuda_name;
+  win_cfg.cuda_device_luid = fake_win_cuda_luid;
+  win_cfg.cuda_registered_count = 1;
+  win_cfg.kmt_query = fake_win_kmt_query;
+  llama_dart_test_set_win_dev_config(&win_cfg);
+
+  // 1. Public dev_memory and dev_get_props return corrected minimum.
+  size_t free_bytes = 0;
+  size_t total_bytes = 0;
+  assert(llama_dart_ggml_backend_dev_memory(nullptr, &free_bytes, &total_bytes));
+  assert(free_bytes == kExpectedFree);
+  assert(total_bytes == kDriverTotal);
+
+  ggml_backend_dev_props props = {};
+  assert(llama_dart_ggml_backend_dev_get_props(nullptr, &props));
+  assert(props.memory_free == kExpectedFree);
+
+  // 2. Strict fitted report path returns corrected minimum.
+  const std::vector<llama_dart_test_fit_row> rows = {
+      {"CUDA0", true, false, static_cast<int64_t>(kDriverTotal),
+       static_cast<int64_t>(kDriverFree), 0ull, 0ull, 32ull * kMiB},
+      {"Host", false, true, 32768ll * static_cast<int64_t>(kMiB),
+       28000ll * static_cast<int64_t>(kMiB), 1024ull * kMiB, 0ull, 0ull},
+  };
+  llama_dart_test_fit_commit_config fit_cfg;
+  fit_cfg.enabled = true;
+  fit_cfg.force_wddm_cuda_selected = true;
+  fit_cfg.override_measurement = true;
+  fit_cfg.rows = rows.data();
+  fit_cfg.n_rows = rows.size();
+  fit_cfg.commit_limit_pages = (32768ull * kMiB) / 4096ull;
+  fit_cfg.commit_total_pages = 0;
+  fit_cfg.page_size = 4096;
+  llama_dart_test_set_fit_commit_config(&fit_cfg);
+
+  fit_request req;
+  assert(llama_dart_fit_params(path, &req.model, &req.context, req.split.data(),
+                               req.overrides.data(), req.margins.data(),
+                               UINT32_MAX, &req.report) ==
+         LLAMA_DART_FIT_STATUS_SUCCESS);
+  assert(req.report.n_devices == 1);
+  assert(req.report.devices[0].free_bytes == static_cast<int64_t>(kExpectedFree));
+
+  // 3. When KMT fails: listings fall back to driver's free_bytes, strict fit
+  // refuses with LLAMA_DART_STATUS_EXCEPTION.
+  g_fake_kmt_fail = true;
+  assert(llama_dart_ggml_backend_dev_memory(nullptr, &free_bytes, &total_bytes));
+  assert(free_bytes == kDriverFree);
+  assert(llama_dart_ggml_backend_dev_get_props(nullptr, &props));
+  assert(props.memory_free == kDriverFree);
+  assert(llama_dart_fit_params(path, &req.model, &req.context, req.split.data(),
+                               req.overrides.data(), req.margins.data(),
+                               UINT32_MAX, &req.report) ==
+         LLAMA_DART_STATUS_EXCEPTION);
+}
+#endif
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -481,6 +860,10 @@ int main(int argc, char **argv) {
   test_failure_keeps_context(path, gpu);
   test_concurrent(path);
   test_other_threads_keep_log_levels(path);
+  test_commit_headroom_contract(path);
+#if defined(_WIN32)
+  test_windows_fake_device_kmt_and_commit(path);
+#endif
   std::printf("fit api test passed (%s)\n", gpu ? "gpu" : "cpu only");
   if (argc <= 1) {
     std::remove(path);

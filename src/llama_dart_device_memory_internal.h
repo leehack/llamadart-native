@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -17,6 +18,19 @@ struct llama_dart_adapter_segment {
   uint64_t bytes_resident = 0;
   bool aperture = false;
 };
+
+static inline uint64_t llama_dart_saturating_add(uint64_t a, uint64_t b) {
+  return a > UINT64_MAX - b ? UINT64_MAX : a + b;
+}
+
+static inline bool llama_dart_checked_add(uint64_t a, uint64_t b,
+                                          uint64_t *out) {
+  if (a > UINT64_MAX - b) {
+    return false;
+  }
+  *out = a + b;
+  return true;
+}
 
 // Free dedicated memory of an adapter from its memory segments. A discrete
 // device counts the segments that are not aperture (host memory the GPU
@@ -35,8 +49,8 @@ llama_dart_adapter_free_bytes(const std::vector<llama_dart_adapter_segment> &seg
       continue;
     }
     counted = true;
-    limit += segment.commit_limit;
-    resident += segment.bytes_resident;
+    limit = llama_dart_saturating_add(limit, segment.commit_limit);
+    resident = llama_dart_saturating_add(resident, segment.bytes_resident);
   }
   if (!counted) {
     return false;
@@ -263,4 +277,114 @@ static void llama_dart_fit_margins(const std::vector<std::string> &names,
         llama_dart_effective_free(driver_free, system.free_bytes);
     margins[i] += static_cast<size_t>(driver_free - effective);
   }
+}
+
+struct llama_dart_commit_headroom {
+  bool ok = false;
+  uint64_t available_bytes = 0;
+  std::string detail;
+};
+
+static inline llama_dart_commit_headroom
+llama_dart_commit_available_bytes(uint64_t commit_limit_pages,
+                                  uint64_t commit_total_pages,
+                                  uint64_t page_size) {
+  llama_dart_commit_headroom result;
+  if (page_size == 0 || commit_limit_pages == 0) {
+    result.detail =
+        "Windows performance info reported zero page size or commit limit";
+    return result;
+  }
+  if (commit_total_pages >= commit_limit_pages) {
+    result.ok = true;
+    result.available_bytes = 0;
+    return result;
+  }
+  const uint64_t free_pages = commit_limit_pages - commit_total_pages;
+  if (free_pages > UINT64_MAX / page_size) {
+    result.detail = "Windows available system commit overflows 64-bit bytes";
+    return result;
+  }
+  result.ok = true;
+  result.available_bytes = free_pages * page_size;
+  return result;
+}
+
+struct llama_dart_fit_commit_row {
+  std::string name;
+  bool is_gpu = false;
+  bool is_host = false;
+  uint64_t model_bytes = 0;
+  uint64_t context_bytes = 0;
+  uint64_t compute_bytes = 0;
+};
+
+struct llama_dart_fit_commit_decision {
+  bool ok = false;
+  bool fits = false;
+  uint64_t projected_bytes = 0;
+  uint64_t available_bytes = 0;
+  std::string detail;
+};
+
+static inline bool llama_dart_fit_projected_commit_bytes(
+    const std::vector<llama_dart_fit_commit_row> &rows,
+    uint64_t *projected_bytes, std::string *detail) {
+  uint64_t total = 0;
+  for (const llama_dart_fit_commit_row &row : rows) {
+    const bool include =
+        row.is_host ||
+        llama_dart_device_memory_source(row.name, row.is_gpu) ==
+            llama_dart_memory_source::cuda;
+    if (!include) {
+      continue;
+    }
+    uint64_t row_sum = 0;
+    if (!llama_dart_checked_add(row.model_bytes, row.context_bytes, &row_sum) ||
+        !llama_dart_checked_add(row_sum, row.compute_bytes, &row_sum) ||
+        !llama_dart_checked_add(total, row_sum, &total)) {
+      *detail = "projected system commit overflows 64-bit bytes";
+      return false;
+    }
+  }
+  *projected_bytes = total;
+  return true;
+}
+
+static inline std::string llama_dart_format_mib(uint64_t bytes) {
+  const double mib = static_cast<double>(bytes) / (1024.0 * 1024.0);
+  char buf[48];
+  snprintf(buf, sizeof(buf), "%.1f", mib);
+  return buf;
+}
+
+static inline llama_dart_fit_commit_decision llama_dart_evaluate_fit_commit(
+    const std::vector<llama_dart_fit_commit_row> &rows,
+    uint64_t commit_limit_pages, uint64_t commit_total_pages,
+    uint64_t page_size) {
+  llama_dart_fit_commit_decision decision;
+  if (!llama_dart_fit_projected_commit_bytes(rows, &decision.projected_bytes,
+                                             &decision.detail)) {
+    return decision;
+  }
+  const llama_dart_commit_headroom headroom = llama_dart_commit_available_bytes(
+      commit_limit_pages, commit_total_pages, page_size);
+  if (!headroom.ok) {
+    decision.detail = headroom.detail;
+    return decision;
+  }
+  decision.ok = true;
+  decision.available_bytes = headroom.available_bytes;
+  decision.fits = decision.projected_bytes <= decision.available_bytes;
+  if (!decision.fits) {
+    decision.detail =
+        "fitted placement projects " +
+        llama_dart_format_mib(decision.projected_bytes) + " MiB (" +
+        std::to_string(decision.projected_bytes) +
+        " bytes) of system commit, exceeding available Windows commit " +
+        llama_dart_format_mib(decision.available_bytes) + " MiB (" +
+        std::to_string(decision.available_bytes) +
+        " bytes); use a smaller context or increase system commit headroom";
+  }
+  return decision;
 }

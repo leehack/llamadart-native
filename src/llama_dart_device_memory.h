@@ -19,11 +19,17 @@ size_t llama_dart_device_free_bytes(ggml_backend_dev_t dev, size_t driver_free,
                                     bool strict);
 
 // Adds the Windows correction to `margins`, indexed like the model's device
-// list for `mparams`. Does nothing elsewhere.
+// list for `mparams`. Does nothing elsewhere. Returns true when the model's
+// selected devices include a WDDM CUDA GPU.
 struct llama_model_params;
-void llama_dart_fit_apply_system_margins(const char *path_model,
+bool llama_dart_fit_apply_system_margins(const char *path_model,
                                          const llama_model_params &mparams,
                                          size_t *margins, size_t n_margins);
+
+// Reads available Windows system commit bytes: (CommitLimit - CommitTotal) *
+// PageSize. Throws std::runtime_error on OS query failure, zero page size or
+// limit, or 64-bit overflow. Not used on non-Windows hosts.
+uint64_t llama_dart_read_system_commit_available_bytes();
 
 // The name and LUID of the Vulkan device `index` of the wrapper's probe.
 bool llama_dart_vulkan_device_luid(int32_t index, char *name, size_t name_size,

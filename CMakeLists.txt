@@ -373,6 +373,7 @@ target_include_directories(llamadart_lib PRIVATE
 
 if (LLAMADART_BUILD_TESTS)
     enable_testing()
+    target_compile_definitions(llamadart_lib PRIVATE LLAMADART_TESTING=1)
     add_executable(llamadart_f16_dot_accumulation_test tests/f16_dot_accumulation_test.cpp)
     target_compile_features(llamadart_f16_dot_accumulation_test PRIVATE cxx_std_17)
     target_compile_definitions(llamadart_f16_dot_accumulation_test PRIVATE
@@ -556,6 +557,7 @@ if (LLAMADART_BUILD_TESTS)
         add_dependencies(llamadart_fit_api_test ggml-cpu)
     endif()
     target_compile_definitions(llamadart_fit_api_test PRIVATE
+        LLAMADART_TESTING=1
         LLAMADART_FIT_HAS_NGL_SKIP=$<BOOL:${LLAMADART_FIT_HAS_NGL_SKIP}>)
     add_test(NAME llamadart_fit_api_test COMMAND llamadart_fit_api_test)
     set_tests_properties(llamadart_fit_api_test PROPERTIES TIMEOUT 300)

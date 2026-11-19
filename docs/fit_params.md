@@ -35,12 +35,19 @@ The header has the full contract. What a binding must know:
   is loaded. When the load fits as it is, `mparams` keeps the pointers it had.
   The override patterns are static storage inside `llama-common`: never free
   them.
-- `mparams` and `cparams` are written only on `SUCCESS`.
+- `mparams`, `cparams`, and `report` are written only on `SUCCESS`.
 - The report is measured at the fitted parameters. It holds at most
   `LLAMA_DART_FIT_MAX_DEVICES` devices.
 - On Windows the free memory of a Vulkan or CUDA GPU counts other processes (next
   section), and a fit whose adapter memory cannot be read fails with
   `LLAMA_DART_STATUS_EXCEPTION` instead of running on the driver's number.
+- On Windows when the model's selected devices include a WDDM CUDA GPU,
+  `llama_dart_fit_params` also checks the final placement's projected system
+  commit against available Windows system commit (`CommitLimit - CommitTotal`),
+  even when `report` is `NULL`, and returns `LLAMA_DART_FIT_STATUS_FAILURE` with
+  a commit-specific `llama_dart_last_error()` when headroom is insufficient, or
+  `LLAMA_DART_STATUS_EXCEPTION` when the commit counter is unreadable or
+  overflows.
 
 ## Free memory on Windows
 
@@ -62,9 +69,9 @@ no static import) and the Vulkan device's LUID. For a discrete GPU it sums
 `BytesResident` over the segments that are not aperture; the capacity is the
 smaller of the driver's total and the sum of `CommitLimit`. Free memory is
 `capacity - resident`, not the driver-reserved memory `nvidia-smi` also counts:
-it matched NVML within 5 to 38 MiB under CUDA, D3D12 and Vulkan holders, and
-its used figure is a constant 434 MiB below NVML's. An integrated GPU counts all
-segments.
+it matched NVML within a 4–38 MiB free difference and about 400–434 MiB used
+difference in the measured samples under CUDA, D3D12 and Vulkan holders. An
+integrated GPU counts all segments.
 
 A CUDA device has no LUID in ggml's properties, so the wrapper takes it from
 `cuDeviceGetLuid` of the already loaded `nvcuda.dll` (`GetModuleHandleW` and
@@ -92,15 +99,28 @@ is in `src/llama_dart_device_memory.cpp`, with the rules in
   exception that names the device and the cause. The two device queries above
   fall back to the driver's number, because a listing has no fit to refuse.
 - The fit reads the model's device list with one more `vocab_only` load of the
-  same file before it measures; it loads no weights.
+  same file before it measures; it loads no weights. That extra vocabulary-only
+  load emits its normal model-metadata `INFO` lines to the active logger.
 - Refused, not corrected: any `GGML_CUDA_DEVICES` count other than the physical
   count (driver and registry counts differ, including virtual devices) and a
   CUDA device with no WDDM adapter (TCC mode, no LUID). Their fit fails with the
   device named.
 - Not covered: APIs other than Vulkan and CUDA, and a driver that is not WDDM.
-- The fit's early return when the model has nothing to correct looks at the
+- The fit's early return when the host has nothing to correct looks at the
   ggml registry (any `Vulkan<i>` or `CUDA<i>` GPU), not at the Vulkan probe, so
-  a CUDA host without a usable Vulkan loader is still corrected.
+  a CUDA host without a usable Vulkan loader is still corrected. That registry
+  skip is distinct from failing to resolve a selected adapter once a model
+  chooses a Vulkan or CUDA GPU.
+- When the model's selected devices on Windows include a WDDM CUDA GPU, the
+  final no-allocation measurement (`common_get_device_memory_data`) runs even
+  when `report == NULL`. After it unwinds, the wrapper sums the full internal
+  host (`model + context + compute`) and selected WDDM CUDA (`model + context +
+  compute`) projections (before the 16-device report cap) and compares against
+  `(CommitLimit - CommitTotal) * PageSize` from `K32GetPerformanceInfo`.
+  This is a conservative snapshot estimate (it counts host weights that may be
+  file-mapped, and is not a reservation or an OOM guarantee); `report->host.free_bytes`
+  remains physical free memory. A registered but unselected CUDA backend does
+  not trigger this check for Vulkan-only or CPU-only fits.
 - Memory that idle applications hold counts as used, although WDDM could take
   it back.
 - `llama_dart_fit_api_version()` stays 1. A `v1.0.0` runtime has the fit but not
