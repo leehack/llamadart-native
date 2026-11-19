@@ -1784,13 +1784,6 @@ extern "C" void llama_dart_test_set_fit_commit_config(
     }
   }
 }
-
-#if defined(_WIN32)
-bool llama_dart_test_win_dev_override_memory(ggml_backend_dev_t dev,
-                                             size_t *free, size_t *total);
-bool llama_dart_test_win_dev_override_props(
-    ggml_backend_dev_t dev, struct ggml_backend_dev_props *props);
-#endif
 #endif
 
 struct llama_dart_fit_measured_row {
