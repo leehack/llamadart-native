@@ -86,9 +86,8 @@ instead of the original.
 
 A hunk applies only where its context and removed lines occur exactly once in
 the upstream file. There is no fuzz. A patch that does not fit the llama.cpp
-being built is skipped whole with a CMake warning that names it, and the build
-goes on: `validate_wrapper.yml` builds older upstream commits for
-qualification, and those must keep building.
+being built is skipped whole with a CMake warning that names it. The bundle
+marker checks below catch missing patches.
 
 ## What keeps a release from losing a patch
 
@@ -112,24 +111,19 @@ none, so a release whose Android bundle has every Android marker has those
 patches on its other platforms too.
 
 A patch cannot change a `.metal` kernel: the upstream build embeds those files
-through its own custom commands, which take no replacement source. Patch 0004
-edits the embedded text in `ggml-metal-device.m` as it is loaded instead. Its
-marker is its own literal, so it cannot show that the edit matched anything:
-`required_text` names the text the edit needs, and a patch whose `path` lacks it
-does not fit, which drops the marker and fails `check-apple`.
+through its own custom commands, which take no replacement source. A patch
+that edits embedded text at runtime can use `required_text` to verify the
+original text is present. A patch whose specified path lacks that text does
+not fit, which drops its marker and fails `check-apple`.
 
 `python3 tools/llama_cpp_patches.py apply --strict --upstream
 third_party/llama.cpp --output <dir>` fails where the build would skip.
 
 ## Retiring a patch upstream has fixed
 
-While older upstream commits still need a patch, give its entry the
-`upstream_fix` text instead of deleting it. A llama.cpp whose patched source
-contains that text has the fix: the build does not apply the patch, its
-markers are not required and the manifest does not list it. Any other
-llama.cpp still needs the patch, and it fails as above if the patch does not
-fit, so an upstream that rewrites the fix differently keeps the patch rather
-than losing it. Pick text that the unfixed sources do not contain.
+An entry with `upstream_fix` is skipped when llama.cpp contains that fix.
+Its markers are then optional and the manifest omits it. Pick text unique
+to the fix so builds of unfixed sources still require the patch.
 
 ## What a release records
 
@@ -148,6 +142,6 @@ none. `llama_cpp_commit` remains the upstream commit the patches apply to.
 4. Describe the patch, its evidence and what removes it in the document of the
    rebuild that introduces it under `docs/`.
 
-Remove a patch when no built upstream needs it any more: every
-`LLAMADART_UPSTREAMS` row of `validate_wrapper.yml`, the pinned one included,
-contains the fix, or the defect no longer reproduces without it.
+Remove a patch when the pinned upstream in the sole `LLAMADART_UPSTREAMS`
+row of `validate_wrapper.yml` contains the fix, or the defect no longer
+reproduces without it.

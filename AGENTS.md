@@ -41,11 +41,11 @@ Optional Linux container build:
 ## Release Workflows
 
 For ARM64 upstream upgrades, run the candidate Windows/Android and compiled
-dispatch gates in `validate_wrapper.yml` before merging. Every native lane there
-builds each `LLAMADART_UPSTREAMS` release once: keep one row per upstream a
-supported `llamadart` core ships, and add the new release in the pull request
-that moves the pin (`tools/ci_scope.py` fails unless the pin is exactly one
-row). See
+dispatch gates in `validate_wrapper.yml` before merging. Keep exactly one
+`LLAMADART_UPSTREAMS` row for the pinned upstream shipped by the current
+`llamadart` core minor. Replace the row in the pull request that moves the
+pin. `tools/ci_scope.py` checks that the row matches the submodule. Native
+fixes go to the current core minor only. See
 `docs/platform_backend_strategy.md` for the ISA audit contract. Never refresh
 audited source fingerprints merely to silence a failed check.
 See `docs/linux_arm64_cpu_variants.md` for the Linux arm64 CPU variants, how
@@ -62,10 +62,9 @@ See `docs/v080_android_isa_qualification.md` for the v0.8.0/KleidiAI v1.32.0
 source pair, its SVE I8MM-gated Q8 kernels and remaining gates.
 See `docs/v100_qualification.md` for the fixed v1.0.0 candidate, retained
 carry decisions, ABI/audio adapters and pending original-trigger gates.
-See `docs/v090_qualification.md` for the v0.9.0 candidate, patch
-0004 (kept for the v0.8.0 row, not applied to v0.9.0) and consumer ABI delta,
-and `docs/v090_android_isa_qualification.md` for its source pair and ggml
-SVE256 repack paths.
+See `docs/v090_qualification.md` for the v0.9.0 candidate and consumer ABI
+delta, and `docs/v090_android_isa_qualification.md` for its source pair and
+ggml SVE256 repack paths.
 See `docs/v080_1_wrapper_rebuild.md` for the `v0.8.0-1` Metal kernel patch and
 the OS floor check `metal_os_floor.yml`, which runs on `macos-15`, `macos-26`
 and the oldest iOS simulator because ggml compiles Metal source on the user's

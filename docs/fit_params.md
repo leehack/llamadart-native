@@ -157,8 +157,7 @@ INFO and WARN lines of every thread while it was installed. The carried patch
 state in static storage and demotes only the lines of the thread that holds the
 scope, so other threads, such as a model load in another isolate, reach the
 original callback with their own levels, before, during and after a fit.
-It applies to every `LLAMADART_UPSTREAMS` row; upstream's scope is the same
-there.
+It applies to the pinned upstream qualified by native CI.
 
 What remains: `llama_log_set` writes the callback and its user data
 separately. A thread that logs in the instant a fit installs or restores the
@@ -177,8 +176,8 @@ It waits for a running fit, up to the exit wait limit.
 ## Upstream compatibility
 
 CMake probes `LLAMADART_FIT_HAS_PATH_LIST` (v1.0.0 passes a list of paths) and
-`LLAMADART_FIT_HAS_NGL_SKIP` (v1.0.0 reports skipped NextN layers), so the same
-source builds on every `LLAMADART_UPSTREAMS` row.
+`LLAMADART_FIT_HAS_NGL_SKIP` (v1.0.0 reports skipped NextN layers). Native CI
+qualifies the pinned upstream shipped by the current llamadart core minor.
 
 ## ABI delta for the Dart bindings
 

@@ -1,13 +1,10 @@
 # v0.9.0 qualification
 
 Stable upstream v0.9.0, `cd959bae99ff4bed22bef2604f45241c09bbb8c8`
-(2026-11-04), is the next runtime candidate. It is v0.8.0
-`8642541b255bfb5dc39cd351a178be09013a55d6` plus 150 commits. Its native release
-identity is the stable tag `v0.9.0`, which `latest` selects.
+(2026-11-04), was the runtime candidate for core 0.19. It is v0.8.0
+`8642541b255bfb5dc39cd351a178be09013a55d6` plus 150 commits.
 
-This change moves the production submodule to v0.9.0 and adds it as the
-pinned `LLAMADART_UPSTREAMS` row of `validate_wrapper.yml`, next to the v0.8.0
-row; the v0.7.0 row was retired with patch 0003. After the 2026-11-05
+The upgrade pinned the production submodule to v0.9.0. After the 2026-11-05
 automatic dispatch failed at the CPU ISA audits
 ([v090_android_isa_qualification.md](v090_android_isa_qualification.md)),
 native `v0.9.0` was published on 2026-11-08 from `a604639` by a manual
@@ -59,18 +56,11 @@ passes `git apply --check` on both. `series.json` is unchanged.
 | --- | --- | --- | --- |
 | 0001 Adreno 750 matvec (#79) | Applied | [#29165](https://github.com/ggml-org/llama.cpp/pull/29165) open draft; `use_subgroups` selection unchanged on `master` | Keep |
 | 0002 buffer device address (leehack/llamadart#782) | Applied | No fix: `master` still takes `bufferDeviceAddress` from `VkPhysicalDeviceVulkan12Features` without checking the entry point; upstream supports Vulkan 1.2 and later only | Keep |
-| 0004 Metal unary cast (#154) | Not applied: `upstream_fix` present, `required_text` absent ([#31360](https://github.com/ggml-org/llama.cpp/pull/31360)) | Fixed after v0.8.0 | Needed only by the v0.8.0 row |
 | 0005 ARM F16 dot (#174) | Applied | [#31734](https://github.com/ggml-org/llama.cpp/issues/31734) open, no fix; non-SVE NEON `ggml_vec_dot_f16` still accumulates in `float16x8_t` | Keep |
 | 0006 ARM F16 GEMM (#174) | Applied | Same issue; llamafile still uses `tinyBLAS<8, float16x8_t, …>` | Keep |
 
-v0.8.0 needs 0001, 0002 and 0004–0006. Patch 0003 and the v0.7.0
-`LLAMADART_UPSTREAMS` row (cores 0.15–0.17) were retired once cores on v0.8.0
-shipped; deleting 0004 means dropping the v0.8.0 row (core 0.18), a
-support-policy decision for the maintainer.
-
-`check-apple` does not require the 0004 marker on v0.9.0, and
-`metal_os_floor.yml` checks the unpatched v0.9.0 Metal kernels on the oldest
-runners.
+v0.9.0 includes the upstream Metal unary cast fix
+([#31360](https://github.com/ggml-org/llama.cpp/pull/31360)).
 
 ## Consumer ABI delta from v0.8.0
 
@@ -88,10 +78,10 @@ No public C symbol is removed. Regenerated bindings must account for:
 gives `common_control_vector_load` an `n_layer` argument; the wrapper uses
 neither.
 
-## Remaining gates
+## Qualification scope
 
-- Hosted `v0.9.0` rows of every lane in `validate_wrapper.yml`, and
-  `validate_linux_release_rows.yml` and `metal_os_floor.yml` at the pin.
+- Native CI now qualifies the pinned upstream shipped by the current core
+  minor. The v0.9.0 rows were retired with the core 0.18 rows.
 - Android ISA: [v090_android_isa_qualification.md](v090_android_isa_qualification.md).
 - Model, family and device qualification stays with the consumer release; this
   document claims none of it.

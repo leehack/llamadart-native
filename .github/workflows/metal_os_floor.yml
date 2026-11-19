@@ -49,8 +49,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # The oldest macOS with a lasting runner, which rejected v0.8.0, and the
-        # first with the 26 compilers. macOS 13 and 14 have none (docs/v080_1_wrapper_rebuild.md).
+        # The oldest macOS with a lasting runner and the first with the 26
+        # compilers. macOS 13 and 14 have none (docs/v080_1_wrapper_rebuild.md).
         runner: [macos-15, macos-26]
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 20

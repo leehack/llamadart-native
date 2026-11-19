@@ -14,12 +14,10 @@ permissions:
 
 env:
   # Qualification only: never moves the production submodule or release channel.
-  # One row per upstream release a supported llamadart core ships. The row whose
-  # commit is the submodule pin builds that checkout as is (tools/ci_scope.py).
+  # Exactly one row: the pinned upstream shipped by the current llamadart core minor.
+  # tools/ci_scope.py checks that the row matches the submodule pin.
   LLAMADART_UPSTREAMS: >-
-    {"v0.8.0": "8642541b255bfb5dc39cd351a178be09013a55d6",
-    "v0.9.0": "cd959bae99ff4bed22bef2604f45241c09bbb8c8",
-    "v1.0.0": "b1b770d90d94cad9e9ea5b993bdbc383a522fb28"}
+    {"v1.0.0": "b1b770d90d94cad9e9ea5b993bdbc383a522fb28"}
 
 jobs:
   changes:
