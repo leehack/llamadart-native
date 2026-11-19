@@ -3,9 +3,11 @@
 #include "llama_dart_wrapper.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -87,6 +89,26 @@ llama_dart_asr_stream_step_samples(llama_dart_asr_stream_mode mode) {
                          : 4 * llama_dart_asr_token_delay_row_ms;
   return static_cast<size_t>(llama_dart_asr_stream_sample_rate) *
          static_cast<size_t>(ms) / 1000;
+}
+
+// Checked conversion from buffered milliseconds to 16 kHz mono float samples.
+// Uses 16 samples/ms in uint64_t to avoid 32-bit multiplication overflow before
+// division, and rejects nonpositive values or counts exceeding max_samples.
+static inline bool
+llama_dart_asr_stream_buffer_capacity(int32_t max_buffered_ms,
+                                      size_t max_samples,
+                                      size_t *out_samples) {
+  if (out_samples == nullptr || max_buffered_ms <= 0) {
+    return false;
+  }
+  const uint64_t samples =
+      static_cast<uint64_t>(max_buffered_ms) *
+      static_cast<uint64_t>(llama_dart_asr_stream_sample_rate / 1000);
+  if (samples > static_cast<uint64_t>(max_samples)) {
+    return false;
+  }
+  *out_samples = static_cast<size_t>(samples);
+  return true;
 }
 
 // A bounded queue between push and the upstream stream.
@@ -174,6 +196,10 @@ public:
     return count;
   }
 
+  // Drops any incomplete trailing UTF-8 sequence at a segment boundary while
+  // keeping all complete unread bytes from earlier segments.
+  void discard_incomplete() { pending_.clear(); }
+
   void clear() {
     pending_.clear();
     ready_.clear();
@@ -247,3 +273,83 @@ private:
   std::string ready_;
   size_t head_ = 0;
 };
+
+struct llama_dart_asr_step_state {
+  bool input_finished = false;
+  bool flushed = false;
+  bool needs_audio = true;
+  int64_t samples_consumed = 0;
+};
+
+enum class llama_dart_asr_feed_outcome {
+  needs_audio,
+  finished,
+  failed_push,
+  failed_flush,
+  failed_step,
+  rows_ready,
+};
+
+// One bounded feed-and-encode unit for llama_dart_asr_stream_step: at most one
+// bounded chunk push (or final flush) when upstream needs audio, and at most one
+// upstream step.
+template <typename PushFn, typename FlushFn, typename StepFn>
+static inline llama_dart_asr_feed_outcome llama_dart_asr_step_feed_and_encode(
+    llama_dart_asr_input_meter &meter, llama_dart_asr_step_state &state,
+    PushFn &&push_fn, FlushFn &&flush_fn, StepFn &&step_fn,
+    int32_t *out_rows) {
+  bool fed = false;
+  if (state.needs_audio) {
+    const float *chunk = nullptr;
+    const size_t count = meter.next_chunk(&chunk);
+    if (count > 0) {
+      if (!push_fn(chunk, count)) {
+        return llama_dart_asr_feed_outcome::failed_push;
+      }
+      meter.consume(count);
+      state.samples_consumed += static_cast<int64_t>(count);
+      fed = true;
+    } else if (state.input_finished && !state.flushed) {
+      if (!flush_fn()) {
+        return llama_dart_asr_feed_outcome::failed_flush;
+      }
+      state.flushed = true;
+      fed = true;
+    }
+  }
+  // Once flushed, upstream still encodes what it holds a step at a time.
+  if (state.needs_audio && !fed && !state.flushed) {
+    return llama_dart_asr_feed_outcome::needs_audio;
+  }
+  state.needs_audio = false;
+
+  const int32_t rows = step_fn();
+  if (rows == -2) {
+    return llama_dart_asr_feed_outcome::failed_step;
+  }
+  if (rows == -1) {
+    return llama_dart_asr_feed_outcome::finished;
+  }
+  if (rows == 0) {
+    state.needs_audio = true;
+    return llama_dart_asr_feed_outcome::needs_audio;
+  }
+  if (out_rows != nullptr) {
+    *out_rows = rows;
+  }
+  return llama_dart_asr_feed_outcome::rows_ready;
+}
+
+// Resets a session with a defined cancellation boundary: any cancel before
+// exchange(false) belongs to the previous input; any cancel after it survives
+// release and reopen until the next step.
+template <typename ReleaseFn, typename ResetStateFn, typename BeginFn>
+static inline bool
+llama_dart_asr_reset_session(std::atomic<bool> &cancel_requested,
+                             ReleaseFn &&release_fn,
+                             ResetStateFn &&reset_state_fn, BeginFn &&begin_fn) {
+  cancel_requested.exchange(false, std::memory_order_acq_rel);
+  release_fn();
+  reset_state_fn();
+  return begin_fn();
+}

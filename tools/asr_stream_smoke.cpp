@@ -46,6 +46,8 @@ struct run_result {
   std::string text;
   llama_dart_asr_stream_status status = LLAMA_DART_ASR_STREAM_STATUS_OK;
   llama_dart_asr_stream_progress progress{};
+  double first_token_step_ms = 0.0;
+  double steady_max_step_ms = 0.0;
   double max_step_ms = 0.0;
   double wall_s = 0.0;
   int steps = 0;
@@ -178,8 +180,15 @@ run_result run(llama_dart_asr_stream *stream, const std::vector<float> &pcm,
     llama_dart_asr_stream_progress progress{};
     progress.struct_size = sizeof(progress);
     const double before = now_ms();
+    const int32_t prev_tokens = result.progress.tokens_sampled;
     result.status = llama_dart_asr_stream_step(stream, &progress);
-    result.max_step_ms = std::max(result.max_step_ms, now_ms() - before);
+    const double step_ms = now_ms() - before;
+    result.max_step_ms = std::max(result.max_step_ms, step_ms);
+    if (prev_tokens == 0 && progress.tokens_sampled > 0) {
+      result.first_token_step_ms = step_ms;
+    } else if (prev_tokens > 0) {
+      result.steady_max_step_ms = std::max(result.steady_max_step_ms, step_ms);
+    }
     ++result.steps;
     result.progress = progress;
     drain_text(stream, &last_breaks, progress.segment_breaks, &result.text);
@@ -267,6 +276,7 @@ int main(int argc, char **argv) {
     params.n_ctx = static_cast<uint32_t>(n_ctx);
     params.n_batch = 512;
     params.n_ubatch = 512;
+    params.n_seq_max = 2;
     params.n_threads = opt.threads;
     params.n_threads_batch = opt.threads;
     llama_context *context = llama_dart_init_from_model(model, params);
@@ -311,6 +321,37 @@ int main(int argc, char **argv) {
       samples, samples + mtmd_bitmap_get_n_bytes(bitmap.get()) / sizeof(float));
   const size_t rate = static_cast<size_t>(info.sample_rate);
 
+  // Sequence ownership: init claims and clears sequence 0 while leaving
+  // unrelated sequence 1 intact.
+  {
+    llama_memory_t mem = llama_get_memory(context);
+    const llama_vocab *vocab = llama_model_get_vocab(model);
+    llama_token bos = llama_vocab_bos(vocab);
+    if (bos == LLAMA_TOKEN_NULL) {
+      bos = 0;
+    }
+    for (llama_seq_id seq = 0; seq < 2; ++seq) {
+      llama_batch seed = llama_batch_init(1, 0, 1);
+      seed.n_tokens = 1;
+      seed.token[0] = bos;
+      seed.pos[0] = 0;
+      seed.n_seq_id[0] = 1;
+      seed.seq_id[0][0] = seq;
+      seed.logits[0] = 0;
+      check(llama_decode(context, seed) == 0, "seed sequence");
+      llama_batch_free(seed);
+      check(llama_memory_seq_pos_max(mem, seq) >= 0, "seeded sequence missing");
+    }
+    stream_ptr seq_check = open_stream(context, mtmd);
+    check(llama_memory_seq_pos_max(mem, 0) < 0,
+          "init did not clear chosen sequence 0");
+    check(llama_memory_seq_pos_max(mem, 1) >= 0,
+          "init cleared unrelated sequence 1");
+    seq_check.reset();
+    llama_memory_seq_rm(mem, 1, 0, -1);
+    std::printf("sequence ownership: seq 0 cleared, seq 1 preserved\n");
+  }
+
   stream_ptr stream = open_stream(context, mtmd);
   check(llama_dart_exit_tracked_count() == tracked_base + 1,
         "the session is not tracked");
@@ -320,10 +361,11 @@ int main(int argc, char **argv) {
             fixed.progress.state == LLAMA_DART_ASR_STREAM_STATE_FINISHED,
         "the clip did not finish");
   std::printf("TRANSCRIPT<<<%s>>>\n", fixed.text.c_str());
-  std::printf("clip %.1fs wall %.2fs rtf %.3f max_step %.1fms steps %d "
-              "breaks %d\n",
+  std::printf("clip %.1fs wall %.2fs rtf %.3f first_token_step %.1fms "
+              "steady_max_step %.1fms max_step %.1fms steps %d breaks %d\n",
               static_cast<double>(clip.size()) / rate, fixed.wall_s,
               fixed.wall_s / (static_cast<double>(clip.size()) / rate),
+              fixed.first_token_step_ms, fixed.steady_max_step_ms,
               fixed.max_step_ms, fixed.steps, fixed.progress.segment_breaks);
   check(normalize(fixed.text) == kExpected, "the transcript is not the speech");
   llama_dart_asr_stream_progress finished{};
@@ -455,19 +497,81 @@ int main(int argc, char **argv) {
             LLAMA_DART_ASR_STREAM_STATUS_CANCELLED,
         "cancel before the first step");
 
+  // Prompted delay contract: 960 ms is the nominal chunk cadence, whereas
+  // first visible text needs mel-window lookahead (> 960 ms).
+  if (!token_delay) {
+    check(llama_dart_asr_stream_reset(stream.get()) ==
+              LLAMA_DART_ASR_STREAM_STATUS_OK,
+          "reset for delay check");
+    const size_t nominal_samples =
+        static_cast<size_t>(info.delay_ms) * rate / 1000;
+    size_t accepted_nominal = 0;
+    check(llama_dart_asr_stream_push(stream.get(), clip.data(), nominal_samples,
+                                     &accepted_nominal) ==
+                  LLAMA_DART_ASR_STREAM_STATUS_OK &&
+              accepted_nominal == nominal_samples,
+          "push nominal delay");
+    llama_dart_asr_stream_progress dp{};
+    dp.struct_size = sizeof(dp);
+    for (int s = 0; s < 200; ++s) {
+      check(llama_dart_asr_stream_step(stream.get(), &dp) ==
+                LLAMA_DART_ASR_STREAM_STATUS_OK,
+            "step nominal delay");
+      if (dp.state == LLAMA_DART_ASR_STREAM_STATE_NEEDS_AUDIO) {
+        break;
+      }
+    }
+    check(dp.text_available == 0,
+          "PROMPTED_CHUNKS produced text at nominal 960 ms without lookahead");
+    size_t offset = nominal_samples;
+    const size_t probe_step = rate / 10; // 100 ms increments
+    int64_t first_token_ms = 0;
+    int64_t first_text_ms = 0;
+    while (offset < clip.size() && first_text_ms == 0) {
+      const size_t n = std::min(probe_step, clip.size() - offset);
+      size_t acc = 0;
+      check(llama_dart_asr_stream_push(stream.get(), clip.data() + offset, n,
+                                       &acc) == LLAMA_DART_ASR_STREAM_STATUS_OK,
+            "push lookahead");
+      offset += acc;
+      for (int s = 0; s < 200; ++s) {
+        check(llama_dart_asr_stream_step(stream.get(), &dp) ==
+                  LLAMA_DART_ASR_STREAM_STATUS_OK,
+              "step lookahead");
+        if (dp.tokens_sampled > 0 && first_token_ms == 0) {
+          first_token_ms = dp.samples_consumed * 1000 / static_cast<int64_t>(rate);
+        }
+        if (dp.text_available > 0 && first_text_ms == 0) {
+          first_text_ms = dp.samples_consumed * 1000 / static_cast<int64_t>(rate);
+          break;
+        }
+        if (dp.state == LLAMA_DART_ASR_STREAM_STATE_NEEDS_AUDIO) {
+          break;
+        }
+      }
+    }
+    std::printf("prompted onset: nominal delay=%dms first_token=%lldms "
+                "first_text=%lldms\n",
+                info.delay_ms, static_cast<long long>(first_token_ms),
+                static_cast<long long>(first_text_ms));
+    check(first_text_ms > info.delay_ms && first_text_ms <= 1600,
+          "unexpected prompted first-text onset");
+  }
+
   // A context that cannot hold the audio ends with a typed status and keeps
-  // the text so far.
+  // the text so far (both TOKEN_DELAY and small PROMPTED_CHUNKS contexts).
   stream.reset();
-  if (token_delay) {
-    llama_context *small = make_context(512);
+  {
+    const int small_ctx = token_delay ? 512 : 64;
+    llama_context *small = make_context(small_ctx);
     stream_ptr limited = open_stream(small, mtmd);
     const run_result full = run(limited.get(), forty_four, 0, 0, rate);
     check(full.status == LLAMA_DART_ASR_STREAM_STATUS_CONTEXT_FULL &&
               full.progress.state == LLAMA_DART_ASR_STREAM_STATE_FINISHED &&
               !full.text.empty(),
           "context exhaustion was not a typed status with text");
-    std::printf("context full after %lld tokens, text kept (%zu bytes)\n",
-                static_cast<long long>(full.progress.tokens_sampled),
+    std::printf("context full (n_ctx=%d) after %lld tokens, text kept (%zu bytes)\n",
+                small_ctx, static_cast<long long>(full.progress.tokens_sampled),
                 full.text.size());
     limited.reset();
     llama_dart_exit_free(small);
