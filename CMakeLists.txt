@@ -484,6 +484,8 @@ if (LLAMADART_BUILD_TESTS)
 
     add_executable(llamadart_asr_stream_meter_test tests/asr_stream_meter_test.cpp)
     target_compile_features(llamadart_asr_stream_meter_test PRIVATE cxx_std_17)
+    target_compile_definitions(llamadart_asr_stream_meter_test PRIVATE LLAMADART_TESTING=1)
+    target_link_libraries(llamadart_asr_stream_meter_test PRIVATE llamadart_lib Threads::Threads)
     target_include_directories(llamadart_asr_stream_meter_test PRIVATE
         src
         third_party/llama.cpp/include
@@ -828,7 +830,7 @@ if (LLAMADART_BUILD_TESTS)
             "Matching Qwen3-ASR projector")
         if (LLAMADART_ASR_STREAM_TEST_MODEL AND LLAMADART_ASR_STREAM_TEST_MMPROJ)
             foreach(scenario model-asr-stream model-asr-stream-untracked
-                    model-asr-stream-owner-close)
+                    model-asr-stream-owner-close model-asr-stream-capacity-and-reset)
                 add_test(NAME llamadart_exit_teardown_${scenario}
                     COMMAND llamadart_exit_teardown_test ${scenario}
                         "${LLAMADART_ASR_STREAM_TEST_MODEL}"
@@ -959,6 +961,9 @@ endif()
 if (LLAMADART_BUILD_ASR_STREAM_SMOKE)
     add_executable(llamadart_asr_stream_smoke tools/asr_stream_smoke.cpp)
     target_compile_features(llamadart_asr_stream_smoke PRIVATE cxx_std_17)
+    if (LLAMADART_BUILD_TESTS)
+        target_compile_definitions(llamadart_asr_stream_smoke PRIVATE LLAMADART_TESTING=1)
+    endif()
     target_link_libraries(llamadart_asr_stream_smoke PRIVATE llamadart_lib)
     target_include_directories(llamadart_asr_stream_smoke PRIVATE
         third_party/llama.cpp/include

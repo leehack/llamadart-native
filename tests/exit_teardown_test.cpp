@@ -2,9 +2,10 @@
 #error "Wrapper contract tests require active assertions in every configuration"
 #endif
 
-#include "llama_dart_wrapper.h"
+#include "llama_dart_asr_test_hooks.h"
 #include "llama_dart_speculative_internal.h"
 #include "llama_dart_tts_test_hooks.h"
+#include "llama_dart_wrapper.h"
 
 #include "ggml-backend-impl.h"
 #include "gguf.h"
@@ -21,6 +22,7 @@
 #include <limits>
 #include <memory>
 #include <mutex>
+#include <new>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -2439,54 +2441,147 @@ void free_owned_mtmd(void *object) {
   mtmd_free(static_cast<mtmd_context *>(object));
 }
 
-// An owner that closes while a session is being created takes the session
-// through the registry, and init must not free or release it a second time.
+// Request closure after construction, with the public init still in its
+// admitted creator scope so the owner cannot drain the dependencies early.
 int test_model_asr_stream_owner_close(const char *path,
                                       const char *mmproj_path) {
   model_options options;
   options.tracked = false;
   options.cpu_only = true;
   model_fixture fixture = load_model(path, options);
-  llama_free(fixture.context);
-  fixture.context = nullptr;
   mtmd_context_params params = mtmd_context_params_default();
   params.use_gpu = false;
+  mtmd_context *mtmd = mtmd_init_from_file(mmproj_path, fixture.model, params);
+  assert(mtmd != nullptr);
+
+  struct closure {
+    void *owner;
+    size_t live_before;
+    bool requested = false;
+    int upstream_releases = 0;
+  } close{llama_dart_owner_create(), llama_dart_internal::live_session_count()};
+  assert(close.owner != nullptr && llama_dart_owner_activate(close.owner));
+  assert(llama_dart_owner_track(close.owner, fixture.context,
+                                free_owned_context,
+                                LLAMA_DART_EXIT_STAGE_CONTEXT) == 1);
+  assert(llama_dart_owner_track(close.owner, mtmd, free_owned_mtmd,
+                                LLAMA_DART_EXIT_STAGE_MODEL_USER) == 1);
+  llama_dart_asr_test_hooks hooks;
+  hooks.data = &close;
+  hooks.before_track = [](void *data) {
+    auto &request = *static_cast<closure *>(data);
+    assert(llama_dart_internal::live_session_count() ==
+           request.live_before + 1);
+    assert(llama_dart_exit_tracked_count() == 2);
+    request.requested = true;
+    llama_dart_owner_release(request.owner);
+    assert(llama_dart_exit_tracked_count() == 2);
+  };
+  hooks.before_release = [](llama_dart_asr_stream *, void *data) {
+    auto &request = *static_cast<closure *>(data);
+    // The owner removes the session entry before its cleanup callback starts.
+    assert(llama_dart_exit_tracked_count() == 2);
+    ++request.upstream_releases;
+  };
+  llama_dart_test_asr_set_hooks(&hooks);
+  llama_dart_asr_stream_status status = LLAMA_DART_ASR_STREAM_STATUS_OK;
+  auto *stream = llama_dart_asr_stream_init(
+      fixture.context, mtmd, llama_dart_asr_stream_supported_modes(), nullptr,
+      &status);
+  llama_dart_test_asr_set_hooks(nullptr);
+
+  assert(close.requested);
+  assert(stream == nullptr &&
+         status == LLAMA_DART_ASR_STREAM_STATUS_UPSTREAM_ERROR);
+  assert(llama_dart_internal::live_session_count() == close.live_before);
+  assert(close.upstream_releases == 1);
+  assert(llama_dart_exit_tracked_count() == 0 && llama_dart_owner_count() == 0);
+  llama_model_free(fixture.model);
+  return 0;
+}
+
+int test_model_asr_stream_capacity_and_reset(const char *path,
+                                             const char *mmproj_path) {
+  model_options options;
+  options.tracked = false;
+  options.cpu_only = true;
+  model_fixture fixture = load_model(path, options);
+  mtmd_context_params mtmd_params = mtmd_context_params_default();
+  mtmd_params.use_gpu = false;
+  mtmd_context *mtmd =
+      mtmd_init_from_file(mmproj_path, fixture.model, mtmd_params);
+  assert(mtmd != nullptr);
   const uint32_t modes = llama_dart_asr_stream_supported_modes();
-  int closed_during_init = 0;
-  for (int i = 0; i < 120 && closed_during_init < 3; ++i) {
-    void *owner = llama_dart_owner_create();
-    assert(owner != nullptr && llama_dart_owner_activate(owner));
-    auto context_params = llama_context_default_params();
-    context_params.n_ctx = 256;
-    llama_context *context =
-        llama_init_from_model(fixture.model, context_params);
-    mtmd_context *mtmd =
-        mtmd_init_from_file(mmproj_path, fixture.model, params);
-    assert(context != nullptr && mtmd != nullptr);
-    assert(llama_dart_owner_track(owner, context, free_owned_context,
-                                  LLAMA_DART_EXIT_STAGE_CONTEXT) == 1);
-    assert(llama_dart_owner_track(owner, mtmd, free_owned_mtmd,
-                                  LLAMA_DART_EXIT_STAGE_MODEL_USER) == 1);
-    std::atomic<bool> go{false};
-    llama_dart_asr_stream *stream = nullptr;
-    llama_dart_asr_stream_status status = LLAMA_DART_ASR_STREAM_STATUS_OK;
-    std::thread creator([&] {
-      while (!go.load()) {
-      }
-      stream = llama_dart_asr_stream_init(context, mtmd, modes, nullptr,
-                                          &status);
-    });
-    go.store(true);
-    std::this_thread::sleep_for(std::chrono::microseconds((i % 40) * 250));
-    llama_dart_owner_release(owner);
-    creator.join();
-    if (stream == nullptr) {
-      assert(status == LLAMA_DART_ASR_STREAM_STATUS_UPSTREAM_ERROR);
-      ++closed_during_init;
-    }
-    assert(llama_dart_exit_tracked_count() == 0);
+
+  auto params = llama_dart_asr_stream_params_default();
+  // The old conversion overflowed a 32-bit intermediate at 268436 ms.
+  params.max_buffered_ms = 268436;
+  constexpr size_t capacity = 4294976;
+  llama_dart_asr_test_hooks hooks;
+  hooks.max_buffer_samples = capacity;
+  llama_dart_test_asr_set_hooks(&hooks);
+  llama_dart_asr_stream_status status = LLAMA_DART_ASR_STREAM_STATUS_OK;
+  auto *stream = llama_dart_asr_stream_init(fixture.context, mtmd, modes,
+                                            &params, &status);
+  assert(stream != nullptr && status == LLAMA_DART_ASR_STREAM_STATUS_OK);
+  const std::vector<float> audio(capacity + 1, 0.0f);
+  size_t accepted = 0;
+  assert(llama_dart_asr_stream_push(stream, audio.data(), audio.size(),
+                                    &accepted) ==
+         LLAMA_DART_ASR_STREAM_STATUS_OK);
+  assert(accepted == capacity);
+
+  ++params.max_buffered_ms;
+  auto *too_large = llama_dart_asr_stream_init(fixture.context, mtmd, modes,
+                                               &params, &status);
+  assert(too_large == nullptr &&
+         status == LLAMA_DART_ASR_STREAM_STATUS_INVALID_ARGUMENT);
+
+  bool cancelled_during_release = false;
+  hooks.data = &cancelled_during_release;
+  hooks.before_release = [](llama_dart_asr_stream *current, void *data) {
+    std::thread([current] { llama_dart_asr_stream_cancel(current); }).join();
+    *static_cast<bool *>(data) = true;
+  };
+  assert(llama_dart_asr_stream_reset(stream) ==
+         LLAMA_DART_ASR_STREAM_STATUS_OK);
+  llama_dart_test_asr_set_hooks(nullptr);
+  assert(cancelled_during_release);
+  llama_dart_asr_stream_progress progress{};
+  progress.struct_size = sizeof(progress);
+  assert(llama_dart_asr_stream_step(stream, &progress) ==
+         LLAMA_DART_ASR_STREAM_STATUS_CANCELLED);
+  assert(progress.state == LLAMA_DART_ASR_STREAM_STATE_CANCELLED);
+  assert(llama_dart_asr_stream_reset(stream) ==
+         LLAMA_DART_ASR_STREAM_STATUS_OK);
+  assert(llama_dart_asr_stream_step(stream, &progress) ==
+         LLAMA_DART_ASR_STREAM_STATUS_OK);
+  assert(progress.state == LLAMA_DART_ASR_STREAM_STATE_NEEDS_AUDIO);
+
+  llama_dart_asr_stream_free(stream);
+  if (sizeof(size_t) > sizeof(uint32_t)) {
+    params.max_buffered_ms = std::numeric_limits<int32_t>::max();
   }
-  assert(closed_during_init > 0);
+  stream = llama_dart_asr_stream_init(fixture.context, mtmd, modes, &params,
+                                      &status);
+  assert(stream != nullptr && status == LLAMA_DART_ASR_STREAM_STATUS_OK);
+  hooks = {};
+  hooks.before_queue_insert = [] { throw std::bad_alloc(); };
+  llama_dart_test_asr_set_hooks(&hooks);
+  accepted = 1;
+  assert(llama_dart_asr_stream_push(stream, audio.data(), 1, &accepted) ==
+         LLAMA_DART_ASR_STREAM_STATUS_UPSTREAM_ERROR);
+  llama_dart_test_asr_set_hooks(nullptr);
+  assert(accepted == 0);
+  assert(llama_dart_asr_stream_step(stream, &progress) ==
+         LLAMA_DART_ASR_STREAM_STATUS_INVALID_STATE);
+  assert(progress.state == LLAMA_DART_ASR_STREAM_STATE_FAILED);
+  assert(progress.samples_buffered == 0);
+  llama_dart_asr_stream_free(stream);
+
+  mtmd_free(mtmd);
+  llama_free(fixture.context);
+  llama_model_free(fixture.model);
   return 0;
 }
 
@@ -3402,6 +3497,9 @@ int main(int argc, char **argv) {
       }
       if (scenario == "model-asr-stream-untracked") {
         return test_model_asr_stream_untracked(first, second);
+      }
+      if (scenario == "model-asr-stream-capacity-and-reset") {
+        return test_model_asr_stream_capacity_and_reset(first, second);
       }
       if (scenario == "model-asr-stream-owner-close") {
         return test_model_asr_stream_owner_close(first, second);

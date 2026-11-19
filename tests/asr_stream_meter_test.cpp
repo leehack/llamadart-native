@@ -3,6 +3,7 @@
 #endif
 
 #include "llama_dart_asr_stream_internal.h"
+#include "llama_dart_asr_test_hooks.h"
 
 #include <atomic>
 #include <cassert>
@@ -215,9 +216,10 @@ void capacity_conversion_rejects_overflow_and_nonpositive() {
 
   // Representable 32-bit boundary and one above.
   const int32_t max_32bit_ms = static_cast<int32_t>(max_32bit_samples / 16);
-  assert(llama_dart_asr_stream_buffer_capacity(max_32bit_ms, max_32bit_samples,
+  const size_t exact_capacity = static_cast<size_t>(max_32bit_ms) * 16;
+  assert(llama_dart_asr_stream_buffer_capacity(max_32bit_ms, exact_capacity,
                                                &out));
-  assert(out == static_cast<size_t>(max_32bit_ms) * 16);
+  assert(out == exact_capacity);
   assert(!llama_dart_asr_stream_buffer_capacity(max_32bit_ms + 1,
                                                 max_32bit_samples, &out));
 }
@@ -268,7 +270,7 @@ void step_feed_and_encode_pushes_at_most_one_chunk_and_steps_once() {
   int flush_calls = 0;
   int step_calls = 0;
   size_t last_pushed = 0;
-  const int32_t scripted_rows[] = {0, 12, 1, 0, 0, 0, 5, -1};
+  const int32_t scripted_rows[] = {0, 12, 1, 0, 0, 0, 5, 0, -1};
   size_t script_idx = 0;
 
   const auto push_fn = [&](const float *, size_t count) {
@@ -344,11 +346,81 @@ void step_feed_and_encode_pushes_at_most_one_chunk_and_steps_once() {
          llama_dart_asr_feed_outcome::rows_ready);
   assert(rows == 5 && push_calls == 4 && flush_calls == 1 && step_calls == 7);
 
-  // Step 9: after flush, does not flush again, steps once returning -1.
+  // Upstream can ask for more audio after the final flush.
+  assert(llama_dart_asr_step_feed_and_encode(meter, state, push_fn, flush_fn,
+                                             step_fn, &rows) ==
+         llama_dart_asr_feed_outcome::needs_audio);
+  assert(push_calls == 4 && flush_calls == 1 && step_calls == 8);
+  assert(state.needs_audio);
+
+  // Step 10: even after a zero-row step, never flush twice.
   assert(llama_dart_asr_step_feed_and_encode(meter, state, push_fn, flush_fn,
                                              step_fn, &rows) ==
          llama_dart_asr_feed_outcome::finished);
-  assert(push_calls == 4 && flush_calls == 1 && step_calls == 8);
+  assert(push_calls == 4 && flush_calls == 1 && step_calls == 9);
+}
+
+void public_step_pushes_only_one_chunk_of_backlog() {
+  struct calls {
+    std::vector<size_t> pushes;
+    int flushes = 0;
+    int steps = 0;
+  } observed;
+  const llama_dart_asr_test_input input{
+      &observed,
+      [](void *data, const float *, size_t count) {
+        static_cast<calls *>(data)->pushes.push_back(count);
+        return 0;
+      },
+      [](void *data) {
+        ++static_cast<calls *>(data)->flushes;
+        return 0;
+      },
+      [](void *data) {
+        auto &state = *static_cast<calls *>(data);
+        return ++state.steps == 5 ? -1 : 0;
+      },
+  };
+  auto *stream = llama_dart_test_asr_input_stream(&input);
+  const size_t chunk = kRate * 960 / 1000;
+  const size_t tail = kRate / 10;
+  const std::vector<float> backlog(2 * chunk + tail, 0.25f);
+  size_t accepted = 0;
+  assert(llama_dart_asr_stream_push(stream, backlog.data(), backlog.size(),
+                                    &accepted) ==
+         LLAMA_DART_ASR_STREAM_STATUS_OK);
+  assert(accepted == backlog.size());
+  assert(llama_dart_asr_stream_finish(stream) ==
+         LLAMA_DART_ASR_STREAM_STATUS_OK);
+
+  llama_dart_asr_stream_progress progress{};
+  progress.struct_size = sizeof(progress);
+  const size_t expected_pushes[] = {chunk, chunk, tail};
+  int64_t consumed = 0;
+  for (size_t count : expected_pushes) {
+    const size_t previous_pushes = observed.pushes.size();
+    assert(llama_dart_asr_stream_step(stream, &progress) ==
+           LLAMA_DART_ASR_STREAM_STATUS_OK);
+    consumed += static_cast<int64_t>(count);
+    assert(observed.pushes.size() == previous_pushes + 1);
+    assert(observed.pushes.back() == count && observed.flushes == 0);
+    assert(observed.steps == static_cast<int>(observed.pushes.size()));
+    assert(progress.samples_consumed == consumed);
+    assert(progress.samples_buffered ==
+           static_cast<int64_t>(backlog.size()) - consumed);
+    assert(progress.state == LLAMA_DART_ASR_STREAM_STATE_WORKING);
+  }
+  assert(llama_dart_asr_stream_step(stream, &progress) ==
+         LLAMA_DART_ASR_STREAM_STATUS_OK);
+  assert(observed.pushes.size() == 3 && observed.flushes == 1 &&
+         observed.steps == 4);
+  assert(progress.state == LLAMA_DART_ASR_STREAM_STATE_WORKING);
+  assert(llama_dart_asr_stream_step(stream, &progress) ==
+         LLAMA_DART_ASR_STREAM_STATUS_OK);
+  assert(observed.pushes.size() == 3 && observed.flushes == 1 &&
+         observed.steps == 5);
+  assert(progress.state == LLAMA_DART_ASR_STREAM_STATE_FINISHED);
+  llama_dart_asr_stream_free(stream);
 }
 
 } // namespace
@@ -365,5 +437,6 @@ int main() {
   capacity_conversion_rejects_overflow_and_nonpositive();
   reset_clears_prior_cancel_before_release_and_preserves_later_cancel();
   step_feed_and_encode_pushes_at_most_one_chunk_and_steps_once();
+  public_step_pushes_only_one_chunk_of_backlog();
   return 0;
 }
