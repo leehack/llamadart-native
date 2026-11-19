@@ -8,8 +8,7 @@ C++ Redistributable, such as stock Windows Server 2022 (issue #95).
 
 `tools/build.py windows` copies every DLL the lane's libraries import, except
 libraries Windows or a GPU driver provides (`OS_PROVIDED_DLLS` in
-`tools/windows_runtime.py`). The core (Vulkan) lane stages all of them, so the
-merged bundles gain:
+`tools/windows_runtime.py`). The merged release bundles include:
 
 | Bundle | Added | Removed |
 | --- | --- | --- |
@@ -64,11 +63,15 @@ rejects any of them in a bundle.
 ## Version skew
 
 The bundled runtime must be at least as new as the MSVC toolset of every
-bundled DLL. Lanes run on different images (the CUDA lane stays on
-`windows-2022` for its host compiler), and only the core lane ships the
-runtime, so the merged bundle is checked against every DLL's MSVC linker
-version. ClangCL (arm64) links with lld-link, which records 14.0; both arm64
-lanes use the same runner image.
+bundled DLL. A runner label can resolve to different image revisions within a
+release, and the CUDA lane uses `windows-2022` for its host compiler. Each
+lane stages its desktop CRT and OpenMP redistributables under `vc-runtime/`
+in its artifact. Packaging selects one set per architecture by the numeric PE
+file version of `msvcp140.dll`, then copies the runtime DLLs the merged bundle
+imports, including delay imports and dependencies of the runtime itself. A
+required DLL missing from that set fails packaging. The merged bundle is then
+checked against every DLL's MSVC linker version before the CUDA sidecar is
+split out. ClangCL (arm64) links with lld-link, which records 14.0.
 
 Windows binds a DLL import to a module of that name already loaded in the
 process, and otherwise searches the loading DLL's directory

@@ -164,7 +164,7 @@ Release assets contain:
   - Linux CUDA lanes include the CUDA runtime libraries required by `ggml-cuda`.
   - BLAS lanes include `openblas*.dll` required by `ggml-blas`.
   - NVIDIA driver DLLs (for example `nvcuda.dll`) are not bundled and are provided by GPU drivers.
-  - The core lane ships the Visual C++ v14 runtime (`msvcp140.dll`, `vcruntime140.dll`, plus `vcruntime140_1.dll` on x64) and, on x64, the OpenMP runtime (`vcomp140.dll`) app-locally, so the bundle loads on Windows without the Visual C++ Redistributable. arm64 builds without OpenMP. See [`docs/windows_vc_runtime.md`](docs/windows_vc_runtime.md).
+  - Windows bundles ship the Visual C++ v14 runtime (`msvcp140.dll`, `vcruntime140.dll`, plus `vcruntime140_1.dll` on x64) and, on x64, the OpenMP runtime (`vcomp140.dll`) app-locally, so they load on Windows without the Visual C++ Redistributable. Packaging uses the newest redistributable set from the build lanes for each architecture. arm64 builds without OpenMP. See [`docs/windows_vc_runtime.md`](docs/windows_vc_runtime.md).
 - Headers archive: `llamadart-native-headers-<tag>.tar.gz` with `llama_cpp/...` and `libllamadart/...` roots, including llama.cpp, ggml, mtmd, and `llama_dart_wrapper.h`.
 
 Consumers can choose which backend libs to include in their package and load at runtime.
