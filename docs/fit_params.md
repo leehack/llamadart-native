@@ -41,13 +41,9 @@ The header has the full contract. What a binding must know:
 - On Windows the free memory of a Vulkan or CUDA GPU counts other processes (next
   section), and a fit whose adapter memory cannot be read fails with
   `LLAMA_DART_STATUS_EXCEPTION` instead of running on the driver's number.
-- On Windows when the model's selected devices include a WDDM CUDA GPU,
-  `llama_dart_fit_params` also checks the final placement's projected system
-  commit against available Windows system commit (`CommitLimit - CommitTotal`),
-  even when `report` is `NULL`, and returns `LLAMA_DART_FIT_STATUS_FAILURE` with
-  a commit-specific `llama_dart_last_error()` when headroom is insufficient, or
-  `LLAMA_DART_STATUS_EXCEPTION` when the commit counter is unreadable or
-  overflows.
+- The fit estimates device memory. A later Windows context allocation or decode
+  can still fail under system memory pressure
+  ([llamadart-native#211](https://github.com/leehack/llamadart-native/issues/211)).
 
 ## Free memory on Windows
 
@@ -111,16 +107,8 @@ is in `src/llama_dart_device_memory.cpp`, with the rules in
   a CUDA host without a usable Vulkan loader is still corrected. That registry
   skip is distinct from failing to resolve a selected adapter once a model
   chooses a Vulkan or CUDA GPU.
-- When the model's selected devices on Windows include a WDDM CUDA GPU, the
-  final no-allocation measurement (`common_get_device_memory_data`) runs even
-  when `report == NULL`. After it unwinds, the wrapper sums the full internal
-  host (`model + context + compute`) and selected WDDM CUDA (`model + context +
-  compute`) projections (before the 16-device report cap) and compares against
-  `(CommitLimit - CommitTotal) * PageSize` from `K32GetPerformanceInfo`.
-  This is a conservative snapshot estimate (it counts host weights that may be
-  file-mapped, and is not a reservation or an OOM guarantee); `report->host.free_bytes`
-  remains physical free memory. A registered but unselected CUDA backend does
-  not trigger this check for Vulkan-only or CPU-only fits.
+- The correction follows the model's selected device list. A registered CUDA
+  backend adds no correction to a Vulkan-only or CPU-only fit.
 - Memory that idle applications hold counts as used, although WDDM could take
   it back.
 - `llama_dart_fit_api_version()` stays 1. A `v1.0.0` runtime has the fit but not
@@ -220,9 +208,8 @@ the first test also calls `D3DKMTQueryStatistics` for every DXGI adapter, which
 checks the call and the buffer layout; the runners have no GPU, so not the
 numbers.
 
-CI runs the fit test on the macOS runners (Metal), on Linux and on Windows arm64
-(CPU-only). No CUDA, Vulkan, HIP or Windows x64 GPU run executes the fit, and
-the wrapper's call to the Windows correction in `llama_dart_fit_params` has no
-CI test. That needs the hardware runs of the llamadart plan: a Windows Vulkan GPU
-with other processes holding CUDA, D3D12 and Vulkan memory, and the same on a
-CUDA backend (with and without `ggml-vulkan.dll`).
+CI runs the fit test on macOS, Linux, and CPU-only Windows x64 and arm64
+runners. Injected Windows devices and KMT records exercise both device listings,
+strict report correction, and margin routing with both CUDA and Vulkan
+registered. Hardware qualification still covers Vulkan and CUDA fits while
+other processes hold GPU memory, including CUDA without `ggml-vulkan.dll`.

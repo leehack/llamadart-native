@@ -1759,116 +1759,65 @@ static const char *llama_dart_fit_model_path(const char *path) { return path; }
 #endif
 
 #if defined(LLAMADART_TESTING)
-namespace {
-struct llama_dart_test_fit_row_storage {
-  std::string name;
-  bool is_gpu = false;
-  bool is_host = false;
-  int64_t total_bytes = 0;
-  int64_t free_bytes = 0;
-  uint64_t model_bytes = 0;
-  uint64_t context_bytes = 0;
-  uint64_t compute_bytes = 0;
-};
+static const llama_dart_test_fit_row *g_test_fit_rows = nullptr;
+static size_t g_test_fit_row_count = 0;
 
-struct llama_dart_test_fit_commit_state {
-  bool enabled = false;
-  bool force_wddm_cuda_selected = false;
-  bool override_measurement = false;
-  std::vector<llama_dart_test_fit_row_storage> rows;
-  bool counter_ok = true;
-  uint64_t commit_limit_pages = 0;
-  uint64_t commit_total_pages = 0;
-  uint64_t page_size = 4096;
-  std::string counter_error;
-};
-
-llama_dart_test_fit_commit_state g_test_fit_commit;
-} // namespace
-
-extern "C" void llama_dart_test_set_fit_commit_config(
-    const llama_dart_test_fit_commit_config *config) {
-  g_test_fit_commit = {};
-  if (config == nullptr || !config->enabled) {
-    return;
-  }
-  g_test_fit_commit.enabled = true;
-  g_test_fit_commit.force_wddm_cuda_selected = config->force_wddm_cuda_selected;
-  g_test_fit_commit.override_measurement = config->override_measurement;
-  g_test_fit_commit.counter_ok = config->counter_ok;
-  g_test_fit_commit.commit_limit_pages = config->commit_limit_pages;
-  g_test_fit_commit.commit_total_pages = config->commit_total_pages;
-  g_test_fit_commit.page_size = config->page_size;
-  g_test_fit_commit.counter_error =
-      config->counter_error != nullptr ? config->counter_error : "";
-  if (config->rows != nullptr) {
-    for (size_t i = 0; i < config->n_rows; ++i) {
-      const llama_dart_test_fit_row &src = config->rows[i];
-      llama_dart_test_fit_row_storage dst;
-      dst.name = src.name != nullptr ? src.name : "";
-      dst.is_gpu = src.is_gpu;
-      dst.is_host = src.is_host;
-      dst.total_bytes = src.total_bytes;
-      dst.free_bytes = src.free_bytes;
-      dst.model_bytes = src.model_bytes;
-      dst.context_bytes = src.context_bytes;
-      dst.compute_bytes = src.compute_bytes;
-      g_test_fit_commit.rows.push_back(std::move(dst));
-    }
-  }
+extern "C" void llama_dart_test_set_fit_rows(
+    const llama_dart_test_fit_row *rows, size_t count) {
+  g_test_fit_rows = rows;
+  g_test_fit_row_count = count;
 }
 #endif
 
-struct llama_dart_fit_measured_row {
-  ggml_backend_dev_t device = nullptr;
-  std::string name;
-  bool is_gpu = false;
-  bool is_host = false;
-  common_device_memory_data data = {};
-};
+static void llama_dart_fit_copy_memory(const common_device_memory_data &from,
+                                       const char *name, size_t free_bytes,
+                                       llama_dart_fit_device &to) {
+  std::strncpy(to.name, name, sizeof(to.name) - 1);
+  to.total_bytes = from.total;
+  to.free_bytes = free_bytes;
+  to.model_bytes = from.model;
+  to.context_bytes = from.context;
+  to.compute_bytes = from.compute;
+}
 
-struct llama_dart_fit_measurement {
-  uint32_t n_layers = 0;
-  uint32_t n_layers_skipped = 0;
-  uint32_t n_ctx_train = 0;
-  std::vector<llama_dart_fit_measured_row> devices;
-  llama_dart_fit_measured_row host;
-};
+static void llama_dart_fit_copy_device(ggml_backend_dev_t device,
+                                       const common_device_memory_data &data,
+                                       llama_dart_fit_report &report) {
+  if (device == nullptr) {
+    throw std::runtime_error("missing backend device for memory measurement");
+  }
+  if (report.n_devices == LLAMA_DART_FIT_MAX_DEVICES) {
+    return;
+  }
+  const char *name = ggml_backend_dev_name(device);
+  llama_dart_fit_copy_memory(
+      data, name == nullptr ? "" : name,
+      llama_dart_device_free_bytes(device, data.free, true),
+      report.devices[report.n_devices++]);
+}
 
-static llama_dart_fit_measurement
+static llama_dart_fit_report
 llama_dart_fit_measure_placement(const char *path_model,
                                  const llama_model_params &mparams,
                                  const llama_context_params &cparams) {
-  llama_dart_fit_measurement measured;
+  llama_dart_fit_report staged = {};
 #if defined(LLAMADART_TESTING)
-  if (g_test_fit_commit.enabled && g_test_fit_commit.override_measurement) {
-    bool seen_host = false;
-    for (const llama_dart_test_fit_row_storage &src : g_test_fit_commit.rows) {
-      llama_dart_fit_measured_row row;
-      row.name = src.name;
-      row.is_gpu = src.is_gpu;
-      row.is_host = src.is_host;
-      row.data.total = src.total_bytes;
-      row.data.free = src.free_bytes;
-      row.data.model = static_cast<size_t>(src.model_bytes);
-      row.data.context = static_cast<size_t>(src.context_bytes);
-      row.data.compute = static_cast<size_t>(src.compute_bytes);
-      if (src.is_host) {
-        measured.host = std::move(row);
-        seen_host = true;
+  if (g_test_fit_rows != nullptr) {
+    for (size_t i = 0; i < g_test_fit_row_count; ++i) {
+      const auto &row = g_test_fit_rows[i];
+      common_device_memory_data data = {};
+      data.total = row.total_bytes;
+      data.free = row.free_bytes;
+      data.model = row.model_bytes;
+      data.context = row.context_bytes;
+      data.compute = row.compute_bytes;
+      if (row.is_host) {
+        llama_dart_fit_copy_memory(data, "Host", data.free, staged.host);
       } else {
-        // The CPU handle keeps synthetic rows out of adapter queries unless
-        // the Windows properties are injected. Unnamed rows simulate a missing device.
-        if (!src.name.empty()) {
-          row.device = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
-        }
-        measured.devices.push_back(std::move(row));
+        llama_dart_fit_copy_device(row.device, data, staged);
       }
     }
-    if (!seen_host) {
-      throw std::runtime_error("test measurement override has no host row");
-    }
-    return measured;
+    return staged;
   }
 #endif
   std::vector<ggml_backend_dev_t> devices;
@@ -1876,124 +1825,21 @@ llama_dart_fit_measure_placement(const char *path_model,
 #if LLAMADART_FIT_HAS_NGL_SKIP
   const auto memory = common_get_device_memory_data(
       llama_dart_fit_model_path(path_model), &mparams, &cparams, devices,
-      measured.n_layers, measured.n_layers_skipped, measured.n_ctx_train,
-      n_expert, GGML_LOG_LEVEL_ERROR);
+      staged.n_layers, staged.n_layers_skipped, staged.n_ctx_train, n_expert,
+      GGML_LOG_LEVEL_ERROR);
 #else
   const auto memory = common_get_device_memory_data(
       llama_dart_fit_model_path(path_model), &mparams, &cparams, devices,
-      measured.n_layers, measured.n_ctx_train, n_expert, GGML_LOG_LEVEL_ERROR);
+      staged.n_layers, staged.n_ctx_train, n_expert, GGML_LOG_LEVEL_ERROR);
 #endif
-  (void)n_expert;
   if (memory.size() != devices.size() + 1) {
     throw std::runtime_error("unexpected device memory breakdown");
   }
-  measured.devices.reserve(devices.size());
   for (size_t i = 0; i < devices.size(); ++i) {
-    ggml_backend_dev_props props = {};
-    ggml_backend_dev_get_props(devices[i], &props);
-    llama_dart_fit_measured_row row;
-    row.device = devices[i];
-    row.name = props.name == nullptr ? "" : props.name;
-    row.is_gpu = props.type == GGML_BACKEND_DEVICE_TYPE_GPU ||
-                 props.type == GGML_BACKEND_DEVICE_TYPE_IGPU;
-    row.data = memory[i];
-    measured.devices.push_back(std::move(row));
+    llama_dart_fit_copy_device(devices[i], memory[i], staged);
   }
-  measured.host.name = "Host";
-  measured.host.is_host = true;
-  measured.host.data = memory.back();
-  return measured;
-}
-
-static uint64_t llama_dart_fit_read_commit_available_bytes() {
-#if defined(LLAMADART_TESTING)
-  if (g_test_fit_commit.enabled) {
-    if (!g_test_fit_commit.counter_ok) {
-      throw std::runtime_error(g_test_fit_commit.counter_error.empty()
-                                   ? "injected Windows commit counter error"
-                                   : g_test_fit_commit.counter_error);
-    }
-    const llama_dart_commit_headroom headroom =
-        llama_dart_commit_available_bytes(g_test_fit_commit.commit_limit_pages,
-                                          g_test_fit_commit.commit_total_pages,
-                                          g_test_fit_commit.page_size);
-    if (!headroom.ok) {
-      throw std::runtime_error("cannot read Windows system commit headroom: " +
-                               headroom.detail);
-    }
-    return headroom.available_bytes;
-  }
-#endif
-  return llama_dart_read_system_commit_available_bytes();
-}
-
-static bool llama_dart_fit_check_system_commit(
-    const llama_dart_fit_measurement &measured, std::string *failure_message) {
-  std::vector<llama_dart_fit_commit_row> rows;
-  rows.reserve(measured.devices.size() + 1);
-  for (const llama_dart_fit_measured_row &dev : measured.devices) {
-    llama_dart_fit_commit_row row;
-    row.name = dev.name;
-    row.is_gpu = dev.is_gpu;
-    row.model_bytes = dev.data.model;
-    row.context_bytes = dev.data.context;
-    row.compute_bytes = dev.data.compute;
-    rows.push_back(std::move(row));
-  }
-  {
-    llama_dart_fit_commit_row host;
-    host.name = measured.host.name;
-    host.is_host = true;
-    host.model_bytes = measured.host.data.model;
-    host.context_bytes = measured.host.data.context;
-    host.compute_bytes = measured.host.data.compute;
-    rows.push_back(std::move(host));
-  }
-  uint64_t projected_bytes = 0;
-  std::string detail;
-  if (!llama_dart_fit_projected_commit_bytes(rows, &projected_bytes, &detail)) {
-    throw std::runtime_error(detail);
-  }
-  const uint64_t available_bytes = llama_dart_fit_read_commit_available_bytes();
-  if (projected_bytes <= available_bytes) {
-    return true;
-  }
-  *failure_message =
-      "fitted placement projects " + llama_dart_format_mib(projected_bytes) +
-      " MiB (" + std::to_string(projected_bytes) +
-      " bytes) of system commit, exceeding available Windows commit " +
-      llama_dart_format_mib(available_bytes) + " MiB (" +
-      std::to_string(available_bytes) +
-      " bytes); use a smaller context or increase system commit headroom";
-  return false;
-}
-
-static void
-llama_dart_fit_populate_report(const llama_dart_fit_measurement &measured,
-                               llama_dart_fit_report *report) {
-  const auto copy = [](const common_device_memory_data &from, const char *name,
-                       llama_dart_fit_device &to, size_t free_bytes) {
-    to = {};
-    std::strncpy(to.name, name, sizeof(to.name) - 1);
-    to.total_bytes = from.total;
-    to.free_bytes = free_bytes;
-    to.model_bytes = from.model;
-    to.context_bytes = from.context;
-    to.compute_bytes = from.compute;
-  };
-  llama_dart_fit_report staged = {};
-  staged.n_layers = measured.n_layers;
-  staged.n_ctx_train = measured.n_ctx_train;
-  staged.n_layers_skipped = measured.n_layers_skipped;
-  staged.n_devices = static_cast<uint32_t>(
-      std::min<size_t>(measured.devices.size(), LLAMA_DART_FIT_MAX_DEVICES));
-  for (uint32_t i = 0; i < staged.n_devices; ++i) {
-    const llama_dart_fit_measured_row &row = measured.devices[i];
-    copy(row.data, row.name.c_str(), staged.devices[i],
-         llama_dart_device_free_bytes(row.device, row.data.free, true));
-  }
-  copy(measured.host.data, "Host", staged.host, measured.host.data.free);
-  *report = staged;
+  llama_dart_fit_copy_memory(memory.back(), "Host", memory.back().free, staged.host);
+  return staged;
 }
 
 LLAMADART_API int32_t llama_dart_fit_params(
@@ -2013,7 +1859,7 @@ LLAMADART_API int32_t llama_dart_fit_params(
     std::vector<size_t> fit_margins(margins, margins + llama_max_devices());
     llama_model_params fitted_model = *mparams;
     llama_context_params fitted_context = *cparams;
-    const bool has_wddm_cuda = llama_dart_fit_apply_system_margins(
+    llama_dart_fit_apply_system_margins(
         path_model, fitted_model, fit_margins.data(), fit_margins.size());
     const common_params_fit_status status = common_fit_params(
         llama_dart_fit_model_path(path_model), &fitted_model, &fitted_context,
@@ -2024,27 +1870,9 @@ LLAMADART_API int32_t llama_dart_fit_params(
                                       ? LLAMA_DART_FIT_STATUS_FAILURE
                                       : LLAMA_DART_FIT_STATUS_ERROR);
     }
-    bool check_system_commit = has_wddm_cuda;
-#if defined(LLAMADART_TESTING)
-    if (g_test_fit_commit.enabled &&
-        g_test_fit_commit.force_wddm_cuda_selected) {
-      check_system_commit = true;
-    }
-#endif
-    if (check_system_commit || report != nullptr) {
-      const llama_dart_fit_measurement measured =
-          llama_dart_fit_measure_placement(path_model, fitted_model,
-                                           fitted_context);
-      if (check_system_commit) {
-        std::string failure_message;
-        if (!llama_dart_fit_check_system_commit(measured, &failure_message)) {
-          llama_dart_error_record(failure_message.c_str());
-          return static_cast<int32_t>(LLAMA_DART_FIT_STATUS_FAILURE);
-        }
-      }
-      if (report != nullptr) {
-        llama_dart_fit_populate_report(measured, report);
-      }
+    if (report != nullptr) {
+      *report = llama_dart_fit_measure_placement(path_model, fitted_model,
+                                                  fitted_context);
     }
     *mparams = fitted_model;
     *cparams = fitted_context;
@@ -2398,13 +2226,7 @@ llama_dart_ggml_backend_dev_memory(ggml_backend_dev_t device, size_t *free,
                                    size_t *total) {
   const bool read = llama_dart_barrier(false, [device, free, total] {
     llama_dart_exit_call call;
-#if defined(LLAMADART_TESTING) && defined(_WIN32)
-    if (!llama_dart_test_win_dev_override_memory(device, free, total)) {
-      ggml_backend_dev_memory(device, free, total);
-    }
-#else
     ggml_backend_dev_memory(device, free, total);
-#endif
     *free = llama_dart_device_free_bytes(device, *free, false);
     return true;
   });
@@ -2420,13 +2242,7 @@ llama_dart_ggml_backend_dev_get_props(ggml_backend_dev_t device,
                                       struct ggml_backend_dev_props *props) {
   const bool read = llama_dart_barrier(false, [device, props] {
     llama_dart_exit_call call;
-#if defined(LLAMADART_TESTING) && defined(_WIN32)
-    if (!llama_dart_test_win_dev_override_props(device, props)) {
-      ggml_backend_dev_get_props(device, props);
-    }
-#else
     ggml_backend_dev_get_props(device, props);
-#endif
     props->memory_free =
         llama_dart_device_free_bytes(device, props->memory_free, false);
     return true;

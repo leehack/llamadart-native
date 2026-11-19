@@ -2,6 +2,8 @@
 
 #if defined(LLAMADART_TESTING)
 
+#include "ggml-backend.h"
+
 #include <cstddef>
 #include <cstdint>
 
@@ -16,8 +18,7 @@
 #endif
 
 struct llama_dart_test_fit_row {
-  const char *name;
-  bool is_gpu;
+  ggml_backend_dev_t device;
   bool is_host;
   int64_t total_bytes;
   int64_t free_bytes;
@@ -26,38 +27,18 @@ struct llama_dart_test_fit_row {
   uint64_t compute_bytes;
 };
 
-struct llama_dart_test_fit_commit_config {
-  bool enabled = false;
-  bool force_wddm_cuda_selected = false;
-  bool override_measurement = false;
-  const llama_dart_test_fit_row *rows = nullptr;
-  size_t n_rows = 0;
-  bool counter_ok = true;
-  uint64_t commit_limit_pages = 0;
-  uint64_t commit_total_pages = 0;
-  uint64_t page_size = 4096;
-  const char *counter_error = nullptr;
-};
-
 extern "C" {
 
-LLAMADART_API void llama_dart_test_set_fit_commit_config(
-    const llama_dart_test_fit_commit_config *config);
-
-LLAMADART_API uint64_t
-llama_dart_test_read_system_commit_available_bytes(void);
+LLAMADART_API void llama_dart_test_set_fit_rows(
+    const llama_dart_test_fit_row *rows, size_t count);
 
 #if defined(_WIN32)
 typedef long(__stdcall *llama_dart_test_kmt_query_fn)(void *);
 
 struct llama_dart_test_win_dev_config {
-  bool enabled = false;
-  const char *name = nullptr;
-  const char *description = nullptr;
-  int type = 0;
-  size_t memory_free = 0;
-  size_t memory_total = 0;
-  bool has_cuda_api = false;
+  ggml_backend_dev_t cuda_device = nullptr;
+  ggml_backend_dev_t vulkan_device = nullptr;
+  uint8_t vulkan_luid[8] = {};
   int (*cuda_init)(unsigned flags) = nullptr;
   int (*cuda_device_count)(int *count) = nullptr;
   int (*cuda_device_get)(int *device, int ordinal) = nullptr;

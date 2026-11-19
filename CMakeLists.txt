@@ -551,7 +551,8 @@ if (LLAMADART_BUILD_TESTS)
     add_executable(llamadart_fit_api_test tests/fit_api_test.cpp)
     target_compile_features(llamadart_fit_api_test PRIVATE cxx_std_17)
     target_include_directories(llamadart_fit_api_test PRIVATE
-        src third_party/llama.cpp/include third_party/llama.cpp/ggml/include)
+        src third_party/llama.cpp/include third_party/llama.cpp/ggml/include
+        third_party/llama.cpp/ggml/src)
     target_link_libraries(llamadart_fit_api_test PRIVATE llamadart_lib Threads::Threads)
     if (GGML_BACKEND_DL AND NOT APPLE)
         target_compile_definitions(llamadart_fit_api_test PRIVATE

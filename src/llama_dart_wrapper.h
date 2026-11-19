@@ -560,9 +560,8 @@ enum llama_dart_fit_status {
     LLAMA_DART_FIT_STATUS_SUCCESS = 0,
     // No fitting allocation exists, or the parameters need a change that is
     // not allowed: n_gpu_layers was set, or the parameters ask for a tensor
-    // or row split, or on Windows a selected WDDM CUDA placement projects more
-    // system commit than is available. Parameters that already fit are never
-    // refused on device memory alone. On a host without a GPU device a margin
+    // or row split. Parameters that already fit are never refused on device
+    // memory alone. On a host without a GPU device a margin
     // above total memory is also a failure. mparams, cparams, and report are
     // left as they were; the tensor_split and tensor_buft_overrides buffers are
     // unspecified.
@@ -573,7 +572,7 @@ enum llama_dart_fit_status {
 
 // Memory of one device, or of the host, at the fitted parameters. The host
 // entry is named "Host" and has the total and physical free memory of the CPU
-// device (never reinterpreted as system commit). On Windows, free_bytes of a
+// device. On Windows, free_bytes of a
 // Vulkan or CUDA GPU is the smaller of what the driver reports and what the
 // display adapter has free for every process. The driver reports a per-process
 // budget, which does not deduct memory that other processes hold.
@@ -649,22 +648,10 @@ LLAMADART_API uint32_t llama_dart_fit_api_version(void);
 // fit never runs on the driver's number alone there. It reads the model's device
 // list with a vocabulary-only load first.
 //
-// When the model's selected devices on Windows include a WDDM CUDA GPU, the
-// wrapper also runs the final no-allocation measurement even when report is
-// NULL and checks the sum of final host and selected WDDM CUDA model/context/
-// compute bytes against available Windows system commit
-// ((CommitLimit - CommitTotal) * PageSize from K32GetPerformanceInfo) after the
-// measurement unwinds. This is a conservative snapshot estimate (it counts
-// potentially file-backed host weights, and is not a reservation or OOM
-// guarantee). Inadequate commit headroom returns LLAMA_DART_FIT_STATUS_FAILURE
-// with llama_dart_last_error() describing projected vs available commit,
-// leaving mparams, cparams, and report untouched; an unreadable or overflowing
-// commit counter fails with LLAMA_DART_STATUS_EXCEPTION. A registered but
-// unselected CUDA backend does not trigger this check for Vulkan-only or
-// CPU-only fits. Elsewhere, and for other devices, nothing changes. The
-// version stays 1.
+// A successful fit estimates device memory. A later Windows context allocation
+// or decode can still fail under system memory pressure (llamadart-native #211).
 //
-// Teardown cannot cancel a fit, and waits for one that is running.
+//// Teardown cannot cancel a fit, and waits for one that is running.
 LLAMADART_API int32_t llama_dart_fit_params(
     const char * path_model,
     struct llama_model_params * mparams,

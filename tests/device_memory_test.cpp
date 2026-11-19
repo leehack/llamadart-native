@@ -97,78 +97,6 @@ void test_adapter_segment_overflow_and_aperture() {
   assert(free_bytes == 1500 * kMiB);
 }
 
-void test_commit_headroom_and_decision() {
-  // Normal headroom: (1000 - 250) * 4096 = 3,072,000 bytes.
-  auto h = llama_dart_commit_available_bytes(1000, 250, 4096);
-  assert(h.ok && h.available_bytes == 750ull * 4096ull);
-
-  // Total >= limit -> 0 headroom, still ok.
-  h = llama_dart_commit_available_bytes(1000, 1000, 4096);
-  assert(h.ok && h.available_bytes == 0);
-  h = llama_dart_commit_available_bytes(1000, 1200, 4096);
-  assert(h.ok && h.available_bytes == 0);
-
-  // Zero page size or limit -> fail closed.
-  assert(!llama_dart_commit_available_bytes(0, 0, 4096).ok);
-  assert(!llama_dart_commit_available_bytes(1000, 0, 0).ok);
-
-  // Overflow -> fail closed.
-  assert(!llama_dart_commit_available_bytes(UINT64_MAX, 0, 4096).ok);
-
-  // C7 recorded numbers: 29,182.5 MiB projected vs 27,575.6 MiB available.
-  const std::vector<llama_dart_fit_commit_row> c7_rows = {
-      {"CUDA0", true, false, 4131828531ull, 16911433728ull, 301989888ull},
-      {"Host", false, true, 1919000576ull, 7046430720ull, 289406976ull},
-  };
-  const uint64_t c7_limit_pages = (33788ull * kMiB + kMiB * 4 / 10) / 4096ull;
-  const uint64_t c7_total_pages = (6212ull * kMiB + kMiB * 8 / 10) / 4096ull;
-  const auto c7 = llama_dart_evaluate_fit_commit(c7_rows, c7_limit_pages,
-                                                 c7_total_pages, 4096);
-  assert(c7.ok && !c7.fits);
-  assert(c7.detail.find("system commit") != std::string::npos);
-
-  // C4 recorded numbers: 10,494.5 MiB projected vs 27,575.6 MiB available.
-  const std::vector<llama_dart_fit_commit_row> c4_rows = {
-      {"CUDA0", true, false, 0ull, 0ull, 33554432ull},
-      {"Host", false, true, 6050807808ull, 4563402752ull, 356515840ull},
-  };
-  const auto c4 = llama_dart_evaluate_fit_commit(c4_rows, c7_limit_pages,
-                                                 c7_total_pages, 4096);
-  assert(c4.ok && c4.fits);
-
-  // Equality accepts, 1-byte deficit rejects.
-  const std::vector<llama_dart_fit_commit_row> exact_rows = {
-      {"CUDA0", true, false, 4096ull, 0ull, 0ull},
-      {"Host", false, true, 4096ull, 0ull, 0ull},
-  };
-  assert(llama_dart_evaluate_fit_commit(exact_rows, 10, 8, 4096).fits);
-  const std::vector<llama_dart_fit_commit_row> deficit_rows = {
-      {"CUDA0", true, false, 4097ull, 0ull, 0ull},
-      {"Host", false, true, 4096ull, 0ull, 0ull},
-  };
-  assert(!llama_dart_evaluate_fit_commit(deficit_rows, 10, 8, 4096).fits);
-
-  // Mixed placement: Vulkan0 is excluded from commit sum, CUDA0 + Host included.
-  const std::vector<llama_dart_fit_commit_row> mixed_rows = {
-      {"Vulkan0", true, false, 100ull * kMiB, 100ull * kMiB, 100ull * kMiB},
-      {"CUDA0", true, false, 4096ull, 0ull, 0ull},
-      {"Host", false, true, 4096ull, 0ull, 0ull},
-  };
-  uint64_t projected = 0;
-  std::string detail;
-  assert(llama_dart_fit_projected_commit_bytes(mixed_rows, &projected, &detail));
-  assert(projected == 8192ull);
-
-  // Projected overflow rejects cleanly.
-  const std::vector<llama_dart_fit_commit_row> overflow_rows = {
-      {"CUDA0", true, false, UINT64_MAX, 1ull, 0ull},
-      {"Host", false, true, 0ull, 0ull, 0ull},
-  };
-  assert(!llama_dart_fit_projected_commit_bytes(overflow_rows, &projected,
-                                                &detail));
-  assert(!llama_dart_evaluate_fit_commit(overflow_rows, 10, 0, 4096).ok);
-}
-
 void test_clamp() {
   assert(llama_dart_effective_free(21827 * kMiB, 6263 * kMiB) == 6263 * kMiB);
   assert(llama_dart_effective_free(5000 * kMiB, 6263 * kMiB) == 5000 * kMiB);
@@ -618,7 +546,6 @@ int main() {
   test_integrated_adapter();
   test_degenerate_adapters();
   test_adapter_segment_overflow_and_aperture();
-  test_commit_headroom_and_decision();
   test_clamp();
   test_device_index();
   test_margins_one_device();
