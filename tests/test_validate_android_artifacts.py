@@ -6,9 +6,11 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tools'))
+sys.path.insert(0, str(ROOT / 'tests'))
 import validate_android_artifacts as validator
 import llama_cpp_patches as patches
 import build
+from workflow_text import job_block, matrix_rows, step_running
 
 RUNTIME = set(validator.EXCEPTION_RUNTIME_SYMBOLS)
 
@@ -176,6 +178,40 @@ class ExceptionRuntimeTests(unittest.TestCase):
         result = self.run_tool(libraries)
         self.assertNotEqual(0, result.returncode)
         self.assertIn('_ZTISt13runtime_error: defined by libggml-base.so, libmtmd.so', result.stderr)
+
+    def test_release_workflow_passes_backend_only_only_to_opencl_lanes(self):
+        block = job_block('native_release.yml', 'build-android')
+        rows = matrix_rows(block)
+        backend_only_lanes = [
+            (row['android_abi'], row['backend'])
+            for row in rows
+            if row['include_core'] == 'false'
+        ]
+        core_lanes = [
+            (row['android_abi'], row['backend'])
+            for row in rows
+            if row['include_core'] == 'true'
+        ]
+        self.assertEqual(
+            [('arm64-v8a', 'opencl'), ('x86_64', 'opencl')],
+            backend_only_lanes,
+        )
+        self.assertEqual(
+            [('arm64-v8a', 'vulkan'), ('x86_64', 'vulkan')],
+            core_lanes,
+        )
+        self.assertEqual(len(rows), len(backend_only_lanes) + len(core_lanes))
+
+        step = step_running(block, 'tools/validate_android_artifacts.py')
+        self.assertRegex(
+            step,
+            r'if \[ "\$\{\{ matrix\.include_core \}\}" = "false" \]; then\s+'
+            r'ARTIFACT_ARGS\+\=\(--backend-only\)\s+fi',
+        )
+        self.assertIn(
+            'python3 tools/validate_android_artifacts.py --readelf "$READELF" "${ARTIFACT_ARGS[@]}" "$OUT_DIR"',
+            step,
+        )
 
 
 if __name__ == '__main__':
