@@ -1824,6 +1824,11 @@ llama_dart_fit_measure_placement(const char *path_model,
         measured.host = std::move(row);
         seen_host = true;
       } else {
+        // The CPU handle keeps synthetic rows out of adapter queries unless
+        // the Windows properties are injected. Unnamed rows simulate a missing device.
+        if (!src.name.empty()) {
+          row.device = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
+        }
         measured.devices.push_back(std::move(row));
       }
     }

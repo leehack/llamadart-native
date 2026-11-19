@@ -86,19 +86,27 @@ bool llama_dart_test_win_dev_override_props(
 }
 #endif
 
-llama_dart_system_memory llama_dart_read_system_memory(ggml_backend_dev_t dev) {
-#if defined(_WIN32)
-  // Through the properties, the one query that a device interface always has.
+static ggml_backend_dev_props
+llama_dart_system_memory_props(ggml_backend_dev_t dev) {
   ggml_backend_dev_props props = {};
-#if defined(LLAMADART_TESTING)
-  if (g_test_win_dev.enabled) {
-    llama_dart_test_win_dev_override_props(dev, &props);
-  } else {
-    ggml_backend_dev_get_props(dev, &props);
+#if defined(LLAMADART_TESTING) && defined(_WIN32)
+  if (llama_dart_test_win_dev_override_props(dev, &props)) {
+    return props;
   }
-#else
+#endif
+  if (dev == nullptr) {
+    throw std::runtime_error("missing backend device for memory measurement");
+  }
+#if defined(_WIN32)
   ggml_backend_dev_get_props(dev, &props);
 #endif
+  return props;
+}
+
+static llama_dart_system_memory
+llama_dart_read_system_memory(ggml_backend_dev_t dev,
+                              const ggml_backend_dev_props &props) {
+#if defined(_WIN32)
   const enum ggml_backend_dev_type type = props.type;
   const std::string name = props.name == nullptr ? "" : props.name;
   const bool integrated = type == GGML_BACKEND_DEVICE_TYPE_IGPU;
@@ -176,21 +184,25 @@ llama_dart_system_memory llama_dart_read_system_memory(ggml_backend_dev_t dev) {
       read_segments);
 #else
   (void)dev;
+  (void)props;
   return llama_dart_system_memory();
 #endif
 }
 
+llama_dart_system_memory llama_dart_read_system_memory(ggml_backend_dev_t dev) {
+  return llama_dart_read_system_memory(dev, llama_dart_system_memory_props(dev));
+}
+
 size_t llama_dart_device_free_bytes(ggml_backend_dev_t dev, size_t driver_free,
                                     bool strict) {
-  const llama_dart_system_memory system = llama_dart_read_system_memory(dev);
+  const ggml_backend_dev_props props = llama_dart_system_memory_props(dev);
+  const llama_dart_system_memory system = llama_dart_read_system_memory(dev, props);
   switch (system.read) {
   case llama_dart_system_read::ok:
     return static_cast<size_t>(
         llama_dart_effective_free(driver_free, system.free_bytes));
   case llama_dart_system_read::unavailable:
     if (strict) {
-      ggml_backend_dev_props props = {};
-      ggml_backend_dev_get_props(dev, &props);
       throw std::runtime_error(llama_dart_unreadable_memory_message(
           props.name == nullptr ? "" : props.name, system.detail));
     }

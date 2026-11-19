@@ -193,7 +193,9 @@ bool has_gpu(const char *path) {
 }
 
 void test_cpu_only(const char *path) {
+  ggml_backend_dev_t no_gpu[] = {nullptr};
   fit_request request;
+  request.model.devices = no_gpu;
   assert(request.run(path) == LLAMA_DART_FIT_STATUS_SUCCESS);
   assert(request.report.n_devices == 0);
   assert(request.report.n_layers == kBlocks);
@@ -202,6 +204,34 @@ void test_cpu_only(const char *path) {
   assert(request.context.n_ctx == 2048);
   assert(std::string(request.report.host.name) == "Host");
   assert(request.report.host.total_bytes > 0 && request.report.host.free_bytes > 0);
+}
+
+void test_missing_measured_device(const char *path) {
+  const llama_dart_test_fit_row rows[] = {
+      {nullptr, true, false, 16 * kMiB, 8 * kMiB, 0, 0, 0},
+      {"Host", false, true, 128 * kMiB, 64 * kMiB, 0, 0, 0},
+  };
+  llama_dart_test_fit_commit_config config;
+  config.enabled = true;
+  config.override_measurement = true;
+  config.rows = rows;
+  config.n_rows = 2;
+  llama_dart_test_set_fit_commit_config(&config);
+
+  ggml_backend_dev_t no_gpu[] = {nullptr};
+  fit_request request;
+  request.model.devices = no_gpu;
+  request.context.n_ctx = 0;
+  request.report.n_layers = 777;
+  const int32_t status = request.run(path);
+  llama_dart_test_set_fit_commit_config(nullptr);
+
+  assert(status == LLAMA_DART_STATUS_EXCEPTION);
+  const char *error = llama_dart_last_error();
+  assert(error != nullptr &&
+         std::string(error).find("missing backend device") != std::string::npos);
+  assert(request.context.n_ctx == 0);
+  assert(request.report.n_layers == 777);
 }
 
 void test_everything_fits(const char *path) {
@@ -823,6 +853,8 @@ void test_windows_fake_device_kmt_and_commit(const char *path) {
                                req.overrides.data(), req.margins.data(),
                                UINT32_MAX, &req.report) ==
          LLAMA_DART_STATUS_EXCEPTION);
+  const char *error = llama_dart_last_error();
+  assert(error != nullptr && std::string(error).find("CUDA0") != std::string::npos);
 }
 #endif
 
@@ -842,6 +874,8 @@ int main(int argc, char **argv) {
 
   test_contract(path);
   test_unreadable_model();
+  test_cpu_only(path);
+  test_missing_measured_device(path);
   const bool gpu = has_gpu(path);
   if (gpu) {
     test_everything_fits(path);
@@ -854,8 +888,6 @@ int main(int argc, char **argv) {
     test_nextn_layers(nextn_path);
     std::remove(nextn_path);
 #endif
-  } else {
-    test_cpu_only(path);
   }
   test_failure_keeps_context(path, gpu);
   test_concurrent(path);
