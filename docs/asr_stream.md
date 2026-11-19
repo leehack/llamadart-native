@@ -7,10 +7,10 @@
 the full contract; this page has what a binding needs to know, why the wrapper
 owns the loop, and the local check.
 
-The session wraps the experimental `mtmd_audio_stream_*` API of llama.cpp,
-which is unchanged in v0.8.0, v0.9.0 and v1.0.0, so one source compiles on all
-three `LLAMADART_UPSTREAMS` rows. It adds exports only: no existing export,
-struct or version changes, and `LLAMA_DART_ASR_STREAM_API_VERSION` is 1.
+The session wraps the experimental `mtmd_audio_stream_*` API of llama.cpp.
+Native CI qualifies the pinned upstream shipped by the current llamadart core
+minor. The wrapper adds exports without changing existing exports, structs
+or versions. `LLAMA_DART_ASR_STREAM_API_VERSION` is 1.
 
 ## Why a session
 

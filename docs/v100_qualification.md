@@ -19,23 +19,24 @@ adoption have separate gates.
 The dereferenced published `v1.0.0` tag supplies the candidate. The release
 object's `target_commitish=2d8a3250…` is a different commit and is not used.
 No nightly/main changes, new speech admissions, cache types or public controls
-are part of this candidate. Both v0.8.0 and v0.9.0 validation rows remain.
+are part of this candidate. Native CI now qualifies only v1.0.0, the pinned
+upstream shipped by the current core minor.
 
 ## Carry decisions
 
-No new retirement is proven. The required removal evidence remains original
-trigger **old unpatched FAIL / old patched PASS / candidate unpatched PASS**, with
-other fixes held constant. Application, marker presence, issue closure and a
-successful build cannot replace that evidence. Patch bytes and their digests
-remain unchanged; [series.json](../patches/llama.cpp/series.json) is authoritative.
+Removing a patch needed by the pinned upstream requires original-trigger
+evidence of **old unpatched FAIL / old patched PASS / candidate unpatched
+PASS**, with other fixes held constant. Application, marker presence, issue closure and a
+successful build cannot replace that evidence.
+[series.json](../patches/llama.cpp/series.json) lists the current carries.
 0008 and 0009 are the only additions, below.
 
 | Carry and origin | Original trigger and upstream status | Candidate decision and proof/gap |
 | --- | --- | --- |
 | 0001, [native #79](https://github.com/leehack/llamadart-native/issues/79), introduced by #104 / `c766a94a4d48` | SC-51E/API36, Adreno 750, Qualcomm proprietary driver `2150604839`, build `c81b28e1a5`; stories15M F32 / Qwen3.5-0.8B Q4_0 multi-token prefill crashes in `vkCreateComputePipelines`. [Upstream #29165](https://github.com/ggml-org/llama.cpp/pull/29165) remains an unmerged draft. | Retain exact Android driver match and shared-memory reduction. Strict application passes. Original old/patched receipts are in #79; v1 same-driver execution is pending. F32 fusion and quantized numerical defects survive the crash repair: retain consumer GPU refusal. No global fusion-disable prototype is added. |
 | 0002, [core #782](https://github.com/leehack/llamadart/issues/782), #104 / `c766a94a4d48` | SC-53C/API36 Mali-G68, feature true with null `vkGetBufferDeviceAddress`; original report is **stable-diffusion.cpp**, with llama.cpp exposure unverified and original device API unrecorded. v1 has no equivalent entry guard. | Retain null-entry guard. Strict application passes; no native affected-device patched PASS is claimed. Need null/present-entry causal controls and actual native reachability/API before any retirement. Below-1.2 consumer refusal is separate. |
-| 0004, [native #154](https://github.com/leehack/llamadart-native/issues/154), #153 / v0.8.0-1 | Old macOS/iOS bfloat Metal compiler rejects unary `constexpr` vector subscripts. [#31360](https://github.com/ggml-org/llama.cpp/pull/31360), `c9daee149d606adc30b4c5b7a3254697c9771e2b`, is integrated. | Retain patch for v0.8 validation. Existing `upstream_fix` path already skips v0.9 and v1; this PR does not retire it. [Old red/green receipts](v080_1_wrapper_rebuild.md) remain controls; exact v1 unpatched old-OS/bfloat compiler and physical iOS proof is missing. |
-| 0005, [native #174](https://github.com/leehack/llamadart-native/issues/174), #177/#182 | Non-SVE NEON FP16 dot overflow at magnitudes 80/90/100; macOS arm64 and optimized Android/Linux CPU modules. [#31734](https://github.com/ggml-org/llama.cpp/issues/31734) closed after [#31854](https://github.com/ggml-org/llama.cpp/pull/31854), `12ab5979869aecdf3593de260a99ca91263bf5a1`, changed default graph routing. | Retain. v1 still contains the old F16 kernel. Model-free direct-kernel controls fail when only 0005 is removed, while the new graph route passes. Keep exact blocked/flush/tail/nonfinite/F32-recompute controls and old rows; no retirement. |
+| Metal unary cast, [native #154](https://github.com/leehack/llamadart-native/issues/154), #153 / v0.8.0-1 | Old macOS/iOS bfloat Metal compiler rejects unary `constexpr` vector subscripts. [#31360](https://github.com/ggml-org/llama.cpp/pull/31360), `c9daee149d606adc30b4c5b7a3254697c9771e2b`, is integrated. | The workaround was already skipped on v1.0.0 and was removed with the v0.8.0 CI row. The Metal OS floor workflow checks the current build on hosted runners. The [older compiler and physical iOS receipts](v080_1_wrapper_rebuild.md) cover the v0.8.0 rebuild. |
+| 0005, [native #174](https://github.com/leehack/llamadart-native/issues/174), #177/#182 | Non-SVE NEON FP16 dot overflow at magnitudes 80/90/100; macOS arm64 and optimized Android/Linux CPU modules. [#31734](https://github.com/ggml-org/llama.cpp/issues/31734) closed after [#31854](https://github.com/ggml-org/llama.cpp/pull/31854), `12ab5979869aecdf3593de260a99ca91263bf5a1`, changed default graph routing. | Retain. v1 still contains the old F16 kernel. Model-free direct-kernel controls fail when only 0005 is removed, while the new graph route passes. Keep exact blocked/flush/tail/nonfinite/F32-recompute controls. |
 | 0006, [native #174](https://github.com/leehack/llamadart-native/issues/174), #179 | FP16 llamafile GEMM, >=8 columns, macOS arm64 / Linux armv8.2_2. Android has llamafile off; SVE/I8MM compile it out. Same upstream graph change leaves F16 x F16 tinyBLAS present. | Retain. Removing only 0006 fails direct GEMM overflow/512-K block/tail/last-cell controls while v1 graph passes. The narrow #174 policy exception is unchanged. Actual module/model throughput remains pending. |
 | 0008, [native #192](https://github.com/leehack/llamadart-native/issues/192) | v1 runs F16 `src0` matmuls on `ggml_vec_dot_f16_f32` ([#31854](https://github.com/ggml-org/llama.cpp/pull/31854), `12ab5979`): on ARM FP16 modules 0.16 to 0.6 of v0.9.0 for F16 weights (Neoverse-N1), with 0005/0006 unreachable from graphs. | Add. An unhinted F16 x F32 `GGML_OP_MUL_MAT` takes the v0.9.0 route (query rounded to F16) on FP16 vector arithmetic modules; F32/BF16/Q8/Q4 `src1` requests and `CONV_2D`/`CONV_3D` stay F32. Maintainer-approved exception; see [native192_arm_fp16_f16_route.md](native192_arm_fp16_f16_route.md). Neoverse-N1 (t2a) 0.99–1.07 outside FA-on depth decode (0.95–0.97; the one other cell below 0.97, armv82 Q8 tg128 FA-on 0.967, is within the identical-module null band); Android gate-1 rerun at #193 head: CPU ids identical to v0.9.0, C1 passes. x86 AVX2 (#188 candidate): 20 cells, worst 0.978. V2 and c4a pending. |
 | 0009, native #192 | Same change for the flash-attention one-chunk K.Q dot. | Add, same route for an F16 K. Removing it fails the `flash-route` row. |
@@ -161,7 +162,7 @@ hashes, device/OS/driver and settings.
 
 Local implementation checks (2026-11-15): v0.8/v0.9/v1 each pass **88/88**
 native CPU fixture tests; **449** Python tests pass with one Linux-only host
-skip on macOS. Strict series application passes for all three rows. The candidate
+skip on macOS. Strict series application passed on each of those commits. The candidate
 passes 94 required wrapper exports, retired-export absence, no `__cxa_atexit`
 imports, build identity and release-provenance contracts. Workflow lint passes
 with the installed linter's existing VS2026 runner-label exception. The candidate

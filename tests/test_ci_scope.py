@@ -102,19 +102,24 @@ class ScopeTests(unittest.TestCase):
             self.assertIn('github.event.pull_request.number || github.run_id',content)
 
     def test_the_pin_is_exactly_one_upstream_row(self):
-        rows='{"v0.7.0": "a", "v0.8.0": "b"}'
-        self.assertEqual(upstream_rows(rows,'b'),(['v0.7.0','v0.8.0'],'v0.8.0'))
-        for pin,table in (('c',rows),('a','{"v0.7.0": "a", "v0.7.0-copy": "a"}'),('a','{}')):
-            with self.subTest(pin=pin,table=table), self.assertRaisesRegex(ValueError,'exactly one'):
-                upstream_rows(table,pin)
+        self.assertEqual(upstream_rows('{"v1.0.0": "a"}', 'a'), (['v1.0.0'], 'v1.0.0'))
+        for table in ('{}', '[]', '{"v1.0.0": "b"}',
+                      '{"v1.0.0": "a", "v1.0.0-copy": "a"}',
+                      '{"v1.0.0": "b", "v1.0.0": "a"}'):
+            with self.subTest(table=table), self.assertRaisesRegex(ValueError, 'exactly one'):
+                upstream_rows(table, 'a')
 
-    def test_every_native_lane_builds_each_upstream_row_once(self):
+    def test_a_non_pinned_row_is_rejected_even_with_the_pin_present(self):
+        with self.assertRaisesRegex(ValueError, 'exactly one'):
+            upstream_rows('{"v0.9.0": "b", "v1.0.0": "a"}', 'a')
+
+    def test_actual_workflow_qualifies_only_the_pinned_upstream(self):
+        workflow = (ROOT / '.github/workflows/validate_wrapper.yml').read_text()
+        table = re.search(r"^  LLAMADART_UPSTREAMS: >-\n((?:    .*\n)+)", workflow, re.MULTILINE)[1]
+        upstream_rows(table, pinned_llama_cpp())
+
+    def test_every_native_lane_builds_the_pinned_upstream_once(self):
         workflow=(ROOT/'.github/workflows/validate_wrapper.yml').read_text()
-        table=re.search(r"^  LLAMADART_UPSTREAMS: >-\n((?:    .*\n)+)",workflow,re.MULTILINE)[1]
-        rows=json.loads(table)
-        # Shipped llamadart cores still load this line, so it keeps its row.
-        self.assertLessEqual({'v0.8.0':'8642541b255bfb5dc39cd351a178be09013a55d6'}.items(),rows.items())
-        upstream_rows(table,pinned_llama_cpp())
         self.assertNotIn("'pinned'",workflow)
         self.assertEqual(workflow.count('QUALIFICATION_SHA:'),len(JOBS))
         for job in JOBS:

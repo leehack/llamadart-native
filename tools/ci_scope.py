@@ -46,18 +46,15 @@ def pinned_llama_cpp(head='HEAD'):
 
 
 def upstream_rows(upstreams, pinned_commit):
-    """Return the qualified upstream names and the one the submodule pins.
-
-    Every lane builds each row once: the pinned row builds the checkout as is,
-    so a pin that is not exactly one row would leave it unqualified or built twice.
-    """
-    rows = json.loads(upstreams)
-    pinned = [name for name, commit in rows.items() if commit == pinned_commit]
-    if len(pinned) != 1:
+    """Return the sole qualification row, which must match the submodule pin."""
+    # Keep duplicate JSON keys visible to the row-count check.
+    rows = json.loads(upstreams, object_pairs_hook=tuple)
+    if not isinstance(rows, tuple) or len(rows) != 1 or rows[0][1] != pinned_commit:
         raise ValueError(
-            f'third_party/llama.cpp pins {pinned_commit}, which must be exactly one '
-            f'LLAMADART_UPSTREAMS row: {rows}')
-    return list(rows), pinned[0]
+            f'LLAMADART_UPSTREAMS must have exactly one row matching the '
+            f'third_party/llama.cpp pin {pinned_commit}: {upstreams}')
+    name, _ = rows[0]
+    return [name], name
 
 
 def validate_results(needs):
