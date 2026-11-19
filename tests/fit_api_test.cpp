@@ -276,9 +276,14 @@ void test_nothing_fits(const char *path) {
   fit_request full;
   assert(full.run(path) == LLAMA_DART_FIT_STATUS_SUCCESS);
   const llama_dart_fit_device device = full.report.devices[0];
+  ggml_backend_dev_t gpu = ggml_backend_dev_by_name(device.name);
+  assert(gpu != nullptr);
+  assert(device.total_bytes > 0);
 
+  ggml_backend_dev_t devices[] = {gpu, nullptr};
   fit_request request;
-  set_budget(request, device, 1 * kMiB);
+  request.model.devices = devices;
+  request.margins[0] = static_cast<size_t>(device.total_bytes);
   assert(request.run(path) == LLAMA_DART_FIT_STATUS_SUCCESS);
   assert(request.model.n_gpu_layers == 0);
   assert(request.report.devices[0].model_bytes == 0);

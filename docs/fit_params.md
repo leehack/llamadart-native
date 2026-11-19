@@ -186,8 +186,9 @@ logger is installed (the logger must be the same one afterwards), and a thread
 that loads a model while another fits (it must keep its INFO lines; this needs
 patch 0007). With a GPU
 device it also checks the unchanged, partial, nothing-fits, context-reduction
-and preset cases against a budget set through `margins`, and on v1.0.0 a model
-with a NextN layer whose fit must keep the last layer back at a layer count
+and preset cases with `margins`. The nothing-fits case selects one device and
+reserves its total capacity so changes in free memory cannot make layers fit.
+The v1.0.0 NextN case must keep the last layer back at a layer count
 that `n_layers + 1` would call full. Where the device cannot run an F32
 `MUL_MAT` (the paravirtual Metal device of the macOS runners has no simdgroup
 reduction), llama.cpp keeps the weights on the host, and the test checks the
