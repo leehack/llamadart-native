@@ -495,15 +495,39 @@ void test_other_threads_keep_log_levels(const char *path) {
 
 struct fit_probe_logs {
   int info = 0;
+  int warnings = 0;
   int errors = 0;
+  int info_cont = 0;
+  int warn_cont = 0;
+  bool inject_cont = false;
+  bool injected_cont = false;
 };
 
-void fit_probe_logger(ggml_log_level level, const char *, void *user_data) {
+void fit_probe_logger(ggml_log_level level, const char *text, void *user_data) {
   auto &logs = *static_cast<fit_probe_logs *>(user_data);
   if (level == GGML_LOG_LEVEL_INFO) {
     ++logs.info;
+  } else if (level == GGML_LOG_LEVEL_WARN) {
+    ++logs.warnings;
   } else if (level == GGML_LOG_LEVEL_ERROR) {
     ++logs.errors;
+    if (logs.inject_cont && !logs.injected_cont) {
+      logs.injected_cont = true;
+      ggml_log_callback forwarder = nullptr;
+      void *forwarder_ud = nullptr;
+      llama_log_get(&forwarder, &forwarder_ud);
+      assert(forwarder != nullptr);
+      forwarder(GGML_LOG_LEVEL_INFO, "probe info\n", forwarder_ud);
+      forwarder(GGML_LOG_LEVEL_CONT, "probe info cont\n", forwarder_ud);
+      forwarder(GGML_LOG_LEVEL_WARN, "probe warn\n", forwarder_ud);
+      forwarder(GGML_LOG_LEVEL_CONT, "probe warn cont\n", forwarder_ud);
+    }
+  } else if (level == GGML_LOG_LEVEL_CONT && text != nullptr) {
+    if (std::strstr(text, "probe info cont") != nullptr) {
+      ++logs.info_cont;
+    } else if (std::strstr(text, "probe warn cont") != nullptr) {
+      ++logs.warn_cont;
+    }
   }
 }
 
@@ -519,9 +543,29 @@ void test_fit_probe_log_scope(const char *path) {
   assert(model != nullptr);
   llama_model_free(model);
   assert(logs.info == 0);
+
+  llama_model_kv_override overrides[2] = {};
+  std::snprintf(overrides[0].key, sizeof(overrides[0].key), "llama.block_count");
+  overrides[0].tag = LLAMA_KV_OVERRIDE_TYPE_FLOAT;
+  overrides[0].val_f64 = 1.0;
+  auto warn_params = llama_model_default_params();
+  warn_params.kv_overrides = overrides;
+  logs = {};
+  llama_model *warn_model = llama_dart_test_load_fit_probe(path, &warn_params);
+  assert(warn_model != nullptr);
+  llama_model_free(warn_model);
+  assert(logs.info == 0);
+  assert(logs.warnings > 0);
+
+  logs = {};
+  logs.inject_cont = true;
   assert(llama_dart_test_load_fit_probe("fit_api_test_missing_model.gguf",
                                         &params) == nullptr);
   assert(logs.errors > 0);
+  assert(logs.info == 0);
+  assert(logs.info_cont == 0);
+  assert(logs.warnings > 0);
+  assert(logs.warn_cont > 0);
 
   ggml_log_callback callback = nullptr;
   void *user_data = nullptr;
@@ -529,6 +573,64 @@ void test_fit_probe_log_scope(const char *path) {
   assert(callback == fit_probe_logger && user_data == &logs);
   load_vocabulary_only(path);
   assert(logs.info > 0);
+  llama_dart_set_log_level(4);
+}
+
+struct probe_log_gate {
+  std::atomic<bool> probing{false};
+  std::atomic<bool> loader_done{false};
+};
+
+thread_local probe_log_gate *g_probe_log_gate = nullptr;
+
+void probe_xthread_logger(ggml_log_level level, const char *, void *) {
+  if (g_probe_log_gate != nullptr && level == GGML_LOG_LEVEL_ERROR &&
+      !g_probe_log_gate->probing.exchange(true)) {
+    while (!g_probe_log_gate->loader_done.load()) {
+      std::this_thread::yield();
+    }
+  }
+  if (g_on_loader_thread) {
+    g_loader_counts.lines.fetch_add(1);
+    if (level == GGML_LOG_LEVEL_INFO) {
+      g_loader_counts.info.fetch_add(1);
+    }
+  }
+}
+
+void test_fit_probe_other_thread_keeps_log_levels(const char *path) {
+  llama_log_set(probe_xthread_logger, nullptr);
+  g_loader_counts.lines = 0;
+  g_loader_counts.info = 0;
+  g_on_loader_thread = true;
+  load_vocabulary_only(path);
+  const long control_info = g_loader_counts.info.load();
+  assert(control_info > 0);
+
+  g_loader_counts.lines = 0;
+  g_loader_counts.info = 0;
+  probe_log_gate gate;
+  std::atomic<bool> probe_done{false};
+  std::thread probe([&] {
+    g_probe_log_gate = &gate;
+    const auto params = llama_model_default_params();
+    assert(llama_dart_test_load_fit_probe("fit_api_test_missing_model.gguf",
+                                          &params) == nullptr);
+    g_probe_log_gate = nullptr;
+    probe_done.store(true);
+  });
+  while (!gate.probing.load() && !probe_done.load()) {
+    std::this_thread::yield();
+  }
+  assert(gate.probing.load());
+  // The probe thread is blocked inside its scope, so this load overlaps it.
+  load_vocabulary_only(path);
+  gate.loader_done.store(true);
+  probe.join();
+  g_on_loader_thread = false;
+
+  const long during_info = g_loader_counts.info.load();
+  assert(during_info == control_info);
   llama_dart_set_log_level(4);
 }
 
@@ -783,6 +885,7 @@ int main(int argc, char **argv) {
   test_failure_keeps_context(path, gpu);
   test_concurrent(path);
   test_fit_probe_log_scope(path);
+  test_fit_probe_other_thread_keeps_log_levels(path);
   test_other_threads_keep_log_levels(path);
 #if defined(_WIN32)
   test_windows_adapter_paths(path);
