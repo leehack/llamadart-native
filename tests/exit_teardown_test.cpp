@@ -4,6 +4,7 @@
 
 #include "llama_dart_wrapper.h"
 #include "llama_dart_speculative_internal.h"
+#include "llama_dart_tts_test_hooks.h"
 
 #include "ggml-backend-impl.h"
 #include "gguf.h"
@@ -2307,6 +2308,55 @@ int test_model_tts(const char *path, const char *mmproj_path) {
   return 0;
 }
 
+int test_model_tts_read_guard_wait(const char *path, int32_t kind) {
+  struct guard_reset {
+    ~guard_reset() {
+      llama_dart_test_tts_release_read_latch();
+      llama_dart_test_tts_arm_read_latch(0);
+    }
+  } reset;
+
+  model_fixture fixture = load_model(path);
+  llama_dart_tts *tts =
+      llama_dart_test_tts_create_streamed_dummy(fixture.context);
+  assert(tts != nullptr);
+  assert(llama_dart_exit_tracked_count() == 3);
+
+  llama_dart_test_tts_arm_read_latch(kind);
+  std::thread([tts, kind] {
+    if (kind == 1) {
+      llama_dart_tts_output_info info{};
+      info.struct_size = sizeof(info);
+      llama_dart_tts_get_output_info(tts, &info);
+    } else {
+      float sample = 0.0f;
+      size_t count = 0;
+      llama_dart_tts_read_pcm(tts, 0, &sample, 1, &count);
+    }
+  }).detach();
+
+  while (!llama_dart_test_tts_read_latch_entered()) {
+    sleep_ms(1);
+  }
+
+  llama_dart_exit_set_wait_ms(5000);
+  std::atomic<bool> teardown_done{false};
+  std::thread teardown([&] {
+    llama_dart_exit_teardown();
+    teardown_done.store(true);
+  });
+
+  sleep_ms(500);
+  assert(!teardown_done.load());
+
+  llama_dart_test_tts_release_read_latch();
+  teardown.join();
+
+  assert(teardown_done.load());
+  assert(llama_dart_exit_tracked_count() == 0);
+  return 0;
+}
+
 // Exits with a live ASR session over tracked contexts that nothing frees. The
 // session owns an audio stream and its encoder state, so teardown must free it
 // before the mtmd context and the model.
@@ -3330,6 +3380,12 @@ int main(int argc, char **argv) {
     }
     if (scenario == "model-free-in-flight") {
       return test_model_free_in_flight(first);
+    }
+    if (scenario == "model-tts-get-output-info-wait") {
+      return test_model_tts_read_guard_wait(first, 1);
+    }
+    if (scenario == "model-tts-read-pcm-wait") {
+      return test_model_tts_read_guard_wait(first, 2);
     }
     if (second != nullptr) {
       if (scenario == "model-mtmd") {

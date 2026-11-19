@@ -373,6 +373,7 @@ target_include_directories(llamadart_lib PRIVATE
 
 if (LLAMADART_BUILD_TESTS)
     enable_testing()
+    target_compile_definitions(llamadart_lib PRIVATE LLAMADART_TESTING=1)
     add_executable(llamadart_f16_dot_accumulation_test tests/f16_dot_accumulation_test.cpp)
     target_compile_features(llamadart_f16_dot_accumulation_test PRIVATE cxx_std_17)
     target_compile_definitions(llamadart_f16_dot_accumulation_test PRIVATE
@@ -492,6 +493,8 @@ if (LLAMADART_BUILD_TESTS)
 
     add_executable(llamadart_tts_stream_test tests/tts_stream_test.cpp)
     target_compile_features(llamadart_tts_stream_test PRIVATE cxx_std_17)
+    target_compile_definitions(llamadart_tts_stream_test PRIVATE LLAMADART_TESTING=1)
+    target_link_libraries(llamadart_tts_stream_test PRIVATE llamadart_lib)
     target_include_directories(llamadart_tts_stream_test PRIVATE
         src
         third_party/llama.cpp/include
@@ -616,6 +619,7 @@ if (LLAMADART_BUILD_TESTS)
     add_executable(llamadart_exit_teardown_test tests/exit_teardown_test.cpp)
     target_compile_features(llamadart_exit_teardown_test PRIVATE cxx_std_17)
     target_compile_definitions(llamadart_exit_teardown_test PRIVATE
+        LLAMADART_TESTING=1
         LLAMADART_HAS_BATCH_EXT=$<BOOL:${LLAMADART_HAS_BATCH_EXT}>
         LLAMADART_SPECULATIVE_HAS_COMMON_BATCH=$<BOOL:${LLAMADART_SPECULATIVE_HAS_COMMON_BATCH}>
         LLAMADART_SPECULATIVE_HAS_BATCH_STATE=$<BOOL:${LLAMADART_SPECULATIVE_HAS_BATCH_STATE}>
@@ -694,7 +698,8 @@ if (LLAMADART_BUILD_TESTS)
                 model-order model-session model-session-untracked model-embedding-toggle
                 model-freed model-decode-wait model-mtmd-wait model-decode
                 model-late-load model-load model-load-wait model-fit-wait
-                model-free-in-flight)
+                model-free-in-flight
+                model-tts-get-output-info-wait model-tts-read-pcm-wait)
             add_test(NAME llamadart_exit_teardown_${scenario}
                 COMMAND llamadart_exit_teardown_test ${scenario}
                     "${exit_teardown_model}")
