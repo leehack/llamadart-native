@@ -106,13 +106,11 @@ The CPU reports no SVE, so the new SVE kernels did not execute. The aarch64 GCC
 plus QEMU lane could not run locally: this host has no `qemu-aarch64`, no
 `aarch64-linux-gnu` toolchain and no running Docker daemon.
 
-## Remaining gates
+## Qualification scope
 
-- Hosted `android-arm64-isa`, `kleidiai-dispatch-emulated` (`cortex-a53` and
-  `max,sve=off,sme=off`) and `windows-arm64-kleidiai` v0.8.0 rows.
+- The v0.8.0 Android, emulated dispatch and Windows arm64 CI rows were retired.
   Windows compiles the two new `.S` files through upstream's MSVC lists and the
-  existing ClangCL MARMASM settings; `cmake/kleidiai_windows.cmake` needs no
-  change.
+  existing ClangCL MARMASM settings.
 - No lane executes the new SVE Q8 kernels. That requires SVE256 with SVE I8MM,
   for example QEMU with `sve-default-vector-length=32,sme=off` or Neoverse V1
   hardware. Android SVE devices with 128-bit vectors never select them.

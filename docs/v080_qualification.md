@@ -73,9 +73,10 @@ public symbol is removed. Regenerated bindings must account for:
 | `mtmd.h` | `mtmd_gen_audio_process(ctx, state, inp, out)` gains a state argument. `mtmd_gen_inp` drops `seed`, `state_data`, `state_size` and inserts `penalty_repeat`, `penalty_last_n` after `temp`; `mtmd_gen_out` drops `state_data`, `state_size`. `mtmd_caps` adds `gen_audio`. `mtmd_gen_audio_type` appends `SOPRANO` and `LFM3A`. `mtmd_audio_stream_params` appends `prompt`, `n_prompt`. Adds `mtmd_gen_state_*` (4 functions, `mtmd_gen_state_params`), `mtmd_support_audio_stream`, the experimental `mtmd_audio_stream_*` API (10 functions), `mtmd_video_template`, `mtmd_video_config`, `mtmd_get_video_config` and `mtmd_bitmap_set_is_video`. |
 | `mtmd-helper.h` | `mtmd_helper_gen_audio_inp` gains a leading `bool stream`, then `n_past` and `out_mode` after `prompt_len` and `voice` after `lang`, shifting every later field. `mtmd_helper_video_init_params` appends `no_soundtrack`. Adds `mtmd_helper_get_capabilities` (`mtmd_helper_cap`), `mtmd_helper_gen_audio_inp_default`, `mtmd_helper_gen_audio_flush`, `mtmd_helper_gen_audio_next_is_text`, `mtmd_helper_gen_audio_get_logit_bias`, `mtmd_helper_audio_stream_get_logit_bias` and `mtmd_helper_gen_audio_out_mode`. `mtmd_helper_model_can_chat` and `mtmd_helper_support_video` are deprecated but still exported. |
 
-## Remaining gates
+## Qualification scope
 
-- Hosted `v0.8.0` rows of every lane in `validate_wrapper.yml`.
+- Native CI now qualifies the pinned upstream shipped by the current core
+  minor. The v0.8.0 rows were retired with the core 0.19 rows.
 - Android ISA: [v080_android_isa_qualification.md](v080_android_isa_qualification.md).
 - Model, family and device qualification stays under #112 and the consumer
   release; this document claims none of it.

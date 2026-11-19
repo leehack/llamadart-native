@@ -88,8 +88,9 @@ build `llamadart_kleidiai_dispatch_test`; it links the actual CPU module.
 The Android artifact check is `tools/validate_android_cpu_isa.py --help`.
 The Linux arm64 variant check is `tools/check_linux_arm64_cpu_variants.sh`.
 Version-specific source and function-range evidence for v0.7.0 lives in
-`docs/v070_android_isa_qualification.md`. The qualified upstreams are the
-`LLAMADART_UPSTREAMS` rows of `validate_wrapper.yml`.
+`docs/v070_android_isa_qualification.md`. Native CI qualifies the pinned
+upstream shipped by the current llamadart core minor, the sole
+`LLAMADART_UPSTREAMS` row in `validate_wrapper.yml`.
 
 ## Runtime Packaging Model
 

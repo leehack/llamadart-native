@@ -4,7 +4,6 @@ import hashlib
 import json
 import os
 from pathlib import Path
-import re
 import subprocess
 import sys
 import tempfile
@@ -174,11 +173,14 @@ class ApplyTests(unittest.TestCase):
 
     def test_an_upstream_fix_in_another_file_retires_the_patch(self) -> None:
         fixture = self.fixture(**{"0001_edit_b": EDIT_B})
-        fixture.series[0]["upstream_fix"] = "fixed\n"
-        fixture.series[0]["upstream_fix_path"] = "other.txt"
+        entry = fixture.series[0]
+        entry["upstream_fix"] = "fixed\n"
+        entry["upstream_fix_path"] = "other.txt"
         fixture.write_series()
+        self.assertFalse(provenance.fixed_upstream(entry, fixture.patches, fixture.upstream))
         self.assertEqual(1, len(patches.required_series(fixture.upstream, fixture.patches)))
-        (fixture.upstream / "other.txt").write_text("fixed\n", encoding="utf-8")
+        (fixture.upstream / "other.txt").write_bytes(b"fixed\r\n")
+        self.assertTrue(provenance.fixed_upstream(entry, fixture.patches, fixture.upstream))
         self.assertEqual([], patches.required_series(fixture.upstream, fixture.patches))
 
     def test_an_upstream_fix_path_needs_the_fix_text(self) -> None:
@@ -341,6 +343,18 @@ class ApplyTests(unittest.TestCase):
               "tracking": "https://example.invalid/issue"}],
             patches.manifest_entries(fixture.patches, fixture.upstream))
 
+    def test_the_manifest_command_reads_the_given_upstream_not_the_submodule(self) -> None:
+        fixture = self.fixture(**{"0001_edit_b": EDIT_B})
+        fixture.series[0]["upstream_fix"] = "int b = 200;\n"
+        fixture.write_series()
+        (fixture.upstream / SOURCE).write_text("int b = 200;\n", encoding="utf-8")
+        result = subprocess.run(
+            [sys.executable, str(ROOT / "tools/llama_cpp_patches.py"),
+             "--patches", str(fixture.patches), "manifest",
+             "--upstream", str(fixture.upstream)], capture_output=True, text=True)
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual([], json.loads(result.stdout))
+
 
 class CarriedSeriesTests(unittest.TestCase):
     def test_the_series_is_well_formed(self) -> None:
@@ -354,24 +368,6 @@ class CarriedSeriesTests(unittest.TestCase):
         applied = cmake.index("llamadart_apply_llama_cpp_patches()")
         self.assertLess(added, applied)
         self.assertLess(applied, cmake.index("add_library(llamadart_lib SHARED"))
-
-    def carried_after(self, unary_source: str | None, newline: str = "\n") -> list[str]:
-        with tempfile.TemporaryDirectory() as directory:
-            if unary_source is not None:
-                source = Path(directory) / self.UNARY
-                source.parent.mkdir(parents=True)
-                source.write_bytes(unary_source.replace("\n", newline).encode())
-            return [entry["file"] for entry in patches.manifest_entries(
-                patches.PATCHES_DIR, Path(directory))]
-
-    def test_the_metal_patch_is_retired_only_where_upstream_has_the_fix(self) -> None:
-        fixed = self.metal_patch_entry()["upstream_fix"]
-        unfixed = "constexpr specialization\n"
-        self.assertNotIn(self.METAL_PATCH, self.carried_after(fixed))
-        self.assertNotIn(self.METAL_PATCH, self.carried_after(fixed, "\r\n"), "a CRLF checkout")
-        self.assertIn(self.METAL_PATCH, self.carried_after(unfixed))
-        self.assertIn(self.METAL_PATCH, self.carried_after(None),
-                      "a missing source retires nothing")
 
     @unittest.skipUnless((UPSTREAM / "CMakeLists.txt").is_file(),
                          "third_party/llama.cpp is not checked out")
@@ -422,35 +418,6 @@ class CarriedSeriesTests(unittest.TestCase):
             self.assertEqual(rejected, source.read_text(encoding="utf-8"))
         self.assertEqual(original, (UPSTREAM / parsed.path).read_text(encoding="utf-8"))
 
-    METAL_PATCH = "0004-metal-unary-cast-older-os-compilers.patch"
-    UNARY = "ggml/src/ggml-metal/kernels/unary.metal"
-
-    def metal_patch_entry(self) -> dict:
-        return next(entry for entry in patches.load_series()
-                    if entry["file"] == self.METAL_PATCH)
-
-    def test_the_verifier_and_the_tool_agree_on_retiring_the_metal_patch(self) -> None:
-        entry = self.metal_patch_entry()
-        with tempfile.TemporaryDirectory() as directory:
-            upstream = Path(directory)
-            unary = upstream / self.UNARY
-            unary.parent.mkdir(parents=True)
-            for text, retired in (("constexpr specialization\n", False),
-                                  (entry["upstream_fix"], True)):
-                unary.write_text(text, encoding="utf-8")
-                self.assertEqual(retired, provenance.fixed_upstream(
-                    entry, patches.PATCHES_DIR, upstream))
-                carried = [e["file"] for e in patches.manifest_entries(
-                    patches.PATCHES_DIR, upstream)]
-                self.assertEqual(not retired, self.METAL_PATCH in carried)
-
-    def test_the_metal_patch_edits_the_text_it_requires(self) -> None:
-        entry = self.metal_patch_entry()
-        self.assertEqual(self.UNARY, entry["required_text"]["path"])
-        patch = (patches.PATCHES_DIR / self.METAL_PATCH).read_text(encoding="utf-8")
-        edited = re.search(r'@"(inline constexpr [^"]+)"', patch).group(1)
-        self.assertTrue(entry["required_text"]["text"].startswith(edited))
-
     @unittest.skipUnless((UPSTREAM / "CMakeLists.txt").is_file(),
                          "third_party/llama.cpp is not checked out")
     def test_the_required_text_of_each_carried_patch_is_upstream(self) -> None:
@@ -459,19 +426,6 @@ class CarriedSeriesTests(unittest.TestCase):
             if required is not None:
                 self.assertIn(required["text"],
                               (UPSTREAM / required["path"]).read_text(encoding="utf-8"))
-
-    def test_the_manifest_command_reads_the_given_upstream_not_the_submodule(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            source = Path(directory) / "src/llama-context.cpp"
-            source.parent.mkdir()
-            source.write_text("void llama_context::set_embeddings(bool value) {}\n",
-                              encoding="utf-8")
-            result = subprocess.run(
-                [sys.executable, str(ROOT / "tools/llama_cpp_patches.py"),
-                 "manifest", "--upstream", directory], capture_output=True, text=True)
-        self.assertEqual(0, result.returncode, result.stderr)
-        self.assertEqual(["0001", "0002", "0004", "0005", "0006", "0007", "0008", "0009"],
-                         [e["file"][:4] for e in json.loads(result.stdout)])
 
     @unittest.skipUnless((UPSTREAM / "CMakeLists.txt").is_file(),
                          "third_party/llama.cpp is not checked out")

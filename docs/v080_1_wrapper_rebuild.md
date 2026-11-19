@@ -1,19 +1,19 @@
 # v0.8.0-1 wrapper rebuild
 
-`v0.8.0-1` is upstream v0.8.0 plus patch 0004. Metal context creation in
-`v0.8.0` fails on iOS and macOS before 26 ([#154](https://github.com/leehack/llamadart-native/issues/154)).
+`v0.8.0-1` carries a Metal unary cast workaround on upstream v0.8.0. Metal
+context creation in v0.8.0 fails on iOS and macOS before 26
+([#154](https://github.com/leehack/llamadart-native/issues/154)).
 
-## Patch 0004
+## Metal unary cast workaround
 
 llama.cpp #31146 made the `bfloat4` specializations of `ggml_metal_unary_cast`
 `constexpr`. Older Metal compilers reject a vector subscript in a constexpr
 function, and the `float4` specialization has four. Upstream #31360 drops
-`constexpr` from both specializations. It is in `b11983` and later, in no stable
-release.
+`constexpr` from both specializations. The fix first shipped in stable v0.9.0.
 
-A patch cannot edit a `.metal` file (`patches/llama.cpp/README.md`), so 0004
-makes the same edit to the embedded source in `ggml-metal-device.m` as it loads
-it. Its `upstream_fix` retires it when the pinned upstream has #31360.
+The wrapper made the same edit to the embedded source in
+`ggml-metal-device.m` at load time because the patch system cannot replace a
+`.metal` file.
 
 ## OS floor check
 
@@ -41,14 +41,14 @@ It does not cover:
 ## Evidence
 
 Firebase, the 0.17.1 XCTest bundle with only `llama.framework/llama` replaced by
-a v0.8.0 plus 0004 build: iPhone 16 Pro iOS 18.3 and iPhone SE 3 iOS 18.4 go from
+a build with the workaround: iPhone 16 Pro iOS 18.3 and iPhone SE 3 iOS 18.4 go from
 `failed to build 'unary' library` to `loaded 36 libraries`, and the cases that
 pass on Metal in core 0.17.0 pass. `C06.history` fails on capitalization in
 all of these runs, 0.17.0 and CPU included. The probe bundle swapped the same way
 loads `GpuBackend.auto` on Metal with 999 GPU layers on both.
 
 One-time runs on `macos-14` and its iOS 17.0.1 simulator, with BF16 on: v0.8.0
-without 0004 fails to build `unary` on macOS 14.8.9 and iOS 17.0.1
+without the workaround fails to build `unary` on macOS 14.8.9 and iOS 17.0.1
 ([run 41164766015](https://github.com/leehack/llamadart-native/actions/runs/41164766015)),
-and with 0004 both initialize
+and with the workaround both initialize
 ([run 41166990693](https://github.com/leehack/llamadart-native/actions/runs/41166990693)).
