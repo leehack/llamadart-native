@@ -4,6 +4,7 @@
 #include "llama_dart_cancel_eval_internal.h"
 #include "llama_dart_device_memory.h"
 #if defined(LLAMADART_TESTING)
+#include "llama_dart_asr_test_hooks.h"
 #include "llama_dart_fit_test_hooks.h"
 #include "llama_dart_tts_test_hooks.h"
 #endif
@@ -3564,7 +3565,29 @@ struct llama_dart_asr_stream {
   llama_dart_asr_stream(size_t capacity_samples, size_t step_samples)
       : meter(capacity_samples, step_samples) {}
   ~llama_dart_asr_stream();
+
+#if defined(LLAMADART_TESTING)
+  llama_dart_asr_test_input test_input{};
+#endif
 };
+
+#if defined(LLAMADART_TESTING)
+static thread_local const llama_dart_asr_test_hooks *asr_test_hooks = nullptr;
+
+void llama_dart_test_asr_set_hooks(const llama_dart_asr_test_hooks *hooks) {
+  asr_test_hooks = hooks;
+}
+
+llama_dart_asr_stream *
+llama_dart_test_asr_input_stream(const llama_dart_asr_test_input *input) {
+  const auto mode = LLAMA_DART_ASR_STREAM_MODE_PROMPTED_CHUNKS;
+  auto stream = std::make_unique<llama_dart_asr_stream>(
+      3 * llama_dart_asr_stream_step_samples(mode),
+      llama_dart_asr_stream_step_samples(mode));
+  stream->test_input = *input;
+  return stream.release();
+}
+#endif
 
 static bool llama_dart_asr_cancelled(llama_dart_asr_stream *stream) {
   return llama_dart_tts_cancel_observed(&stream->cancel_requested,
@@ -3575,6 +3598,12 @@ static bool llama_dart_asr_cancelled(llama_dart_asr_stream *stream) {
 // finished session holds no backend memory.
 static void llama_dart_asr_release(llama_dart_asr_stream *stream) {
   if (stream->upstream != nullptr) {
+#if defined(LLAMADART_TESTING)
+    if (asr_test_hooks != nullptr &&
+        asr_test_hooks->before_release != nullptr) {
+      asr_test_hooks->before_release(stream, asr_test_hooks->data);
+    }
+#endif
     mtmd_audio_stream_free(stream->upstream);
     stream->upstream = nullptr;
   }
@@ -3856,7 +3885,12 @@ static llama_dart_asr_stream *llama_dart_asr_stream_init_impl(
     return nullptr;
   }
   size_t capacity = 0;
-  const size_t max_samples = std::vector<float>().max_size();
+  size_t max_samples = std::vector<float>().max_size();
+#if defined(LLAMADART_TESTING)
+  if (asr_test_hooks != nullptr) {
+    max_samples = std::min(max_samples, asr_test_hooks->max_buffer_samples);
+  }
+#endif
   if (!llama_dart_asr_stream_buffer_capacity(params->max_buffered_ms,
                                              max_samples, &capacity)) {
     return nullptr;
@@ -3888,6 +3922,11 @@ static llama_dart_asr_stream *llama_dart_asr_stream_init_impl(
     report(LLAMA_DART_ASR_STREAM_STATUS_UPSTREAM_ERROR);
     return nullptr;
   }
+#if defined(LLAMADART_TESTING)
+  if (asr_test_hooks != nullptr && asr_test_hooks->before_track != nullptr) {
+    asr_test_hooks->before_track(asr_test_hooks->data);
+  }
+#endif
   // track_created owns the session from here: it frees it when tracking
   // throws, and a closing owner takes it through the registry entry.
   llama_dart_asr_stream *created = llama_dart_exit_track_created(
@@ -3955,6 +3994,12 @@ llama_dart_asr_push_impl(llama_dart_asr_stream *stream, const float *samples,
           "audio samples must be finite");
     }
   }
+#if defined(LLAMADART_TESTING)
+  if (asr_test_hooks != nullptr &&
+      asr_test_hooks->before_queue_insert != nullptr) {
+    asr_test_hooks->before_queue_insert();
+  }
+#endif
   *out_accepted = stream->meter.accept(samples, sample_count);
   if (*out_accepted > 0) {
     stream->state = LLAMA_DART_ASR_STREAM_STATE_WORKING;
@@ -4019,12 +4064,30 @@ llama_dart_asr_step_impl(llama_dart_asr_stream *stream,
       llama_dart_asr_step_feed_and_encode(
           stream->meter, stream->step,
           [&](const float *chunk, size_t count) {
+#if defined(LLAMADART_TESTING)
+            const auto &input = stream->test_input;
+            if (input.push != nullptr) {
+              return input.push(input.data, chunk, count) == 0;
+            }
+#endif
             return mtmd_audio_stream_push(stream->upstream, chunk, count) == 0;
           },
           [&]() {
+#if defined(LLAMADART_TESTING)
+            const auto &input = stream->test_input;
+            if (input.flush != nullptr) {
+              return input.flush(input.data) == 0;
+            }
+#endif
             return mtmd_audio_stream_flush(stream->upstream, true) == 0;
           },
           [&]() {
+#if defined(LLAMADART_TESTING)
+            const auto &input = stream->test_input;
+            if (input.step != nullptr) {
+              return input.step(input.data);
+            }
+#endif
             return mtmd_audio_stream_step(stream->upstream, stream->last_token);
           },
           &rows);
@@ -4052,7 +4115,21 @@ llama_dart_asr_step_impl(llama_dart_asr_stream *stream,
                         -1);
     stream->n_past = 0;
     if (stream->tokens_sampled > 0) {
+#if defined(LLAMADART_TESTING)
+      if (asr_test_hooks != nullptr &&
+          !asr_test_hooks->old_segment_tail.empty()) {
+        const auto piece = asr_test_hooks->old_segment_tail;
+        stream->text.append(piece.data(), piece.size());
+      }
+#endif
       stream->text.discard_incomplete();
+#if defined(LLAMADART_TESTING)
+      if (asr_test_hooks != nullptr &&
+          !asr_test_hooks->new_segment_head.empty()) {
+        const auto piece = asr_test_hooks->new_segment_head;
+        stream->text.append(piece.data(), piece.size());
+      }
+#endif
       ++stream->segment_breaks;
     }
   }

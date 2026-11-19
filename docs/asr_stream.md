@@ -54,19 +54,25 @@ A caller lists the modes it handles in `accepted_modes`.
 Refused with `UNSUPPORTED`: a projector without a stream (Qwen3-ASR and every
 other model), a model that only prefills a chat turn (Gemma 4, LFM3-Omni,
 LFM3-Audio without its `asr` template), a mode outside `accepted_modes`, audio
-that is not 16 kHz, an M-RoPE decoder, and an `n_batch` below the first batch
-(39 rows for Voxtral Realtime). `llama_dart_asr_stream_get_info` reads this
-without creating a session, and `init` is authoritative. Gemma 4 has not been
-run: it is told apart by having no `asr` template, and a model that had one
-would fail in `init` with `UPSTREAM_ERROR`.
+that is not 16 kHz, an M-RoPE decoder, and an `n_batch` or effective
+per-sequence context that cannot hold the first batch (39 rows for Voxtral
+Realtime, or the rendered ASR prompt plus 13 rows for LFM3-Audio).
+`llama_dart_asr_stream_get_info` reads this without creating a session, and
+`init` is authoritative. Gemma 4 has not been run: it is told apart by having
+no `asr` template, and a model that had one would fail in `init` with
+`UPSTREAM_ERROR`.
 
 ## What a binding must know
 
 - **Input.** `push` copies into a queue bounded by `params.max_buffered_ms`
   (30 s by default) and reports how many samples it took. It never drops audio:
   a binding offers the rest again after steps drained the queue, which is the
-  backpressure. Non-finite samples are refused. Only 16 kHz mono float is
-  accepted; resampling stays with the caller.
+  backpressure. The queue allocates as audio is pushed. If it cannot allocate
+  space, `push` returns `UPSTREAM_ERROR` and the session enters `FAILED`.
+  Initialization checks whether the capacity is representable, and the caller
+  should choose a limit within its memory budget. Non-finite samples are
+  refused. Only 16 kHz mono float is accepted; resampling stays with the
+  caller.
 - **Loop.** `step` until the state is `FINISHED`: push when the state is
   `NEEDS_AUDIO`, `finish` after the last chunk. `read_text` after every step.
 - **Text.** UTF-8, complete code points only, control tokens skipped, no
@@ -121,9 +127,11 @@ would fail in `init` with `UPSTREAM_ERROR`.
 | Test | Needs | Covers |
 | --- | --- | --- |
 | `llamadart_asr_stream_api_test` | nothing | Version, mode mask, defaults, null handles, wrong `struct_size`, no-op `free` and `cancel`. |
-| `llamadart_asr_stream_meter_test` | nothing | Mode classification, size formulas, the queue bound and the one-step chunk, UTF-8 boundaries. |
+| `llamadart_asr_stream_meter_test` | nothing | Mode classification, size formulas, queue and UTF-8 boundaries, and public `step` with scripted upstream calls. |
 | `llamadart_exit_teardown_test model-asr-stream`, `-untracked`, `-refused` | models, see below | The session is tracked and freed before the mtmd context, untracked contexts leave it alone, a projector without a stream is refused and tracks nothing. |
-| `llamadart_asr_stream_smoke` | models and audio | Transcripts, chunking, bounds, cancel, reuse, restarts, context exhaustion, leaks. |
+| `llamadart_exit_teardown_test model-asr-stream-owner-close` | streaming model | Closing an owner after construction drains the session and both dependencies. |
+| `llamadart_exit_teardown_test model-asr-stream-capacity-and-reset` | streaming model | Public capacity limit, queue allocation failure, and cancellation during reset. |
+| `llamadart_asr_stream_smoke` | models and audio | Transcripts, chunking, bounds, cancel, reuse, restarts, context exhaustion, leaks. A test build also injects a partial UTF-8 token across a real segment break. |
 
 The exit-teardown scenarios are registered by CMake when the cache entries
 `LLAMADART_ASR_STREAM_TEST_MODEL` and `_MMPROJ` (a streaming model) and
@@ -134,7 +142,8 @@ The exit-teardown scenarios are registered by CMake when the cache entries
 
 ```bash
 cmake -S . -B build/asr-stream-smoke -G Ninja -DCMAKE_BUILD_TYPE=Release \
-  -DGGML_NATIVE=OFF -DGGML_OPENMP=OFF -DLLAMADART_BUILD_ASR_STREAM_SMOKE=ON
+  -DGGML_NATIVE=OFF -DGGML_OPENMP=OFF -DLLAMADART_BUILD_TESTS=ON \
+  -DLLAMADART_BUILD_ASR_STREAM_SMOKE=ON
 cmake --build build/asr-stream-smoke --target llamadart_asr_stream_smoke
 build/asr-stream-smoke/llamadart_asr_stream_smoke \
   /path/to/LFM3-Audio-2B-Q4_K_M.gguf \
@@ -145,6 +154,8 @@ build/asr-stream-smoke/llamadart_asr_stream_smoke \
 `jfk.wav` is `packages/llamadart_validation/assets/speech/jfk.wav` of
 [llamadart](https://github.com/leehack/llamadart), 11 s. It checks, in order:
 
+- initialization clears the chosen sequence and preserves the other sequence
+  in a separate two-sequence context;
 - the transcript of 320 ms chunks, compared without punctuation (CPU and Metal
   differ by a comma);
 - the same text for five random chunkings (1 ms to 1.5 s), each after a `reset`;
@@ -157,8 +168,9 @@ build/asr-stream-smoke/llamadart_asr_stream_smoke \
 - a cancel through the flag after four tokens, no more text afterwards, no more
   audio accepted, and the same transcript after `reset`;
 - a cancel before the first step;
-- `TOKEN_DELAY` in a 512-token context: `CONTEXT_FULL`, state `FINISHED`, text
-  kept;
+- `PROMPTED_CHUNKS` reports 960 ms nominal delay, with text arriving later;
+- `TOKEN_DELAY` with 512 positions per sequence and `PROMPTED_CHUNKS` with 256
+  positions per sequence: `CONTEXT_FULL`, state `FINISHED`, text kept;
 - ten open, step and free cycles with `llama_dart_exit_tracked_count` back where
   it started.
 
@@ -175,7 +187,7 @@ at `0b0f7ac9` (`Voxtral-Mini-4B-Realtime-2602-Q4_K_M.gguf`,
 | 297 s in one `push`: real-time factor, longest step | 0.09, 154 ms | 0.68, 519 ms (the context holds 324 s) |
 | Peak memory, 11 s run to 297 s run | 2560 to 2626 MB | 6609 to 6609 MB |
 | Segment breaks, 44 s of input | 1 (sentence intact 3 of 4 times) | 0 (4 of 4) |
-| `CONTEXT_FULL` in a 512-token context | after small context (~64 tokens), text kept | after 474 tokens, text kept |
+| `CONTEXT_FULL`, text kept | 256 positions per sequence | 512 positions per sequence, after 474 sampled tokens |
 
 Without the metering, one upstream step for 297 s of LFM3-Audio took 2.7 to 3 s
 and peak memory reached 5 GB (the smoke fails its bound at 2960 ms when the

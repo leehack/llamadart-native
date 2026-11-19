@@ -1,5 +1,9 @@
 #include "llama_dart_wrapper.h"
 
+#if defined(LLAMADART_TESTING)
+#include "llama_dart_asr_test_hooks.h"
+#endif
+
 #include "llama.h"
 #include "mtmd.h"
 #include "mtmd-helper.h"
@@ -271,12 +275,12 @@ int main(int argc, char **argv) {
   model_params.n_gpu_layers = opt.gpu ? 99 : 0;
   llama_model *model = llama_dart_model_load_from_file(opt.model, model_params);
   check(model != nullptr, "model load");
-  const auto make_context = [&](int n_ctx) {
+  const auto make_context = [&](int n_ctx, uint32_t sequences = 1) {
     llama_context_params params = llama_context_default_params();
     params.n_ctx = static_cast<uint32_t>(n_ctx);
     params.n_batch = 512;
     params.n_ubatch = 512;
-    params.n_seq_max = 2;
+    params.n_seq_max = sequences;
     params.n_threads = opt.threads;
     params.n_threads_batch = opt.threads;
     llama_context *context = llama_dart_init_from_model(model, params);
@@ -284,6 +288,9 @@ int main(int argc, char **argv) {
     return context;
   };
   llama_context *context = make_context(opt.context);
+  const uint32_t context_tokens = llama_n_ctx_seq(context);
+  check(context_tokens == llama_n_ctx(context),
+        "the default context was split across sequences");
   mtmd_context_params mtmd_params = mtmd_context_params_default();
   mtmd_params.use_gpu = opt.gpu;
   mtmd_params.n_threads = opt.threads;
@@ -300,6 +307,18 @@ int main(int argc, char **argv) {
         "get_info");
   check(info.sample_rate == 16000 && info.channels == 1, "info format");
   const bool token_delay = info.mode == LLAMA_DART_ASR_STREAM_MODE_TOKEN_DELAY;
+  check(info.mode == (token_delay ? LLAMA_DART_ASR_STREAM_MODE_TOKEN_DELAY
+                                  : LLAMA_DART_ASR_STREAM_MODE_PROMPTED_CHUNKS),
+        "unexpected stream mode");
+  if (token_delay) {
+    check(info.max_session_ms ==
+              (static_cast<int64_t>(context_tokens) - 39) * 80,
+          "token-delay duration did not match the sequence context");
+  } else {
+    check(info.max_session_ms == 0, "prompted stream has a fixed duration");
+    check(info.delay_ms == 960 && info.text_interval_ms == 960,
+          "prompted delay must report the nominal 960 ms cadence");
+  }
   std::printf("mode=%s text_interval_ms=%d delay_ms=%d max_session_ms=%lld\n",
               token_delay ? "TOKEN_DELAY" : "PROMPTED_CHUNKS",
               info.text_interval_ms, info.delay_ms,
@@ -324,7 +343,8 @@ int main(int argc, char **argv) {
   // Sequence ownership: init claims and clears sequence 0 while leaving
   // unrelated sequence 1 intact.
   {
-    llama_memory_t mem = llama_get_memory(context);
+    llama_context *two_sequences = make_context(512, 2);
+    llama_memory_t mem = llama_get_memory(two_sequences);
     const llama_vocab *vocab = llama_model_get_vocab(model);
     llama_token bos = llama_vocab_bos(vocab);
     if (bos == LLAMA_TOKEN_NULL) {
@@ -338,17 +358,17 @@ int main(int argc, char **argv) {
       seed.n_seq_id[0] = 1;
       seed.seq_id[0][0] = seq;
       seed.logits[0] = 0;
-      check(llama_decode(context, seed) == 0, "seed sequence");
+      check(llama_decode(two_sequences, seed) == 0, "seed sequence");
       llama_batch_free(seed);
       check(llama_memory_seq_pos_max(mem, seq) >= 0, "seeded sequence missing");
     }
-    stream_ptr seq_check = open_stream(context, mtmd);
+    stream_ptr seq_check = open_stream(two_sequences, mtmd);
     check(llama_memory_seq_pos_max(mem, 0) < 0,
           "init did not clear chosen sequence 0");
     check(llama_memory_seq_pos_max(mem, 1) >= 0,
           "init cleared unrelated sequence 1");
     seq_check.reset();
-    llama_memory_seq_rm(mem, 1, 0, -1);
+    llama_dart_exit_free(two_sequences);
     std::printf("sequence ownership: seq 0 cleared, seq 1 preserved\n");
   }
 
@@ -405,6 +425,9 @@ int main(int argc, char **argv) {
   const run_result bulk = run(bulk_stream.get(), long_input, 1, 0, rate);
   bulk_stream.reset();
   check(bulk.status == LLAMA_DART_ASR_STREAM_STATUS_OK, "the long input failed");
+  check(bulk.progress.samples_consumed ==
+            static_cast<int64_t>(long_input.size()),
+        "the long run ended before consuming all input");
   const double rss_long = peak_rss_mb();
   std::printf("long %.0fs wall %.1fs rtf %.3f max_step %.1fms breaks %d "
               "peak_rss %.0f -> %.0f MB\n",
@@ -421,7 +444,24 @@ int main(int argc, char **argv) {
   check(llama_dart_asr_stream_reset(stream.get()) ==
             LLAMA_DART_ASR_STREAM_STATUS_OK,
         "reset");
+#if defined(LLAMADART_TESTING)
+  const char marker[] = "[!#]";
+  const std::string old_tail = std::string(marker) + "\xE2\x82";
+  llama_dart_asr_test_hooks hooks;
+  hooks.old_segment_tail = old_tail;
+  hooks.new_segment_head = "\xAC";
+  llama_dart_test_asr_set_hooks(&hooks);
+#endif
   const run_result restarts = run(stream.get(), forty_four, 0, 0, rate);
+#if defined(LLAMADART_TESTING)
+  llama_dart_test_asr_set_hooks(nullptr);
+  if (!token_delay) {
+    check(restarts.text.find(std::string(marker) + "\xEF\xBF\xBD") !=
+              std::string::npos,
+          "segment break did not preserve complete text and discard its UTF-8 "
+          "tail");
+  }
+#endif
   check(restarts.status == LLAMA_DART_ASR_STREAM_STATUS_OK, "44 s input failed");
   const std::string restart_text = normalize(restarts.text);
   int intact = 0;
@@ -562,16 +602,21 @@ int main(int argc, char **argv) {
   // the text so far (both TOKEN_DELAY and small PROMPTED_CHUNKS contexts).
   stream.reset();
   {
-    const int small_ctx = token_delay ? 512 : 64;
+    const int small_ctx = token_delay ? 512 : 256;
     llama_context *small = make_context(small_ctx);
+    const uint32_t small_context_tokens = llama_n_ctx_seq(small);
+    check(small_context_tokens == static_cast<uint32_t>(small_ctx),
+          "effective small context did not match the requested size");
     stream_ptr limited = open_stream(small, mtmd);
     const run_result full = run(limited.get(), forty_four, 0, 0, rate);
     check(full.status == LLAMA_DART_ASR_STREAM_STATUS_CONTEXT_FULL &&
               full.progress.state == LLAMA_DART_ASR_STREAM_STATE_FINISHED &&
               !full.text.empty(),
           "context exhaustion was not a typed status with text");
-    std::printf("context full (n_ctx=%d) after %lld tokens, text kept (%zu bytes)\n",
-                small_ctx, static_cast<long long>(full.progress.tokens_sampled),
+    std::printf("context full (%u positions per sequence) after %lld tokens, "
+                "text kept (%zu bytes)\n",
+                small_context_tokens,
+                static_cast<long long>(full.progress.tokens_sampled),
                 full.text.size());
     limited.reset();
     llama_dart_exit_free(small);
