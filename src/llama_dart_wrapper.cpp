@@ -4,6 +4,7 @@
 #include "llama_dart_cancel_eval_internal.h"
 #include "llama_dart_device_memory.h"
 #if defined(LLAMADART_TESTING)
+#include "llama_dart_fit_test_hooks.h"
 #include "llama_dart_tts_test_hooks.h"
 #endif
 #include "llama_dart_evaluate_internal.h"
@@ -1757,49 +1758,88 @@ static std::vector<std::string> llama_dart_fit_model_path(const char *path) {
 static const char *llama_dart_fit_model_path(const char *path) { return path; }
 #endif
 
-static void llama_dart_fit_fill_report(const char *path_model,
-                                       const llama_model_params &mparams,
-                                       const llama_context_params &cparams,
-                                       llama_dart_fit_report *report) {
+#if defined(LLAMADART_TESTING)
+static const llama_dart_test_fit_row *g_test_fit_rows = nullptr;
+static size_t g_test_fit_row_count = 0;
+
+extern "C" void llama_dart_test_set_fit_rows(
+    const llama_dart_test_fit_row *rows, size_t count) {
+  g_test_fit_rows = rows;
+  g_test_fit_row_count = count;
+}
+#endif
+
+static void llama_dart_fit_copy_memory(const common_device_memory_data &from,
+                                       const char *name, size_t free_bytes,
+                                       llama_dart_fit_device &to) {
+  std::strncpy(to.name, name, sizeof(to.name) - 1);
+  to.total_bytes = from.total;
+  to.free_bytes = free_bytes;
+  to.model_bytes = from.model;
+  to.context_bytes = from.context;
+  to.compute_bytes = from.compute;
+}
+
+static void llama_dart_fit_copy_device(ggml_backend_dev_t device,
+                                       const common_device_memory_data &data,
+                                       llama_dart_fit_report &report) {
+  if (device == nullptr) {
+    throw std::runtime_error("missing backend device for memory measurement");
+  }
+  if (report.n_devices == LLAMA_DART_FIT_MAX_DEVICES) {
+    return;
+  }
+  const char *name = ggml_backend_dev_name(device);
+  llama_dart_fit_copy_memory(
+      data, name == nullptr ? "" : name,
+      llama_dart_device_free_bytes(device, data.free, true),
+      report.devices[report.n_devices++]);
+}
+
+static llama_dart_fit_report
+llama_dart_fit_measure_placement(const char *path_model,
+                                 const llama_model_params &mparams,
+                                 const llama_context_params &cparams) {
+  llama_dart_fit_report staged = {};
+#if defined(LLAMADART_TESTING)
+  if (g_test_fit_rows != nullptr) {
+    for (size_t i = 0; i < g_test_fit_row_count; ++i) {
+      const auto &row = g_test_fit_rows[i];
+      common_device_memory_data data = {};
+      data.total = row.total_bytes;
+      data.free = row.free_bytes;
+      data.model = row.model_bytes;
+      data.context = row.context_bytes;
+      data.compute = row.compute_bytes;
+      if (row.is_host) {
+        llama_dart_fit_copy_memory(data, "Host", data.free, staged.host);
+      } else {
+        llama_dart_fit_copy_device(row.device, data, staged);
+      }
+    }
+    return staged;
+  }
+#endif
   std::vector<ggml_backend_dev_t> devices;
-  uint32_t n_layers = 0;
-  uint32_t n_layers_skipped = 0;
-  uint32_t n_ctx_train = 0;
   uint32_t n_expert = 0;
 #if LLAMADART_FIT_HAS_NGL_SKIP
   const auto memory = common_get_device_memory_data(
       llama_dart_fit_model_path(path_model), &mparams, &cparams, devices,
-      n_layers, n_layers_skipped, n_ctx_train, n_expert, GGML_LOG_LEVEL_ERROR);
+      staged.n_layers, staged.n_layers_skipped, staged.n_ctx_train, n_expert,
+      GGML_LOG_LEVEL_ERROR);
 #else
   const auto memory = common_get_device_memory_data(
       llama_dart_fit_model_path(path_model), &mparams, &cparams, devices,
-      n_layers, n_ctx_train, n_expert, GGML_LOG_LEVEL_ERROR);
+      staged.n_layers, staged.n_ctx_train, n_expert, GGML_LOG_LEVEL_ERROR);
 #endif
-  (void)n_expert;
   if (memory.size() != devices.size() + 1) {
     throw std::runtime_error("unexpected device memory breakdown");
   }
-  const auto copy = [](const common_device_memory_data &from, const char *name,
-                       llama_dart_fit_device &to, size_t free_bytes) {
-    to = {};
-    std::strncpy(to.name, name, sizeof(to.name) - 1);
-    to.total_bytes = from.total;
-    to.free_bytes = free_bytes;
-    to.model_bytes = from.model;
-    to.context_bytes = from.context;
-    to.compute_bytes = from.compute;
-  };
-  *report = {};
-  report->n_layers = n_layers;
-  report->n_ctx_train = n_ctx_train;
-  report->n_layers_skipped = n_layers_skipped;
-  report->n_devices = static_cast<uint32_t>(
-      std::min<size_t>(devices.size(), LLAMA_DART_FIT_MAX_DEVICES));
-  for (uint32_t i = 0; i < report->n_devices; ++i) {
-    copy(memory[i], ggml_backend_dev_name(devices[i]), report->devices[i],
-         llama_dart_device_free_bytes(devices[i], memory[i].free, true));
+  for (size_t i = 0; i < devices.size(); ++i) {
+    llama_dart_fit_copy_device(devices[i], memory[i], staged);
   }
-  copy(memory.back(), "Host", report->host, memory.back().free);
+  llama_dart_fit_copy_memory(memory.back(), "Host", memory.back().free, staged.host);
+  return staged;
 }
 
 LLAMADART_API int32_t llama_dart_fit_params(
@@ -1819,9 +1859,8 @@ LLAMADART_API int32_t llama_dart_fit_params(
     std::vector<size_t> fit_margins(margins, margins + llama_max_devices());
     llama_model_params fitted_model = *mparams;
     llama_context_params fitted_context = *cparams;
-    llama_dart_fit_apply_system_margins(path_model, fitted_model,
-                                        fit_margins.data(),
-                                        fit_margins.size());
+    llama_dart_fit_apply_system_margins(
+        path_model, fitted_model, fit_margins.data(), fit_margins.size());
     const common_params_fit_status status = common_fit_params(
         llama_dart_fit_model_path(path_model), &fitted_model, &fitted_context,
         tensor_split, tensor_buft_overrides, fit_margins.data(), n_ctx_min,
@@ -1832,8 +1871,8 @@ LLAMADART_API int32_t llama_dart_fit_params(
                                       : LLAMA_DART_FIT_STATUS_ERROR);
     }
     if (report != nullptr) {
-      llama_dart_fit_fill_report(path_model, fitted_model, fitted_context,
-                                 report);
+      *report = llama_dart_fit_measure_placement(path_model, fitted_model,
+                                                  fitted_context);
     }
     *mparams = fitted_model;
     *cparams = fitted_context;

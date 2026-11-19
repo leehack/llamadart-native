@@ -35,12 +35,15 @@ The header has the full contract. What a binding must know:
   is loaded. When the load fits as it is, `mparams` keeps the pointers it had.
   The override patterns are static storage inside `llama-common`: never free
   them.
-- `mparams` and `cparams` are written only on `SUCCESS`.
+- `mparams`, `cparams`, and `report` are written only on `SUCCESS`.
 - The report is measured at the fitted parameters. It holds at most
   `LLAMA_DART_FIT_MAX_DEVICES` devices.
 - On Windows the free memory of a Vulkan or CUDA GPU counts other processes (next
   section), and a fit whose adapter memory cannot be read fails with
   `LLAMA_DART_STATUS_EXCEPTION` instead of running on the driver's number.
+- The fit estimates device memory. A later Windows context allocation or decode
+  can still fail under system memory pressure
+  ([llamadart-native#211](https://github.com/leehack/llamadart-native/issues/211)).
 
 ## Free memory on Windows
 
@@ -62,9 +65,9 @@ no static import) and the Vulkan device's LUID. For a discrete GPU it sums
 `BytesResident` over the segments that are not aperture; the capacity is the
 smaller of the driver's total and the sum of `CommitLimit`. Free memory is
 `capacity - resident`, not the driver-reserved memory `nvidia-smi` also counts:
-it matched NVML within 5 to 38 MiB under CUDA, D3D12 and Vulkan holders, and
-its used figure is a constant 434 MiB below NVML's. An integrated GPU counts all
-segments.
+it matched NVML within a 4–38 MiB free difference and about 400–434 MiB used
+difference in the measured samples under CUDA, D3D12 and Vulkan holders. An
+integrated GPU counts all segments.
 
 A CUDA device has no LUID in ggml's properties, so the wrapper takes it from
 `cuDeviceGetLuid` of the already loaded `nvcuda.dll` (`GetModuleHandleW` and
@@ -92,15 +95,20 @@ is in `src/llama_dart_device_memory.cpp`, with the rules in
   exception that names the device and the cause. The two device queries above
   fall back to the driver's number, because a listing has no fit to refuse.
 - The fit reads the model's device list with one more `vocab_only` load of the
-  same file before it measures; it loads no weights.
+  same file before it measures; it loads no weights. That extra vocabulary-only
+  load emits its normal model-metadata `INFO` lines to the active logger.
 - Refused, not corrected: any `GGML_CUDA_DEVICES` count other than the physical
   count (driver and registry counts differ, including virtual devices) and a
   CUDA device with no WDDM adapter (TCC mode, no LUID). Their fit fails with the
   device named.
 - Not covered: APIs other than Vulkan and CUDA, and a driver that is not WDDM.
-- The fit's early return when the model has nothing to correct looks at the
+- The fit's early return when the host has nothing to correct looks at the
   ggml registry (any `Vulkan<i>` or `CUDA<i>` GPU), not at the Vulkan probe, so
-  a CUDA host without a usable Vulkan loader is still corrected.
+  a CUDA host without a usable Vulkan loader is still corrected. That registry
+  skip is distinct from failing to resolve a selected adapter once a model
+  chooses a Vulkan or CUDA GPU.
+- The correction follows the model's selected device list. A registered CUDA
+  backend adds no correction to a Vulkan-only or CPU-only fit.
 - Memory that idle applications hold counts as used, although WDDM could take
   it back.
 - `llama_dart_fit_api_version()` stays 1. A `v1.0.0` runtime has the fit but not
@@ -200,9 +208,8 @@ the first test also calls `D3DKMTQueryStatistics` for every DXGI adapter, which
 checks the call and the buffer layout; the runners have no GPU, so not the
 numbers.
 
-CI runs the fit test on the macOS runners (Metal), on Linux and on Windows arm64
-(CPU-only). No CUDA, Vulkan, HIP or Windows x64 GPU run executes the fit, and
-the wrapper's call to the Windows correction in `llama_dart_fit_params` has no
-CI test. That needs the hardware runs of the llamadart plan: a Windows Vulkan GPU
-with other processes holding CUDA, D3D12 and Vulkan memory, and the same on a
-CUDA backend (with and without `ggml-vulkan.dll`).
+CI runs the fit test on macOS, Linux, and CPU-only Windows x64 and arm64
+runners. Injected Windows devices and KMT records exercise both device listings,
+strict report correction, and margin routing with both CUDA and Vulkan
+registered. Hardware qualification still covers Vulkan and CUDA fits while
+other processes hold GPU memory, including CUDA without `ggml-vulkan.dll`.

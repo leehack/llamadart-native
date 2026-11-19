@@ -18,6 +18,10 @@ struct llama_dart_adapter_segment {
   bool aperture = false;
 };
 
+static inline uint64_t llama_dart_saturating_add(uint64_t a, uint64_t b) {
+  return a > UINT64_MAX - b ? UINT64_MAX : a + b;
+}
+
 // Free dedicated memory of an adapter from its memory segments. A discrete
 // device counts the segments that are not aperture (host memory the GPU
 // reaches), an integrated one counts all of them. Capacity is the smaller of
@@ -35,8 +39,8 @@ llama_dart_adapter_free_bytes(const std::vector<llama_dart_adapter_segment> &seg
       continue;
     }
     counted = true;
-    limit += segment.commit_limit;
-    resident += segment.bytes_resident;
+    limit = llama_dart_saturating_add(limit, segment.commit_limit);
+    resident = llama_dart_saturating_add(resident, segment.bytes_resident);
   }
   if (!counted) {
     return false;

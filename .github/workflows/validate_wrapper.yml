@@ -658,6 +658,7 @@ jobs:
           llamadart_exit_teardown_test
           llamadart_vulkan_device_info_test
           llamadart_device_memory_test
+          llamadart_fit_api_test
           llamadart_tts_api_test
           llamadart_tts_types_test
           llamadart_asr_stream_api_test
@@ -670,7 +671,7 @@ jobs:
           $wrapperDir = (Resolve-Path build/wx64).Path
           $upstreamDir = (Resolve-Path build/wx64/bin).Path
           $env:PATH = "$wrapperDir;$upstreamDir;$env:PATH"
-          ctest --test-dir build/wx64 -R "owner_api|owner_reentrant|barrier|build_identity|upstream_abi|cancel_flag|vocabulary|vulkan_device_info|device_memory|tts_api|tts_types|asr_stream|tts_stream|image_token_limit" --timeout 120 --output-on-failure
+          ctest --test-dir build/wx64 -R "owner_api|owner_reentrant|barrier|build_identity|upstream_abi|cancel_flag|vocabulary|vulkan_device_info|device_memory|fit_api|tts_api|tts_types|asr_stream|tts_stream|image_token_limit" --timeout 120 --output-on-failure
       - name: Validate wrapper exports
         shell: pwsh
         run: |

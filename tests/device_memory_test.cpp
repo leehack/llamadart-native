@@ -72,6 +72,31 @@ void test_degenerate_adapters() {
   assert(free_bytes == 700 * kMiB);
 }
 
+void test_adapter_segment_overflow_and_aperture() {
+  // Integrated adapter: 1024 + UINT64_MAX saturates to UINT64_MAX, bounded by
+  // driver_total (2048), minus 64 resident = 1984 (not 959 from wrap-around).
+  uint64_t free_bytes = 0;
+  llama_dart_adapter_segment small_seg{1024, 0, false};
+  llama_dart_adapter_segment max_seg{UINT64_MAX, 64, true};
+  assert(llama_dart_adapter_free_bytes({small_seg, max_seg}, 2048, true,
+                                       &free_bytes));
+  assert(free_bytes == 1984);
+
+  // Resident sum overflow saturates to UINT64_MAX -> 0 free.
+  llama_dart_adapter_segment res_a{1000 * kMiB, UINT64_MAX - 10, false};
+  llama_dart_adapter_segment res_b{1000 * kMiB, 100, false};
+  assert(llama_dart_adapter_free_bytes({res_a, res_b}, 2000 * kMiB, false,
+                                       &free_bytes));
+  assert(free_bytes == 0);
+
+  // Discrete adapter excludes aperture segments even with huge limit/resident.
+  llama_dart_adapter_segment ded{2000 * kMiB, 500 * kMiB, false};
+  llama_dart_adapter_segment ap{UINT64_MAX, UINT64_MAX, true};
+  assert(llama_dart_adapter_free_bytes({ded, ap}, 2000 * kMiB, false,
+                                       &free_bytes));
+  assert(free_bytes == 1500 * kMiB);
+}
+
 void test_clamp() {
   assert(llama_dart_effective_free(21827 * kMiB, 6263 * kMiB) == 6263 * kMiB);
   assert(llama_dart_effective_free(5000 * kMiB, 6263 * kMiB) == 5000 * kMiB);
@@ -520,6 +545,7 @@ int main() {
   test_discrete_adapter();
   test_integrated_adapter();
   test_degenerate_adapters();
+  test_adapter_segment_overflow_and_aperture();
   test_clamp();
   test_device_index();
   test_margins_one_device();

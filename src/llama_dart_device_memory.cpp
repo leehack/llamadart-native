@@ -12,32 +12,79 @@
 #include "llama_dart_d3dkmt_internal.h"
 #endif
 
-llama_dart_system_memory llama_dart_read_system_memory(ggml_backend_dev_t dev) {
-#if defined(_WIN32)
-  // Through the properties, the one query that a device interface always has.
+#if defined(LLAMADART_TESTING)
+#include "llama_dart_fit_test_hooks.h"
+#endif
+
+#if defined(LLAMADART_TESTING) && defined(_WIN32)
+static const llama_dart_test_win_dev_config *g_test_win_dev = nullptr;
+
+extern "C" void llama_dart_test_set_win_dev_config(
+    const llama_dart_test_win_dev_config *config) {
+  g_test_win_dev = config;
+}
+#endif
+
+static ggml_backend_dev_props
+llama_dart_system_memory_props(ggml_backend_dev_t dev) {
   ggml_backend_dev_props props = {};
+  if (dev == nullptr) {
+    throw std::runtime_error("missing backend device for memory measurement");
+  }
+#if defined(_WIN32)
   ggml_backend_dev_get_props(dev, &props);
+#endif
+  return props;
+}
+
+static llama_dart_system_memory
+llama_dart_read_system_memory(ggml_backend_dev_t dev,
+                              const ggml_backend_dev_props &props) {
+#if defined(_WIN32)
   const enum ggml_backend_dev_type type = props.type;
   const std::string name = props.name == nullptr ? "" : props.name;
   const bool integrated = type == GGML_BACKEND_DEVICE_TYPE_IGPU;
   const llama_dart_memory_source source = llama_dart_device_memory_source(
       name, type == GGML_BACKEND_DEVICE_TYPE_GPU || integrated);
   const auto read_segments =
-      [](const uint8_t *luid, std::vector<llama_dart_adapter_segment> *segments,
-         std::string *detail) {
+      [dev](const uint8_t *luid, std::vector<llama_dart_adapter_segment> *segments,
+            std::string *detail) {
+#if defined(LLAMADART_TESTING)
+        if (g_test_win_dev != nullptr &&
+            (dev == g_test_win_dev->cuda_device ||
+             dev == g_test_win_dev->vulkan_device)) {
+          return llama_dart_d3dkmt::read_segments_with(
+              luid, g_test_win_dev->kmt_query, *segments, *detail);
+        }
+#endif
         return llama_dart_d3dkmt::read_segments(luid, *segments, *detail);
       };
   if (source == llama_dart_memory_source::cuda) {
     int32_t index = 0;
     llama_dart_device_index(name, "CUDA", &index);
-    ggml_backend_reg_t reg = ggml_backend_dev_backend_reg(dev);
-    const int32_t registered =
-        reg == nullptr ? 0 : static_cast<int32_t>(ggml_backend_reg_dev_count(reg));
+    llama_dart_cuda_api cuda_api;
+    int32_t registered = 0;
+#if defined(LLAMADART_TESTING)
+    if (g_test_win_dev != nullptr && dev == g_test_win_dev->cuda_device) {
+      cuda_api.init = g_test_win_dev->cuda_init;
+      cuda_api.device_count = g_test_win_dev->cuda_device_count;
+      cuda_api.device_get = g_test_win_dev->cuda_device_get;
+      cuda_api.device_name = g_test_win_dev->cuda_device_name;
+      cuda_api.device_luid = g_test_win_dev->cuda_device_luid;
+      registered = g_test_win_dev->cuda_registered_count;
+    } else
+#endif
+    {
+      cuda_api = llama_dart_cuda_resolve_api();
+      ggml_backend_reg_t reg = ggml_backend_dev_backend_reg(dev);
+      if (reg != nullptr) {
+        registered = static_cast<int32_t>(ggml_backend_reg_dev_count(reg));
+      }
+    }
     return llama_dart_system_memory_from(
         source, props.memory_total, integrated,
         [&](uint8_t *luid, std::string *detail) {
-          return llama_dart_cuda_device_luid(llama_dart_cuda_resolve_api(),
-                                             index, registered,
+          return llama_dart_cuda_device_luid(cuda_api, index, registered,
                                              props.description, luid, detail);
         },
         read_segments);
@@ -50,6 +97,12 @@ llama_dart_system_memory llama_dart_read_system_memory(ggml_backend_dev_t dev) {
           *detail = "its name is not Vulkan<index>";
           return false;
         }
+#if defined(LLAMADART_TESTING)
+        if (g_test_win_dev != nullptr && dev == g_test_win_dev->vulkan_device) {
+          std::memcpy(luid, g_test_win_dev->vulkan_luid, sizeof(g_test_win_dev->vulkan_luid));
+          return true;
+        }
+#endif
         char probed_name[256] = {};
         bool luid_valid = false;
         if (!llama_dart_vulkan_device_luid(index, probed_name,
@@ -72,21 +125,25 @@ llama_dart_system_memory llama_dart_read_system_memory(ggml_backend_dev_t dev) {
       read_segments);
 #else
   (void)dev;
+  (void)props;
   return llama_dart_system_memory();
 #endif
 }
 
+llama_dart_system_memory llama_dart_read_system_memory(ggml_backend_dev_t dev) {
+  return llama_dart_read_system_memory(dev, llama_dart_system_memory_props(dev));
+}
+
 size_t llama_dart_device_free_bytes(ggml_backend_dev_t dev, size_t driver_free,
                                     bool strict) {
-  const llama_dart_system_memory system = llama_dart_read_system_memory(dev);
+  const ggml_backend_dev_props props = llama_dart_system_memory_props(dev);
+  const llama_dart_system_memory system = llama_dart_read_system_memory(dev, props);
   switch (system.read) {
   case llama_dart_system_read::ok:
     return static_cast<size_t>(
         llama_dart_effective_free(driver_free, system.free_bytes));
   case llama_dart_system_read::unavailable:
     if (strict) {
-      ggml_backend_dev_props props = {};
-      ggml_backend_dev_get_props(dev, &props);
       throw std::runtime_error(llama_dart_unreadable_memory_message(
           props.name == nullptr ? "" : props.name, system.detail));
     }

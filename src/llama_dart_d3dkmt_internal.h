@@ -70,16 +70,15 @@ inline std::string status_text(const char *stage, LONG status) {
 
 // The memory segments of the adapter with this LUID, for every process. On
 // failure `error` says what failed and `segments` is empty.
-inline bool read_segments(const unsigned char *luid,
-                          std::vector<llama_dart_adapter_segment> &segments,
-                          std::string &error) {
+inline bool read_segments_with(const unsigned char *luid, QueryStatistics query,
+                               std::vector<llama_dart_adapter_segment> &segments,
+                               std::string &error) {
   segments.clear();
   static const unsigned char zero[8] = {};
   if (memcmp(luid, zero, sizeof(zero)) == 0) {
     error = "the device has no adapter LUID";
     return false;
   }
-  const QueryStatistics query = resolve();
   if (query == nullptr) {
     error = "gdi32.dll has no D3DKMTQueryStatistics";
     return false;
@@ -117,6 +116,12 @@ inline bool read_segments(const unsigned char *luid,
     segments.push_back(segment);
   }
   return true;
+}
+
+inline bool read_segments(const unsigned char *luid,
+                          std::vector<llama_dart_adapter_segment> &segments,
+                          std::string &error) {
+  return read_segments_with(luid, resolve(), segments, error);
 }
 
 } // namespace llama_dart_d3dkmt
