@@ -27,6 +27,7 @@ audit() {
     --variant "$1" "$BUNDLE/$3"
 }
 
+python3 "$ROOT/tools/llama_cpp_patches.py" check-linux-arm64-cpu --dir "$BUNDLE"
 audit baseline linux-arm64-full libggml-cpu.so
 variant_list="$(python3 "$ROOT/tools/build.py" list --linux-arm64-cpu-variant-libs)"
 if [ -z "$variant_list" ]; then

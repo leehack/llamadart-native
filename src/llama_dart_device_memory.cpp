@@ -3,6 +3,7 @@
 #include "llama.h"
 #include "llama-ext.h"
 
+#include <atomic>
 #include <cstring>
 #include <memory>
 #include <stdexcept>
@@ -154,12 +155,81 @@ size_t llama_dart_device_free_bytes(ggml_backend_dev_t dev, size_t driver_free,
   return driver_free;
 }
 
+#if defined(_WIN32) || defined(LLAMADART_TESTING)
+// Other threads can log while a fit holds the wrapper's log mutex. Keep the
+// forwarding callback in static storage and filter only the probing thread.
+static std::atomic<ggml_log_callback> g_fit_probe_logger{nullptr};
+static thread_local bool g_fit_probe_scope_active = false;
+static thread_local ggml_log_level g_fit_probe_level = GGML_LOG_LEVEL_NONE;
+
+static void llama_dart_forward_fit_probe_log(ggml_log_level level,
+                                             const char *text,
+                                             void *user_data) {
+  if (g_fit_probe_scope_active) {
+    if (level != GGML_LOG_LEVEL_CONT) {
+      g_fit_probe_level = level;
+    }
+    if (g_fit_probe_level == GGML_LOG_LEVEL_INFO) {
+      return;
+    }
+  }
+  if (const auto callback = g_fit_probe_logger.load()) {
+    callback(level, text, user_data);
+  }
+}
+
+class llama_dart_fit_probe_log_scope {
+public:
+  llama_dart_fit_probe_log_scope() {
+    llama_log_get(&callback_, &user_data_);
+    g_fit_probe_logger.store(callback_);
+    g_fit_probe_level = GGML_LOG_LEVEL_NONE;
+    g_fit_probe_scope_active = true;
+    llama_log_set(llama_dart_forward_fit_probe_log, user_data_);
+  }
+
+  ~llama_dart_fit_probe_log_scope() {
+    llama_log_set(callback_, user_data_);
+    g_fit_probe_scope_active = false;
+  }
+
+  llama_dart_fit_probe_log_scope(const llama_dart_fit_probe_log_scope &) =
+      delete;
+  llama_dart_fit_probe_log_scope &
+  operator=(const llama_dart_fit_probe_log_scope &) = delete;
+
+private:
+  ggml_log_callback callback_ = nullptr;
+  void *user_data_ = nullptr;
+};
+
+static llama_model *
+llama_dart_load_fit_probe(const char *path_model,
+                          const llama_model_params &mparams) {
+  // The load gets the selected devices in margin order without reading weights.
+  llama_model_params probe = mparams;
+  probe.vocab_only = true;
+  probe.progress_callback = nullptr;
+  probe.check_tensors = false;
+  const llama_dart_fit_probe_log_scope log_scope;
+  return llama_model_load_from_file(path_model, probe);
+}
+#endif
+
+#if defined(LLAMADART_TESTING)
+extern "C" llama_model *
+llama_dart_test_load_fit_probe(const char *path_model,
+                               const llama_model_params *mparams) {
+  return llama_dart_load_fit_probe(path_model, *mparams);
+}
+#endif
+
 void llama_dart_fit_apply_system_margins(const char *path_model,
                                          const llama_model_params &mparams,
                                          size_t *margins, size_t n_margins) {
 #if defined(_WIN32)
-  // A host with no Vulkan or CUDA device has nothing to correct. The registry
-  // decides, not the Vulkan probe: a CUDA host may have no usable Vulkan.
+  // A registered Vulkan or CUDA GPU can require margin correction even in a
+  // CUDA-only bundle. The probe below resolves the model's selected devices.
   bool corrected_backend = false;
   for (size_t i = 0; i < ggml_backend_dev_count(); ++i) {
     ggml_backend_dev_props props = {};
@@ -175,14 +245,8 @@ void llama_dart_fit_apply_system_margins(const char *path_model,
   if (!corrected_backend) {
     return;
   }
-  // The model's device list comes before the vocabulary-only branch of the
-  // loader, so this load reads no weights and creates no buffers.
-  llama_model_params probe = mparams;
-  probe.vocab_only = true;
-  probe.progress_callback = nullptr;
-  probe.check_tensors = false;
   std::unique_ptr<llama_model, decltype(&llama_model_free)> model(
-      llama_model_load_from_file(path_model, probe), &llama_model_free);
+      llama_dart_load_fit_probe(path_model, mparams), &llama_model_free);
   if (model == nullptr) {
     // The fit reports an unreadable model as its own error.
     return;

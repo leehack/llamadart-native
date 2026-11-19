@@ -95,9 +95,14 @@ marker checks below catch missing patches.
 library lacks the `text` of an `android_markers` entry. It reads the built
 library, so it does not matter why the patch is missing. A marker on
 `libggml-cpu.so` is checked in every `libggml-cpu*.so` of the bundle (Android
-arm64 ships only the `libggml-cpu-android_*.so` variants), and the bundle must
-hold one. The release runs it
-on every Android bundle and `validate_wrapper.yml` on the pinned upstream, so
+arm64 ships only the `libggml-cpu-android_*.so` variants). Android core bundles
+must contain CPU modules even when all CPU marker patches are retired. The
+backend-only OpenCL release lanes skip CPU packaging checks because their
+payload contains only the OpenCL library. The Linux arm64 bundle audit
+(`tools/check_linux_arm64_cpu_variants.sh`) checks the same CPU markers in the
+baseline and each shipped variant.
+
+The release and `validate_wrapper.yml` run these checks on their bundles, so
 a patch that upstream has outgrown fails the pull request that moves the
 upstream, or the manually dispatched release (`native_release.yml`, or
 `auto_native_release.yml` for a new stable upstream tag). Check then

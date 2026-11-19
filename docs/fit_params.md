@@ -94,9 +94,10 @@ is in `src/llama_dart_device_memory.cpp`, with the rules in
   `D3DKMTQueryStatistics` missing or failing) fails the fit with an
   exception that names the device and the cause. The two device queries above
   fall back to the driver's number, because a listing has no fit to refuse.
-- The fit reads the model's device list with one more `vocab_only` load of the
-  same file before it measures; it loads no weights. That extra vocabulary-only
-  load emits its normal model-metadata `INFO` lines to the active logger.
+- When ggml has a Vulkan or CUDA GPU registered, the fit makes one extra
+  `vocab_only` load to read the model's selected devices in margin order.
+  This applies to CUDA-only bundles and loads no weights. The probe suppresses
+  `INFO` messages on the fitting thread and forwards warnings and errors.
 - Refused, not corrected: any `GGML_CUDA_DEVICES` count other than the physical
   count (driver and registry counts differ, including virtual devices) and a
   CUDA device with no WDDM adapter (TCC mode, no LUID). Their fit fails with the
@@ -212,5 +213,6 @@ numbers.
 CI runs the fit test on macOS, Linux, and CPU-only Windows x64 and arm64
 runners. Injected Windows devices and KMT records exercise both device listings,
 strict report correction, and margin routing with both CUDA and Vulkan
-registered. Hardware qualification still covers Vulkan and CUDA fits while
+registered. The fit test also checks that the vocabulary probe keeps metadata
+`INFO` lines out of the user's callback and restores the callback afterward. Hardware qualification still covers Vulkan and CUDA fits while
 other processes hold GPU memory, including CUDA without `ggml-vulkan.dll`.

@@ -13,6 +13,8 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("out_dir", type=Path)
     parser.add_argument("--readelf", required=True, type=Path)
+    parser.add_argument("--backend-only", action="store_true",
+                        help="skip CPU packaging checks for a backend-only payload")
     parser.add_argument("--min-load-align", type=lambda value: int(value, 0), default=0x4000)
     return parser.parse_args()
 
@@ -105,7 +107,9 @@ def exception_runtime_errors(symbols: dict[str, tuple[set[str], set[str]]]) -> l
 def cpu_variant_errors(libraries: list[Path]) -> list[str]:
     names = {library.name for library in libraries}
     if not any(name.startswith("libggml-cpu-android_") for name in names):
-        return []
+        return [] if llama_cpp_patches.CPU_LIBRARY in names else [
+            f"{llama_cpp_patches.CPU_LIBRARY}: not in the bundle"
+        ]
     return [
         f"{name}: not in the bundle"
         for name in build.android_arm64_cpu_variant_libs()
@@ -127,8 +131,10 @@ def main() -> None:
     errors: list[str] = []
     symbols = {library.name: read_dynamic_symbols(args.readelf, library) for library in libraries}
     errors.extend(exception_runtime_errors(symbols))
-    errors.extend(llama_cpp_patches.android_marker_errors(args.out_dir))
-    errors.extend(cpu_variant_errors(libraries))
+    errors.extend(llama_cpp_patches.android_marker_errors(
+        args.out_dir, include_cpu=not args.backend_only))
+    if not args.backend_only:
+        errors.extend(cpu_variant_errors(libraries))
     for symbol in EXCEPTION_RUNTIME_SYMBOLS:
         for name, (defined, _) in sorted(symbols.items()):
             if symbol in defined:
