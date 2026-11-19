@@ -561,8 +561,8 @@ enum llama_dart_fit_status {
     // No fitting allocation exists, or the parameters need a change that is
     // not allowed: n_gpu_layers was set, or the parameters ask for a tensor
     // or row split. Parameters that already fit are never refused on device
-    // memory alone. On a host without a GPU device a margin
-    // above total memory is also a failure. mparams, cparams, and report are
+    // memory alone. On a host without a GPU device a margin above total
+    // memory is also a failure. mparams, cparams, and report are
     // left as they were; the tensor_split and tensor_buft_overrides buffers are
     // unspecified.
     LLAMA_DART_FIT_STATUS_FAILURE = 1,
@@ -572,10 +572,9 @@ enum llama_dart_fit_status {
 
 // Memory of one device, or of the host, at the fitted parameters. The host
 // entry is named "Host" and has the total and physical free memory of the CPU
-// device. On Windows, free_bytes of a
-// Vulkan or CUDA GPU is the smaller of what the driver reports and what the
-// display adapter has free for every process. The driver reports a per-process
-// budget, which does not deduct memory that other processes hold.
+// device. On Windows, free_bytes of a Vulkan or CUDA GPU is the smaller of
+// what the driver reports and what the display adapter has free for every
+// process. The per-process driver budget omits memory other processes hold.
 struct llama_dart_fit_device {
     char name[64];
     int64_t total_bytes;
@@ -651,7 +650,7 @@ LLAMADART_API uint32_t llama_dart_fit_api_version(void);
 // A successful fit estimates device memory. A later Windows context allocation
 // or decode can still fail under system memory pressure (llamadart-native #211).
 //
-//// Teardown cannot cancel a fit, and waits for one that is running.
+// Teardown cannot cancel a fit, and waits for one that is running.
 LLAMADART_API int32_t llama_dart_fit_params(
     const char * path_model,
     struct llama_model_params * mparams,
