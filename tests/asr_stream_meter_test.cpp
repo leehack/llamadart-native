@@ -4,10 +4,13 @@
 
 #include "llama_dart_asr_stream_internal.h"
 
+#include <atomic>
 #include <cassert>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -169,6 +172,185 @@ void invalid_and_unfinished_bytes_become_replacement_characters() {
   assert(text.available() == 0);
 }
 
+void utf8_incomplete_prefix_is_discarded_at_segment_boundary() {
+  llama_dart_asr_text_buffer text;
+  // Complete word followed by an incomplete 3-byte UTF-8 prefix (U+20AC).
+  text.append("hello\xE2\x82", 7);
+  assert(text.available() == 5);
+
+  // Segment break: discard incomplete prefix, preserve ready bytes.
+  text.discard_incomplete();
+  assert(text.available() == 5);
+
+  // New segment starts with a continuation byte, then ASCII. It must not
+  // complete U+20AC across the boundary; "hello" must survive.
+  text.append("\xACworld", 6);
+  char out[32];
+  const size_t n = text.read(out, sizeof(out));
+  const std::string result(out, n);
+  assert(result == "hello\xEF\xBF\xBDworld");
+  assert(result.find("\xE2\x82\xAC") == std::string::npos);
+}
+
+void capacity_conversion_rejects_overflow_and_nonpositive() {
+  const size_t max_32bit_samples =
+      std::numeric_limits<uint32_t>::max() / sizeof(float);
+  size_t out = 0;
+
+  // Default 30000 ms.
+  assert(llama_dart_asr_stream_buffer_capacity(
+      llama_dart_asr_stream_default_buffered_ms, max_32bit_samples, &out));
+  assert(out == 480000);
+
+  // Nonpositive values rejected.
+  assert(!llama_dart_asr_stream_buffer_capacity(0, max_32bit_samples, &out));
+  assert(!llama_dart_asr_stream_buffer_capacity(-1, max_32bit_samples, &out));
+  assert(!llama_dart_asr_stream_buffer_capacity(
+      std::numeric_limits<int32_t>::min(), max_32bit_samples, &out));
+
+  // 268436 ms overflows 16000 * ms in uint32_t, but is 4,294,976 samples.
+  assert(llama_dart_asr_stream_buffer_capacity(268436, max_32bit_samples,
+                                               &out));
+  assert(out == 4294976);
+
+  // Representable 32-bit boundary and one above.
+  const int32_t max_32bit_ms = static_cast<int32_t>(max_32bit_samples / 16);
+  assert(llama_dart_asr_stream_buffer_capacity(max_32bit_ms, max_32bit_samples,
+                                               &out));
+  assert(out == static_cast<size_t>(max_32bit_ms) * 16);
+  assert(!llama_dart_asr_stream_buffer_capacity(max_32bit_ms + 1,
+                                                max_32bit_samples, &out));
+}
+
+void reset_clears_prior_cancel_before_release_and_preserves_later_cancel() {
+  // Prior cancel is cleared and reset makes session reusable.
+  std::atomic<bool> cancel_requested{true};
+  bool released = false;
+  bool state_reset = false;
+  const bool ok = llama_dart_asr_reset_session(
+      cancel_requested, [&] { released = true; }, [&] { state_reset = true; },
+      [] { return true; });
+  assert(ok && released && state_reset);
+  assert(!cancel_requested.load(std::memory_order_acquire));
+
+  // Cancel arriving after reset's entry boundary (while release is paused)
+  // survives until the next step.
+  std::atomic<bool> in_release{false};
+  std::atomic<bool> allow_finish{false};
+  std::thread canceller([&] {
+    while (!in_release.load(std::memory_order_acquire)) {
+    }
+    cancel_requested.store(true, std::memory_order_release);
+    allow_finish.store(true, std::memory_order_release);
+  });
+  const bool ok2 = llama_dart_asr_reset_session(
+      cancel_requested,
+      [&] {
+        in_release.store(true, std::memory_order_release);
+        while (!allow_finish.load(std::memory_order_acquire)) {
+        }
+      },
+      [] {}, [] { return true; });
+  canceller.join();
+  assert(ok2);
+  assert(cancel_requested.load(std::memory_order_acquire));
+}
+
+void step_feed_and_encode_pushes_at_most_one_chunk_and_steps_once() {
+  const size_t step_samples =
+      llama_dart_asr_stream_step_samples(LLAMA_DART_ASR_STREAM_MODE_PROMPTED_CHUNKS);
+  llama_dart_asr_input_meter meter(step_samples * 5, step_samples);
+  const std::vector<float> audio(step_samples * 3 + 4000, 0.25f);
+  assert(meter.accept(audio.data(), audio.size()) == audio.size());
+
+  llama_dart_asr_step_state state{};
+  int push_calls = 0;
+  int flush_calls = 0;
+  int step_calls = 0;
+  size_t last_pushed = 0;
+  const int32_t scripted_rows[] = {0, 12, 1, 0, 0, 0, 5, -1};
+  size_t script_idx = 0;
+
+  const auto push_fn = [&](const float *, size_t count) {
+    ++push_calls;
+    last_pushed = count;
+    return true;
+  };
+  const auto flush_fn = [&]() {
+    ++flush_calls;
+    return true;
+  };
+  const auto step_fn = [&]() {
+    ++step_calls;
+    return scripted_rows[script_idx++];
+  };
+
+  int32_t rows = 0;
+
+  // Step 1: pushes 1 chunk, step returns 0 (needs_audio).
+  assert(llama_dart_asr_step_feed_and_encode(meter, state, push_fn, flush_fn,
+                                             step_fn, &rows) ==
+         llama_dart_asr_feed_outcome::needs_audio);
+  assert(push_calls == 1 && last_pushed == step_samples && step_calls == 1);
+  assert(meter.buffered() == step_samples * 2 + 4000);
+  assert(state.needs_audio);
+
+  // Step 2: pushes 1 chunk, step returns 12 (rows_ready).
+  assert(llama_dart_asr_step_feed_and_encode(meter, state, push_fn, flush_fn,
+                                             step_fn, &rows) ==
+         llama_dart_asr_feed_outcome::rows_ready);
+  assert(rows == 12 && push_calls == 2 && last_pushed == step_samples &&
+         step_calls == 2);
+  assert(meter.buffered() == step_samples + 4000);
+  assert(!state.needs_audio);
+
+  // Step 3: needs_audio is false -> 0 pushes, 1 step returning 1.
+  assert(llama_dart_asr_step_feed_and_encode(meter, state, push_fn, flush_fn,
+                                             step_fn, &rows) ==
+         llama_dart_asr_feed_outcome::rows_ready);
+  assert(rows == 1 && push_calls == 2 && step_calls == 3);
+  assert(meter.buffered() == step_samples + 4000);
+
+  // Step 4: needs_audio is false -> 0 pushes, 1 step returning 0 (needs_audio).
+  assert(llama_dart_asr_step_feed_and_encode(meter, state, push_fn, flush_fn,
+                                             step_fn, &rows) ==
+         llama_dart_asr_feed_outcome::needs_audio);
+  assert(push_calls == 2 && step_calls == 4 && state.needs_audio);
+
+  // Step 5: pushes 1 chunk, step returns 0.
+  assert(llama_dart_asr_step_feed_and_encode(meter, state, push_fn, flush_fn,
+                                             step_fn, &rows) ==
+         llama_dart_asr_feed_outcome::needs_audio);
+  assert(push_calls == 3 && last_pushed == step_samples && step_calls == 5);
+  assert(meter.buffered() == 4000);
+
+  // Step 6: pushes remaining 4000 samples, step returns 0.
+  assert(llama_dart_asr_step_feed_and_encode(meter, state, push_fn, flush_fn,
+                                             step_fn, &rows) ==
+         llama_dart_asr_feed_outcome::needs_audio);
+  assert(push_calls == 4 && last_pushed == 4000 && step_calls == 6);
+  assert(meter.buffered() == 0);
+
+  // Step 7: empty queue & not finished -> 0 pushes, 0 flushes, 0 steps.
+  assert(llama_dart_asr_step_feed_and_encode(meter, state, push_fn, flush_fn,
+                                             step_fn, &rows) ==
+         llama_dart_asr_feed_outcome::needs_audio);
+  assert(push_calls == 4 && flush_calls == 0 && step_calls == 6);
+
+  // Step 8: input_finished -> flushes once, steps once returning 5.
+  state.input_finished = true;
+  assert(llama_dart_asr_step_feed_and_encode(meter, state, push_fn, flush_fn,
+                                             step_fn, &rows) ==
+         llama_dart_asr_feed_outcome::rows_ready);
+  assert(rows == 5 && push_calls == 4 && flush_calls == 1 && step_calls == 7);
+
+  // Step 9: after flush, does not flush again, steps once returning -1.
+  assert(llama_dart_asr_step_feed_and_encode(meter, state, push_fn, flush_fn,
+                                             step_fn, &rows) ==
+         llama_dart_asr_feed_outcome::finished);
+  assert(push_calls == 4 && flush_calls == 1 && step_calls == 8);
+}
+
 } // namespace
 
 int main() {
@@ -179,5 +361,9 @@ int main() {
   the_text_buffer_never_splits_a_code_point();
   the_text_buffer_reads_one_byte_pieces();
   invalid_and_unfinished_bytes_become_replacement_characters();
+  utf8_incomplete_prefix_is_discarded_at_segment_boundary();
+  capacity_conversion_rejects_overflow_and_nonpositive();
+  reset_clears_prior_cancel_before_release_and_preserves_later_cancel();
+  step_feed_and_encode_pushes_at_most_one_chunk_and_steps_once();
   return 0;
 }

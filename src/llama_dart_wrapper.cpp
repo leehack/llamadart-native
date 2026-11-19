@@ -3510,15 +3510,12 @@ struct llama_dart_asr_stream {
   std::atomic<bool> cancel_requested{false};
   const int8_t *cancel_flag = nullptr;
   llama_dart_asr_stream_state state = LLAMA_DART_ASR_STREAM_STATE_NEEDS_AUDIO;
-  bool input_finished = false;
-  bool flushed = false;
-  bool needs_audio = true;
+  llama_dart_asr_step_state step;
   bool sequence_started = false;
   llama_token last_token = LLAMA_TOKEN_NULL;
   llama_pos n_past = 0;
   int32_t segment_breaks = 0;
   int32_t tokens_sampled = 0;
-  int64_t samples_consumed = 0;
   std::vector<llama_pos> positions;
   std::vector<int32_t> sequence_counts;
   std::vector<llama_seq_id *> sequence_pointers;
@@ -3597,7 +3594,7 @@ static void llama_dart_asr_write_progress(
   progress->segment_breaks = stream->segment_breaks;
   progress->tokens_sampled = stream->tokens_sampled;
   progress->samples_buffered = static_cast<int64_t>(stream->meter.buffered());
-  progress->samples_consumed = stream->samples_consumed;
+  progress->samples_consumed = stream->step.samples_consumed;
   progress->text_available = static_cast<int64_t>(stream->text.available());
 }
 
@@ -3819,14 +3816,18 @@ static llama_dart_asr_stream *llama_dart_asr_stream_init_impl(
       static_cast<uint32_t>(params->sequence_id) >= llama_n_seq_max(llama)) {
     return nullptr;
   }
+  size_t capacity = 0;
+  const size_t max_samples = std::vector<float>().max_size();
+  if (!llama_dart_asr_stream_buffer_capacity(params->max_buffered_ms,
+                                             max_samples, &capacity)) {
+    return nullptr;
+  }
   llama_dart_asr_probe probe =
       llama_dart_asr_probe_model(llama, mtmd, accepted_modes);
   if (probe.status != LLAMA_DART_ASR_STREAM_STATUS_OK) {
     report(probe.status);
     return nullptr;
   }
-  const size_t capacity = static_cast<size_t>(llama_dart_asr_stream_sample_rate) *
-                          static_cast<size_t>(params->max_buffered_ms) / 1000;
   auto stream = std::make_unique<llama_dart_asr_stream>(
       capacity, llama_dart_asr_stream_step_samples(probe.mode));
   stream->llama = llama;
@@ -3903,7 +3904,7 @@ llama_dart_asr_push_impl(llama_dart_asr_stream *stream, const float *samples,
     return LLAMA_DART_ASR_STREAM_STATUS_INVALID_ARGUMENT;
   }
   *out_accepted = 0;
-  if (!llama_dart_asr_active(stream) || stream->input_finished) {
+  if (!llama_dart_asr_active(stream) || stream->step.input_finished) {
     return llama_dart_asr_error(stream,
                                 LLAMA_DART_ASR_STREAM_STATUS_INVALID_STATE,
                                 "the ASR stream takes no more audio");
@@ -3938,12 +3939,12 @@ llama_dart_asr_stream_finish(struct llama_dart_asr_stream *stream) {
     if (stream == nullptr) {
       return LLAMA_DART_ASR_STREAM_STATUS_INVALID_ARGUMENT;
     }
-    if (!llama_dart_asr_active(stream) || stream->input_finished) {
+    if (!llama_dart_asr_active(stream) || stream->step.input_finished) {
       return llama_dart_asr_error(stream,
                                   LLAMA_DART_ASR_STREAM_STATUS_INVALID_STATE,
                                   "the ASR stream input is already finished");
     }
-    stream->input_finished = true;
+    stream->step.input_finished = true;
     stream->state = LLAMA_DART_ASR_STREAM_STATE_WORKING;
     return LLAMA_DART_ASR_STREAM_STATUS_OK;
   });
@@ -3974,47 +3975,37 @@ llama_dart_asr_step_impl(llama_dart_asr_stream *stream,
         LLAMA_DART_ASR_STREAM_STATUS_CANCELLED, "ASR stream cancelled"));
   }
 
-  bool fed = false;
-  if (stream->needs_audio) {
-    const float *chunk = nullptr;
-    const size_t count = stream->meter.next_chunk(&chunk);
-    if (count > 0) {
-      if (mtmd_audio_stream_push(stream->upstream, chunk, count) != 0) {
-        return done(llama_dart_asr_fail(stream, "the audio stream has ended"));
-      }
-      stream->meter.consume(count);
-      stream->samples_consumed += static_cast<int64_t>(count);
-      fed = true;
-    } else if (stream->input_finished && !stream->flushed) {
-      if (mtmd_audio_stream_flush(stream->upstream, true) != 0) {
-        return done(llama_dart_asr_fail(stream, "the audio stream has ended"));
-      }
-      stream->flushed = true;
-      fed = true;
-    }
-  }
-  // Once flushed, upstream still encodes what it holds a step at a time.
-  if (stream->needs_audio && !fed && !stream->flushed) {
-    stream->state = LLAMA_DART_ASR_STREAM_STATE_NEEDS_AUDIO;
-    return done(LLAMA_DART_ASR_STREAM_STATUS_OK);
-  }
-  stream->needs_audio = false;
-
-  const int32_t rows =
-      mtmd_audio_stream_step(stream->upstream, stream->last_token);
-  if (rows == -2) {
+  int32_t rows = 0;
+  const llama_dart_asr_feed_outcome outcome =
+      llama_dart_asr_step_feed_and_encode(
+          stream->meter, stream->step,
+          [&](const float *chunk, size_t count) {
+            return mtmd_audio_stream_push(stream->upstream, chunk, count) == 0;
+          },
+          [&]() {
+            return mtmd_audio_stream_flush(stream->upstream, true) == 0;
+          },
+          [&]() {
+            return mtmd_audio_stream_step(stream->upstream, stream->last_token);
+          },
+          &rows);
+  switch (outcome) {
+  case llama_dart_asr_feed_outcome::failed_push:
+  case llama_dart_asr_feed_outcome::failed_flush:
+    return done(llama_dart_asr_fail(stream, "the audio stream has ended"));
+  case llama_dart_asr_feed_outcome::failed_step:
     return done(llama_dart_asr_fail(stream, "audio stream step failed"));
-  }
-  if (rows == -1) {
+  case llama_dart_asr_feed_outcome::finished:
     return done(llama_dart_asr_end(stream, LLAMA_DART_ASR_STREAM_STATE_FINISHED,
                                    LLAMA_DART_ASR_STREAM_STATUS_OK, ""));
-  }
-  if (rows == 0) {
-    stream->needs_audio = true;
-    stream->state = stream->meter.buffered() > 0 || stream->input_finished
-                        ? LLAMA_DART_ASR_STREAM_STATE_WORKING
-                        : LLAMA_DART_ASR_STREAM_STATE_NEEDS_AUDIO;
+  case llama_dart_asr_feed_outcome::needs_audio:
+    stream->state =
+        stream->meter.buffered() > 0 || stream->step.input_finished
+            ? LLAMA_DART_ASR_STREAM_STATE_WORKING
+            : LLAMA_DART_ASR_STREAM_STATE_NEEDS_AUDIO;
     return done(LLAMA_DART_ASR_STREAM_STATUS_OK);
+  case llama_dart_asr_feed_outcome::rows_ready:
+    break;
   }
 
   if (mtmd_audio_stream_is_seq_start(stream->upstream)) {
@@ -4022,6 +4013,7 @@ llama_dart_asr_step_impl(llama_dart_asr_stream *stream,
                         -1);
     stream->n_past = 0;
     if (stream->tokens_sampled > 0) {
+      stream->text.discard_incomplete();
       ++stream->segment_breaks;
     }
   }
@@ -4164,20 +4156,20 @@ llama_dart_asr_reset_impl(llama_dart_asr_stream *stream) {
   if (stream == nullptr) {
     return LLAMA_DART_ASR_STREAM_STATUS_INVALID_ARGUMENT;
   }
-  llama_dart_asr_release(stream);
-  stream->text.clear();
-  stream->cancel_requested.store(false, std::memory_order_release);
-  stream->state = LLAMA_DART_ASR_STREAM_STATE_NEEDS_AUDIO;
-  stream->input_finished = false;
-  stream->flushed = false;
-  stream->needs_audio = true;
-  stream->last_token = LLAMA_TOKEN_NULL;
-  stream->n_past = 0;
-  stream->segment_breaks = 0;
-  stream->tokens_sampled = 0;
-  stream->samples_consumed = 0;
-  stream->error.clear();
-  if (!llama_dart_asr_begin(stream)) {
+  const bool reopened = llama_dart_asr_reset_session(
+      stream->cancel_requested, [&] { llama_dart_asr_release(stream); },
+      [&] {
+        stream->text.clear();
+        stream->state = LLAMA_DART_ASR_STREAM_STATE_NEEDS_AUDIO;
+        stream->step = {};
+        stream->last_token = LLAMA_TOKEN_NULL;
+        stream->n_past = 0;
+        stream->segment_breaks = 0;
+        stream->tokens_sampled = 0;
+        stream->error.clear();
+      },
+      [&] { return llama_dart_asr_begin(stream); });
+  if (!reopened) {
     return llama_dart_asr_fail(stream, "the audio stream could not be reopened");
   }
   return LLAMA_DART_ASR_STREAM_STATUS_OK;

@@ -36,7 +36,10 @@ So the session owns the decode and the greedy sampling, and a `step` is one
 bounded unit of work: at most one step of audio from the queue to the model
 (320 ms, or one 960 ms chunk), one upstream step, and when that returns rows,
 one `llama_decode` and one sample. It is a single call in flight, which bounds
-teardown and cancel latency.
+teardown and cancel latency. On `TOKEN_DELAY` (Voxtral Realtime), the first
+producing step decodes the 39-row prefix in one `llama_decode` (~0.69 s on an
+M4 Max CPU); on a ~3x slower CPU that single prefill can approach or exceed the
+2 s teardown wait (splitting that prefix decode is deferred).
 
 ## Modes
 
@@ -68,26 +71,41 @@ would fail in `init` with `UPSTREAM_ERROR`.
   `NEEDS_AUDIO`, `finish` after the last chunk. `read_text` after every step.
 - **Text.** UTF-8, complete code points only, control tokens skipped, no
   terminating zero. A token that ends inside a character waits for the next one;
-  an invalid byte is read as U+FFFD.
+  at a segment boundary, an incomplete trailing UTF-8 prefix is discarded while
+  preserving all complete unread bytes from earlier segments; at stream end, an
+  incomplete tail or invalid byte is read as U+FFFD.
 - **Segments.** `PROMPTED_CHUNKS` restarts its sequence at a quiet chunk after
-  15 s and always after 30 s, and a word at a hard cut can be lost (upstream's
-  behavior). `progress.segment_breaks` counts the restarts; the text read after
-  the step that raised it belongs to the new segment, so a binding that reads
-  after every step knows where each segment starts. Upstream's server writes a
-  newline there, the wrapper leaves the choice to the caller.
+  15 s and always after 30 s of audio rows, and a word at a hard cut can be lost
+  (upstream's behavior). `progress.segment_breaks` counts the restarts; the text
+  read after the step that raised it belongs to the new segment, so a binding
+  that reads after every step knows where each segment starts. Upstream's server
+  writes a newline there, the wrapper leaves the choice to the caller.
+- **Timing.** `info.delay_ms` is the model-derived delay for `TOKEN_DELAY` and
+  the nominal 960 ms chunk cadence for `PROMPTED_CHUNKS`. First visible text in
+  `PROMPTED_CHUNKS` needs more audio (~1.1–1.3 s measured on LFM3-Audio) because
+  mel feature extraction requires a complete lookahead window.
+- **Sequence ownership.** Successful `init` and `reset` claim and clear
+  `params.sequence_id` immediately, and segment restarts and session release
+  clear it too; the caller must dedicate that sequence to the session.
 - **End.** `FINISHED` follows `finish` once the text is out, or an
   end-of-generation token of the model, which drops the audio still queued
   (`samples_buffered` shows it). `CONTEXT_FULL` (state `FINISHED`) is the typed
   failure for a context with no room for the next rows: the text so far stays
   readable. `info.max_session_ms` is the audio a `TOKEN_DELAY` session can take,
   (context size - 39 prefix rows) x 80 ms: 5.4 minutes at 4096, 10.9 at 8192.
+  For `PROMPTED_CHUNKS`, `info.max_session_ms` is 0 ("no fixed duration
+  estimate"): text and closing tokens (up to 48 text tokens per ordinary chunk,
+  96 for a final chunk) also consume context positions alongside audio rows, so
+  a small context can still finish with `CONTEXT_FULL` before a 30 s restart.
   Upstream's server does the same, because context shift is disabled with a
   projector.
 - **Cancel.** `cancel` from any thread, or a caller-owned byte through
   `set_cancel_flag`, lands at the next step entry: at most one step, 0.1 s for
   LFM3-Audio and 0.5 s for Voxtral Realtime on a CPU. The session then releases
   the stream and the sequence and produces no more text. `reset` works in every
-  state and makes the session ready for a new input.
+  state, clears any prior cancel at entry before releasing and reopening the
+  stream (so a `cancel` after that boundary survives until the next step), and
+  makes the session ready for a new input.
 - **Tracking.** Every call but `cancel`, `last_error` and the three constant
   getters runs inside the guard, so teardown waits for it. `free` or
   `llama_dart_exit_free` releases a session, and `llama_dart_exit_tracked_count`
@@ -157,7 +175,7 @@ at `0b0f7ac9` (`Voxtral-Mini-4B-Realtime-2602-Q4_K_M.gguf`,
 | 297 s in one `push`: real-time factor, longest step | 0.09, 154 ms | 0.68, 519 ms (the context holds 324 s) |
 | Peak memory, 11 s run to 297 s run | 2560 to 2626 MB | 6609 to 6609 MB |
 | Segment breaks, 44 s of input | 1 (sentence intact 3 of 4 times) | 0 (4 of 4) |
-| `CONTEXT_FULL` in a 512-token context | not bounded by the context | after 474 tokens, text kept |
+| `CONTEXT_FULL` in a 512-token context | after small context (~64 tokens), text kept | after 474 tokens, text kept |
 
 Without the metering, one upstream step for 297 s of LFM3-Audio took 2.7 to 3 s
 and peak memory reached 5 GB (the smoke fails its bound at 2960 ms when the

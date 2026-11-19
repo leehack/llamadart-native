@@ -1350,11 +1350,17 @@ struct llama_dart_asr_stream_info {
     int32_t channels;
     // Audio per step of text: 80 for TOKEN_DELAY, 960 for PROMPTED_CHUNKS.
     int32_t text_interval_ms;
-    // Audio the model needs before it writes the text of the first of it.
+    // Nominal algorithmic delay in ms: model-derived delay_tokens * 80 for
+    // TOKEN_DELAY, or the 960 ms chunk cadence for PROMPTED_CHUNKS. First
+    // visible text in PROMPTED_CHUNKS can take longer (e.g. ~1.1-1.3 s on
+    // LFM3-Audio) because mel feature extraction needs a complete lookahead
+    // window.
     int32_t delay_ms;
-    // Audio one session can take, or 0 when it is not bounded by the context
-    // (PROMPTED_CHUNKS restarts its sequence). For TOKEN_DELAY it is the rows
-    // of the context after the prefix, 80 ms each.
+    // Audio one session can take, or 0 when there is no fixed duration estimate
+    // (PROMPTED_CHUNKS restarts its sequence after 30 s of audio rows, whereas
+    // text and closing tokens also consume positions, so a small context can
+    // still finish with CONTEXT_FULL before a restart). For TOKEN_DELAY it is
+    // the rows of the context after the prefix, 80 ms each.
     int64_t max_session_ms;
 };
 
@@ -1363,8 +1369,10 @@ struct llama_dart_asr_stream_params {
     uint32_t struct_size;
     // Audio push holds before it takes no more (default 30000).
     int32_t max_buffered_ms;
-    // The context sequence the session decodes in (default 0). A restart of
-    // the transcript removes this sequence from the context's memory.
+    // The context sequence the session decodes in (default 0). Successful init
+    // and reset claim and clear this sequence immediately, and a segment
+    // restart or release clears it too; the caller must dedicate it to the
+    // session.
     llama_seq_id sequence_id;
 };
 
@@ -1440,19 +1448,25 @@ LLAMADART_API enum llama_dart_asr_stream_status llama_dart_asr_stream_finish(
 // One bounded unit of work: at most one step of audio from the queue to the
 // model, one upstream stream step, and when it returns rows one decode and one
 // sample. It is a single call in flight for exit teardown, so teardown and a
-// cancel wait for at most one step. OK with the state in progress (also when
-// the model needs more audio); CANCELLED after a cancel; CONTEXT_FULL when the
-// context has no room for the rows (state FINISHED). Once the state is
-// FINISHED, CANCELLED or FAILED a step returns INVALID_STATE (CANCELLED for a
-// cancelled session) until the session is reset.
+// cancel wait for at most one step. On TOKEN_DELAY (Voxtral Realtime), the
+// first producing step decodes the 39-row prefix in one llama_decode (~0.69 s
+// on an M4 Max CPU), which on a ~3x slower CPU can approach or exceed the 2 s
+// teardown wait. OK with the state in progress (also when the model needs more
+// audio); CANCELLED after a cancel; CONTEXT_FULL when the context has no room
+// for the rows (state FINISHED). Once the state is FINISHED, CANCELLED or
+// FAILED a step returns INVALID_STATE (CANCELLED for a cancelled session) until
+// the session is reset.
 LLAMADART_API enum llama_dart_asr_stream_status llama_dart_asr_stream_step(
     struct llama_dart_asr_stream * stream,
     struct llama_dart_asr_stream_progress * out_progress);
 
 // Moves the UTF-8 text produced since the last read into out, complete code
 // points only, without a terminating zero, and sets *out_len to its size. out
-// may be NULL to query the size; otherwise capacity must be at least 4. Text
-// stays readable after FINISHED and CONTEXT_FULL, and is dropped by reset.
+// may be NULL to query the size; otherwise capacity must be at least 4. An
+// incomplete trailing UTF-8 sequence is discarded at a segment boundary while
+// keeping complete unread bytes from earlier segments; an incomplete tail at
+// stream end becomes U+FFFD. Text stays readable after FINISHED and
+// CONTEXT_FULL, and is dropped by reset.
 LLAMADART_API enum llama_dart_asr_stream_status llama_dart_asr_stream_read_text(
     struct llama_dart_asr_stream * stream,
     char * out,
@@ -1471,8 +1485,10 @@ LLAMADART_API enum llama_dart_asr_stream_status llama_dart_asr_stream_set_cancel
     struct llama_dart_asr_stream * stream,
     const int8_t * flag);
 
-// Drops the upstream stream, the sequence, the queue and the text, so the
-// session can take a new input. Works in every state.
+// Drops the upstream stream, the sequence, the queue and the text, and clears
+// and reopens the chosen sequence so the session can take a new input. Works in
+// every state. Clears any prior cancel at entry before releasing and reopening;
+// a cancel requested after that boundary survives until the next step.
 LLAMADART_API enum llama_dart_asr_stream_status llama_dart_asr_stream_reset(
     struct llama_dart_asr_stream * stream);
 
