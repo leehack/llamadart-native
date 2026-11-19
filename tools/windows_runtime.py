@@ -104,12 +104,18 @@ def is_non_redistributable(name: str) -> bool:
 
 def find_vc_redistributable(name: str, arch: str, redist_dir: Path) -> Path | None:
     """The desktop redistributable copy of `name` for `arch`, if the toolset has one."""
-    folder = VC_RUNTIME_FOLDER if is_vc_runtime(name) else OPENMP_RUNTIME_FOLDER
-    lowered = name.lower()
-    matches = sorted(
-        candidate for candidate in (redist_dir / arch).glob(f"{folder}/*.dll") if candidate.name.lower() == lowered
-    )
-    return matches[-1] if matches else None
+    return vc_redistributables(arch, redist_dir).get(name.lower())
+
+
+def vc_redistributables(arch: str, redist_dir: Path) -> dict[str, Path]:
+    files: dict[str, Path] = {}
+    folders = ((VC_RUNTIME_FOLDER, VC_RUNTIME_PATTERNS), (OPENMP_RUNTIME_FOLDER, OPENMP_RUNTIME_PATTERNS))
+    for folder, patterns in folders:
+        for path in sorted((redist_dir / arch).glob(f"{folder}/*.dll")):
+            name = path.name.lower()
+            if path.is_file() and not is_non_redistributable(name) and any(fnmatch(name, pattern) for pattern in patterns):
+                files[name] = path
+    return files
 
 
 class PeError(ValueError):

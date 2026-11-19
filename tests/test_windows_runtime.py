@@ -1,7 +1,9 @@
 import json
 import os
 from pathlib import Path
+import shutil
 import struct
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -10,6 +12,7 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tools'))
 import build
+import package_windows_runtime
 import validate_windows_bundle
 import windows_runtime
 
@@ -198,6 +201,63 @@ class BundleClosureTests(unittest.TestCase):
         errors = errors_for(self.bundle)
         self.assertEqual(len(errors), 1)
         self.assertIn('come from different redistributables', errors[0])
+
+
+class PackageRuntimeTests(unittest.TestCase):
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.root = Path(temp.name)
+        self.artifacts = self.root / 'artifacts'
+        self.bundle = self.root / 'windows-x64'
+        self.bundle.mkdir()
+        make_pe(self.bundle / 'ggml-vulkan.dll', linker=(14, 51), imports={**CRT, 'vcomp140.dll': ['_vcomp_fork']})
+        make_pe(self.bundle / 'ggml-blas.dll', linker=(14, 52), imports=CRT,
+                delay_imports={'msvcp140_atomic_wait.dll': ['wait']})
+
+    def stage_lane(self, backend, version, *, arch='x64', threads=True):
+        payload = self.artifacts / f'native_windows_{arch}_{backend}'
+        payload.mkdir(parents=True)
+        redist = self.root / f'redist-{arch}-{backend}'
+        crt = redist / arch / 'Microsoft.VC145.CRT'
+        openmp = redist / arch / 'Microsoft.VC145.OpenMP'
+        crt.mkdir(parents=True)
+        openmp.mkdir()
+        make_pe(crt / 'msvcp140.dll', arch=arch, file_version=version, exports=['_Thrd_yield'])
+        make_pe(crt / 'vcruntime140.dll', arch=arch, file_version=version, exports=['memcpy'])
+        make_pe(crt / 'msvcp140_atomic_wait.dll', arch=arch, file_version=version, exports=['wait'],
+                imports={'vcruntime140_threads.dll': ['thread']})
+        if threads:
+            make_pe(crt / 'vcruntime140_threads.dll', arch=arch, file_version=version, exports=['thread'])
+        make_pe(crt / 'concrt140.dll', arch=arch, file_version=version)
+        make_pe(openmp / 'vcomp140.dll', arch=arch, file_version=version, exports=['_vcomp_fork'])
+        shutil.copy2(crt / 'msvcp140.dll', payload)
+        (payload / 'ggml.dll').touch()
+        subprocess.run([sys.executable, str(ROOT / 'tools/package_windows_runtime.py'),
+                        'stage', '--arch', arch, str(payload)], check=True,
+                       env={**os.environ, 'VCToolsRedistDir': str(redist)})
+        self.assertEqual({path.name for path in payload.iterdir()}, {'ggml.dll', 'vc-runtime'})
+
+    def test_merge_uses_one_newest_runtime_for_its_arch_and_only_required_dlls(self):
+        newest = (14, 52, 37029, 0)
+        self.stage_lane('vulkan', (14, 51, 36247, 0))
+        self.stage_lane('cuda', newest)
+        self.stage_lane('blas', (14, 44, 35211, 0))
+        self.stage_lane('blas', (14, 53, 1, 0), arch='arm64')
+        subprocess.run([sys.executable, str(ROOT / 'tools/package_windows_runtime.py'),
+                        'install', '--arch', 'x64', str(self.bundle), str(self.artifacts)], check=True)
+        self.assertEqual(errors_for(self.bundle), [])
+        self.assertEqual({path.name: windows_runtime.read_pe(path).file_version
+                          for path in self.bundle.glob('*.dll') if windows_runtime.is_vc_redistributable(path.name)},
+                         dict.fromkeys([*CRT, 'vcomp140.dll', 'msvcp140_atomic_wait.dll',
+                                        'vcruntime140_threads.dll'], newest))
+
+    def test_missing_dependency_in_newest_set_does_not_mix_versions(self):
+        self.stage_lane('vulkan', (14, 51, 36247, 0))
+        self.stage_lane('blas', (14, 52, 37029, 0), threads=False)
+        with self.assertRaisesRegex(ValueError, 'missing required redistributable vcruntime140_threads.dll'):
+            package_windows_runtime.install(self.bundle, 'x64', self.artifacts)
+        self.assertEqual({path.name for path in self.bundle.iterdir()}, {'ggml-vulkan.dll', 'ggml-blas.dll'})
 
 
 class PresetTests(unittest.TestCase):

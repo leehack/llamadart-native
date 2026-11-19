@@ -1047,12 +1047,14 @@ jobs:
           foreach ($f in $files) {
             Copy-Item $f.FullName -Destination $payload -Force
           }
+          python tools/package_windows_runtime.py stage --arch ${{ matrix.arch }} "$payload"
+          if ($LASTEXITCODE) { throw "Failed to stage the Windows redistributable" }
           Get-ChildItem $payload
       - name: Upload
         uses: actions/upload-artifact@v7
         with:
           name: native_windows_${{ matrix.arch }}_${{ matrix.backend }}
-          path: artifact_payload/*
+          path: artifact_payload/
       - name: Save vcpkg cache
         if: ${{ always() && matrix.needs_openblas && steps.vcpkg-cache.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@v6
@@ -1179,10 +1181,9 @@ jobs:
             fi
           done
 
-          # Lanes build on different runner images; the core lane's Visual C++
-          # runtime must cover every lane's MSVC linker.
           for bundle_dir in bundles/windows-*; do
             [ -d "$bundle_dir" ] || continue
+            python3 tools/package_windows_runtime.py install --arch "${bundle_dir##*/windows-}" "$bundle_dir" artifacts
             python3 tools/validate_windows_bundle.py --arch "${bundle_dir##*/windows-}" "$bundle_dir"
           done
 

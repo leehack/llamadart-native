@@ -1,4 +1,5 @@
 /.github/workflows/native_release.yml @leehack
+/tools/package_windows_runtime.py @leehack
 /.github/CODEOWNERS @leehack
 /README.md @leehack
 /.github/workflows/publish_prepared.yml @leehack
