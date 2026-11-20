@@ -16,6 +16,7 @@
 #include <atomic>
 #include <cassert>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -859,6 +860,10 @@ int make_model(const char *path, bool is_encoder,
     // that llama.cpp looks up when it loads the vocabulary.
     pieces[kSpaceToken] = "\xe2\x96\x81";
     pieces[kNewlineToken] = "\n";
+    pieces[220] = "<think>";
+    pieces[221] = "</think>";
+    pieces[222] = "<tool_call>";
+    types[220] = types[221] = types[222] = LLAMA_TOKEN_TYPE_CONTROL;
     std::vector<const char *> texts;
     for (const std::string &piece : pieces) {
       texts.push_back(piece.c_str());
@@ -3171,6 +3176,327 @@ llama_sampler *scripted(scripted_sampler *state) {
 
 using tokens = std::vector<llama_token>;
 
+#if LLAMADART_HAS_REASONING_BUDGET_MULTI
+struct reasoning_grammar_record {
+  tokens accepted;
+  int *frees;
+  llama_token rejected = LLAMA_TOKEN_NULL;
+};
+
+using reasoning_sampler_ptr = std::unique_ptr<llama_sampler, decltype(&llama_sampler_free)>;
+
+llama_sampler *recording_reasoning_grammar(reasoning_grammar_record *record) {
+  static llama_sampler_i interface = [] {
+    llama_sampler_i result{};
+    result.accept = [](llama_sampler *sampler, llama_token token) {
+      auto &state = *static_cast<reasoning_grammar_record *>(sampler->ctx);
+      if (state.rejected == token) {
+        throw std::runtime_error("reasoning grammar rejected token");
+      }
+      state.accepted.push_back(token);
+    };
+    result.apply = [](llama_sampler *, llama_token_data_array *) {};
+    result.reset = [](llama_sampler *sampler) {
+      static_cast<reasoning_grammar_record *>(sampler->ctx)->accepted.clear();
+    };
+    result.clone = [](const llama_sampler *sampler) {
+      return recording_reasoning_grammar(new reasoning_grammar_record(
+          *static_cast<const reasoning_grammar_record *>(sampler->ctx)));
+    };
+    result.free = [](llama_sampler *sampler) {
+      auto *state = static_cast<reasoning_grammar_record *>(sampler->ctx);
+      ++*state->frees;
+      delete state;
+    };
+    return result;
+  }();
+  return llama_sampler_init(&interface, record);
+}
+
+tokens reasoning_tokenize(const llama_vocab *vocab, const std::string &text) {
+  tokens result(text.size() + 1);
+  const int32_t size = llama_tokenize(vocab, text.c_str(), text.size(),
+                                     result.data(), result.size(), false, true);
+  assert(size > 0);
+  result.resize(size);
+  return result;
+}
+
+void check_reasoning_logits(llama_sampler *sampler, llama_token token,
+                            bool forcing) {
+  const llama_token distractor = token == 0 ? 1 : 0;
+  llama_token_data choices[] = {{token, 1.0f, 0.0f}, {distractor, 1.0f, 0.0f}};
+  llama_token_data_array candidates{choices, 2, -1, false};
+  llama_sampler_apply(sampler, &candidates);
+  assert(std::isfinite(choices[0].logit));
+  assert(std::isfinite(choices[1].logit) == !forcing);
+}
+
+void check_reasoning_forced(llama_sampler *sampler, const tokens &expected,
+                            size_t offset = 0) {
+  for (size_t i = offset; i < expected.size(); ++i) {
+    check_reasoning_logits(sampler, expected[i], true);
+    check_reasoning_logits(sampler, expected[i], true);
+    assert(llama_dart_sampler_accept(sampler, expected[i]));
+  }
+  check_reasoning_logits(sampler, expected.back(), false);
+}
+
+int test_reasoning_budget(const char *path, bool qwen35) {
+  init_backends();
+  auto params = llama_model_default_params();
+  static ggml_backend_dev_t no_devices[] = {nullptr};
+  params.devices = no_devices;
+  params.n_gpu_layers = 0;
+  params.vocab_only = true;
+  const std::unique_ptr<llama_model, decltype(&llama_model_free)> model(
+      llama_model_load_from_file(path, params), llama_model_free);
+  assert(model);
+  const auto *vocab = llama_model_get_vocab(model.get());
+  const auto tokenize = [&](const std::string &text) {
+    return reasoning_tokenize(vocab, text);
+  };
+  const char *start = "<think>";
+  const char *end = "</think>";
+  const char *opener = "<tool_call>";
+  const std::vector<const char *> ends = {"\n</think>", end, opener};
+  const auto start_tokens = tokenize(start);
+  const auto end_tokens = tokenize(end);
+  const auto opener_tokens = tokenize(opener);
+  assert(start_tokens.size() == 1 && end_tokens.size() == 1 &&
+         opener_tokens.size() == 1);
+  const auto other = llama_vocab_eos(vocab);
+  assert(other != LLAMA_TOKEN_NULL && other != start_tokens[0] &&
+         other != end_tokens[0] && other != opener_tokens[0]);
+  const auto accept = [](llama_sampler *sampler, const tokens &input) {
+    for (llama_token token : input) {
+      assert(llama_dart_sampler_accept(sampler, token));
+    }
+  };
+  const auto create = [&](const std::vector<const char *> &natural, int32_t replay,
+                          const tokens &prompt, int32_t budget,
+                          const char *message, bool pause, llama_sampler *grammar) {
+    reasoning_sampler_ptr result(llama_dart_sampler_init_reasoning_budget_multi(
+        vocab, start, end, message, natural.data(), natural.size(), replay,
+        budget, pause, grammar, prompt.data(), prompt.size()),
+        llama_sampler_free);
+    assert(result);
+    return result;
+  };
+
+  {
+    int frees = 0;
+    auto *record = new reasoning_grammar_record{{}, &frees};
+    reasoning_sampler_ptr grammar(recording_reasoning_grammar(record), llama_sampler_free);
+    const auto rejected = [&](const llama_vocab *v, const char *s, const char *e,
+                              const char *const *n, int32_t count, int32_t replay,
+                              int32_t budget, const llama_token *prompt, int32_t size) {
+      assert(llama_dart_sampler_init_reasoning_budget_multi(
+          v, s, e, nullptr, n, count, replay, budget, true, grammar.get(),
+          prompt, size) == nullptr);
+      assert(llama_dart_last_error() == nullptr);
+      assert(frees == 0);
+    };
+    rejected(nullptr, start, end, ends.data(), 3, 2, 1, nullptr, 0);
+    rejected(vocab, nullptr, end, ends.data(), 3, 2, 1, nullptr, 0);
+    rejected(vocab, "", end, ends.data(), 3, 2, 1, nullptr, 0);
+    rejected(vocab, start, nullptr, ends.data(), 3, 2, 1, nullptr, 0);
+    rejected(vocab, start, "", ends.data(), 3, 2, 1, nullptr, 0);
+    rejected(vocab, start, end, nullptr, 3, 2, 1, nullptr, 0);
+    rejected(vocab, start, end, ends.data(), 0, -1, 1, nullptr, 0);
+    rejected(vocab, start, end, ends.data(), -1, -1, 1, nullptr, 0);
+    rejected(vocab, start, end, ends.data(), 3, -2, 1, nullptr, 0);
+    rejected(vocab, start, end, ends.data(), 3, 3, 1, nullptr, 0);
+    rejected(vocab, start, end, ends.data(), 3, 2, -1, nullptr, 0);
+    rejected(vocab, start, end, ends.data(), 3, 2, 1, nullptr, -1);
+    rejected(vocab, start, end, ends.data(), 3, 2, 1, nullptr, 1);
+    for (const char *bad : {static_cast<const char *>(nullptr), ""}) {
+      const char *invalid[] = {end, bad};
+      rejected(vocab, start, end, invalid, 2, -1, 1, nullptr, 0);
+    }
+    accept(grammar.get(), opener_tokens);
+    assert(record->accepted == opener_tokens);
+    grammar.reset();
+    assert(frees == 1);
+  }
+
+  const auto then_force = [&](const char *message, size_t exact_count) {
+    const std::string text = std::string(message) + end;
+    const auto forced = tokenize(text);
+    if (qwen35) {
+      assert(forced.size() == exact_count);
+      std::string decoded(text.size() + 1, '\0');
+      const int32_t size = llama_detokenize(vocab, forced.data(), forced.size(),
+                                           decoded.data(), decoded.size(), false, true);
+      assert(size == static_cast<int32_t>(text.size()));
+      decoded.resize(size);
+      assert(decoded == text);
+      if (exact_count == 3) {
+        assert((forced == tokens{248058, 198, 248069}));
+      }
+    }
+    int frees = 0;
+    auto *record = new reasoning_grammar_record{{}, &frees};
+    auto multi = create(ends, 2, start_tokens, 0, message, true,
+                        recording_reasoning_grammar(record));
+    check_reasoning_forced(multi.get(), forced);
+    assert(record->accepted.empty());
+    accept(multi.get(), start_tokens);
+    check_reasoning_logits(multi.get(), forced.front(), true);
+    multi.reset();
+    assert(frees == 1);
+  };
+  then_force("<tool_call>\n", 3);
+  const char *embedded_primary = qwen35
+      ? "</think> then <think> <tool_call>\n"
+      : "</think><think><tool_call>\n";
+  then_force(embedded_primary, 8);
+  then_force(qwen35 ? "BUDGET1949 <tool_call> must stay\n"
+                    : "<think><tool_call><think>\n", 13);
+
+  {
+    auto legacy = [&](const char *message) {
+      return reasoning_sampler_ptr(llama_dart_sampler_init_reasoning_budget(
+          vocab, start, end, message, 0, false, nullptr, start_tokens.data(),
+          start_tokens.size()), llama_sampler_free);
+    };
+    auto opener_is_payload = legacy("<tool_call>\n");
+    assert(opener_is_payload);
+    check_reasoning_forced(opener_is_payload.get(), tokenize("<tool_call>\n</think>"));
+    auto historical_early_end = legacy("</think><tool_call>");
+    assert(historical_early_end);
+    check_reasoning_forced(historical_early_end.get(), end_tokens);
+  }
+
+  {
+    int frees = 0;
+    auto *record = new reasoning_grammar_record{{}, &frees};
+    const char *message = embedded_primary;
+    const auto forced = tokenize(std::string(message) + end);
+    auto multi = create(ends, 2, start_tokens, 2, message, true,
+                        recording_reasoning_grammar(record));
+    check_reasoning_logits(multi.get(), other, false);
+    accept(multi.get(), {other, other});
+    check_reasoning_logits(multi.get(), forced.front(), true);
+    accept(multi.get(), {forced.front()});
+    reasoning_sampler_ptr clone(llama_sampler_clone(multi.get()), llama_sampler_free);
+    assert(clone);
+    check_reasoning_forced(multi.get(), forced, 1);
+    check_reasoning_forced(clone.get(), forced, 1);
+    assert(record->accepted.empty());
+
+    accept(multi.get(), start_tokens);
+    accept(multi.get(), {other, other});
+    check_reasoning_logits(multi.get(), forced.front(), true);
+    accept(multi.get(), {forced.front()});
+    llama_sampler_reset(multi.get());
+    assert(record->accepted.empty());
+    check_reasoning_logits(multi.get(), other, false);
+    accept(multi.get(), start_tokens);
+    check_reasoning_logits(multi.get(), other, false);
+    accept(multi.get(), {other, other});
+    check_reasoning_forced(multi.get(), forced);
+    assert(record->accepted == start_tokens);
+  }
+
+  {
+    const tokens partial = {start_tokens[0], opener_tokens[0]};
+    const char *alt = "<tool_call><tool_call>";
+    const std::vector<const char *> two_token_ends = {ends[0], end, alt};
+    const auto alt_tokens = tokenize(alt);
+    assert((alt_tokens == tokens{opener_tokens[0], opener_tokens[0]}));
+    int frees = 0;
+    auto *record = new reasoning_grammar_record{{}, &frees};
+    auto multi = create(two_token_ends, 2, start_tokens, 4, nullptr, true,
+                        recording_reasoning_grammar(record));
+    accept(multi.get(), {opener_tokens[0], other, opener_tokens[0]});
+    assert(record->accepted.empty());
+    accept(multi.get(), {opener_tokens[0]});
+    assert(record->accepted == alt_tokens);
+    check_reasoning_logits(multi.get(), other, false);
+    accept(multi.get(), {other, other});
+    assert((record->accepted == tokens{opener_tokens[0], opener_tokens[0], other, other}));
+
+    auto prefilled_partial = create(two_token_ends, -1, partial, 0, nullptr, true, nullptr);
+    check_reasoning_forced(prefilled_partial.get(), end_tokens);
+    auto prefilled_complete = create(two_token_ends, -1,
+        {start_tokens[0], opener_tokens[0], opener_tokens[0]}, 0, nullptr, true, nullptr);
+    check_reasoning_logits(prefilled_complete.get(), other, false);
+  }
+
+  for (bool pause : {true, false}) {
+    int frees = 0;
+    auto *record = new reasoning_grammar_record{{}, &frees};
+    auto multi = create(ends, 2, start_tokens, 1, nullptr, pause,
+                        recording_reasoning_grammar(record));
+    accept(multi.get(), opener_tokens);
+    assert(record->accepted == opener_tokens);
+    check_reasoning_logits(multi.get(), other, false);
+    accept(multi.get(), {other});
+    assert((record->accepted == tokens{opener_tokens[0], other}));
+  }
+
+  {
+    int frees = 0;
+    auto *record = new reasoning_grammar_record{{}, &frees};
+    auto multi = create(ends, 2, start_tokens, 0, "<tool_call>\n", false,
+                        recording_reasoning_grammar(record));
+    const auto expected = tokenize("<tool_call>\n</think>");
+    check_reasoning_forced(multi.get(), expected);
+    assert(record->accepted == expected);
+  }
+
+  {
+    int frees = 0;
+    auto *record = new reasoning_grammar_record{{}, &frees, opener_tokens[0]};
+    auto multi = create(ends, 2, start_tokens, 1, nullptr, true,
+                        recording_reasoning_grammar(record));
+    assert(!llama_dart_sampler_accept(multi.get(), opener_tokens[0]));
+    assert(std::string(llama_dart_last_error()) == "reasoning grammar rejected token");
+    accept(multi.get(), {other});
+    assert((record->accepted == tokens{other}));
+  }
+
+  {
+    int frees = 0;
+    auto *record = new reasoning_grammar_record{{}, &frees};
+    auto multi = create(ends, -1, start_tokens, 1, nullptr, true,
+                        recording_reasoning_grammar(record));
+    accept(multi.get(), opener_tokens);
+    assert(record->accepted.empty());
+    check_reasoning_logits(multi.get(), other, false);
+
+    const auto closed = tokenize("<think><tool_call>");
+    auto *prefilled_record = new reasoning_grammar_record{{}, &frees};
+    auto prefilled = create(ends, 2, closed, 0, nullptr, true,
+                            recording_reasoning_grammar(prefilled_record));
+    assert(prefilled_record->accepted.empty());
+    check_reasoning_logits(prefilled.get(), other, false);
+    accept(prefilled.get(), {other});
+    assert((prefilled_record->accepted == tokens{other}));
+    auto reopened = create(ends, -1, tokenize("<think><tool_call><think>"), 0,
+                           nullptr, true, nullptr);
+    check_reasoning_forced(reopened.get(), end_tokens);
+  }
+
+  {
+    int frees = 0;
+    auto *record = new reasoning_grammar_record{{}, &frees};
+    const auto with_newline = tokenize(ends[0]);
+    assert(with_newline.size() > end_tokens.size() && with_newline.back() == end_tokens[0]);
+    auto multi = create(ends, 0, start_tokens, with_newline.size(), nullptr, true,
+                        recording_reasoning_grammar(record));
+    accept(multi.get(), with_newline);
+    assert(record->accepted == with_newline);
+    auto bare = create(ends, 0, start_tokens, 1, nullptr, true,
+                       recording_reasoning_grammar(new reasoning_grammar_record{{}, &frees}));
+    accept(bare.get(), end_tokens);
+    check_reasoning_logits(bare.get(), other, false);
+  }
+  return 0;
+}
+#endif
+
 // llama_dart_sampler_sample_and_accept_n makes the sampler accept each token
 // it returns exactly once, also when the context's backend sampler chose it,
 // and stops at an end-of-generation token that the draft predicted, as
@@ -3374,6 +3700,11 @@ int main(int argc, char **argv) {
     if (scenario == "make-mtp-model") {
       return make_model(first, false, true, true);
     }
+#if LLAMADART_HAS_REASONING_BUDGET_MULTI
+    if (scenario == "reasoning-budget" || scenario == "reasoning-budget-qwen35") {
+      return test_reasoning_budget(first, scenario == "reasoning-budget-qwen35");
+    }
+#endif
     if (scenario == "barrier-grammar") {
       return test_barrier_grammar(first);
     }

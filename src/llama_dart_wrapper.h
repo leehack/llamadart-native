@@ -1223,6 +1223,27 @@ LLAMADART_API struct llama_sampler * llama_dart_sampler_init_reasoning_budget(
     const llama_token * prompt_tokens,
     int32_t prompt_token_count);
 
+#if !defined(LLAMADART_HAS_REASONING_BUDGET_MULTI) || LLAMADART_HAS_REASONING_BUDGET_MULTI
+// Optional multi-end variant. natural_end_tags is the complete ordered list;
+// strings and prompt tokens are borrowed for this call. Exhaustion forces
+// the entire tokenized forced_message + end_tag. A paused grammar receives
+// the matched end at grammar_replay_end_index only on a natural close.
+// Use -1 to disable replay. The caller owns grammar_sampler on failure.
+LLAMADART_API struct llama_sampler * llama_dart_sampler_init_reasoning_budget_multi(
+    const struct llama_vocab * vocab,
+    const char * start_tag,
+    const char * end_tag,
+    const char * forced_message,
+    const char * const * natural_end_tags,
+    int32_t natural_end_tag_count,
+    int32_t grammar_replay_end_index,
+    int32_t budget_tokens,
+    bool pause_grammar_while_reasoning,
+    struct llama_sampler * grammar_sampler,
+    const llama_token * prompt_tokens,
+    int32_t prompt_token_count);
+#endif
+
 // MTP requires empty target memory in every sequence. Reset the target before
 // initialization, then ingest the prompt. A populated target is rejected before
 // mutation; MTP rollback-capability probes decode and clear temporary tokens.

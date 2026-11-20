@@ -639,11 +639,62 @@ static common_params_speculative llama_dart_build_speculative_params(
   return params;
 }
 
+using llama_dart_budget_sampler_ptr =
+    std::unique_ptr<llama_sampler, decltype(&llama_sampler_free)>;
+
+#if LLAMADART_HAS_REASONING_BUDGET_MULTI
+struct llama_dart_reasoning_budget_config {
+  const llama_vocab *vocab;
+  std::vector<llama_tokens> starts;
+  std::vector<llama_tokens> ends;
+  llama_tokens forced;
+  int32_t budget_tokens;
+  int32_t replay_end_index;
+
+  llama_sampler *make_natural(common_reasoning_budget_state initial_state) const {
+    return common_reasoning_budget_init(vocab, starts, ends, forced,
+                                        budget_tokens, initial_state);
+  }
+};
+#endif
+
 struct llama_dart_reasoning_budget {
-  llama_sampler *budget = nullptr;
+  llama_dart_budget_sampler_ptr budget;
   llama_sampler *grammar = nullptr;
   bool pause_grammar_while_reasoning = false;
+#if LLAMADART_HAS_REASONING_BUDGET_MULTI
+  std::shared_ptr<const llama_dart_reasoning_budget_config> multi = nullptr;
+  bool forcing_only = false;
+#endif
 };
+
+#if LLAMADART_HAS_REASONING_BUDGET_MULTI
+static void llama_dart_reasoning_budget_replace_child(
+    llama_dart_reasoning_budget &context, llama_sampler *child, bool forcing_only) {
+  if (child == nullptr) {
+    throw std::runtime_error("failed to initialize reasoning-budget sampler");
+  }
+  context.budget.reset(child);
+  context.forcing_only = forcing_only;
+}
+
+static void llama_dart_reasoning_budget_sync_forcing(
+    llama_dart_reasoning_budget &context) {
+  const auto state = common_reasoning_budget_get_state(context.budget.get());
+  if (!context.forcing_only && state == REASONING_BUDGET_FORCING) {
+    const auto &config = *context.multi;
+    // Upstream checks end matches in FORCING. With no delimiters, the forced
+    // cursor runs to the end even if the payload contains a complete marker.
+    llama_dart_reasoning_budget_replace_child(
+        context, common_reasoning_budget_init(config.vocab, {}, {}, config.forced,
+                                              0, REASONING_BUDGET_FORCING),
+        true);
+  } else if (context.forcing_only && state == REASONING_BUDGET_DONE) {
+    llama_dart_reasoning_budget_replace_child(
+        context, context.multi->make_natural(REASONING_BUDGET_DONE), false);
+  }
+}
+#endif
 
 static bool llama_dart_reasoning_budget_should_apply_grammar(
     const llama_dart_reasoning_budget *sampler) {
@@ -654,7 +705,7 @@ static bool llama_dart_reasoning_budget_should_apply_grammar(
     return true;
   }
 
-  const auto state = common_reasoning_budget_get_state(sampler->budget);
+  const auto state = common_reasoning_budget_get_state(sampler->budget.get());
   return state == REASONING_BUDGET_IDLE || state == REASONING_BUDGET_DONE;
 }
 
@@ -678,7 +729,7 @@ static bool llama_dart_reasoning_budget_matches(
 static common_reasoning_budget_state
 llama_dart_reasoning_budget_initial_state(
     const std::vector<llama_token> &start_tokens,
-    const std::vector<llama_token> &end_tokens,
+    const std::vector<llama_tokens> &end_sequences,
     const llama_token *prompt_tokens, int32_t prompt_token_count) {
   auto state = REASONING_BUDGET_IDLE;
   for (int32_t index = 0; index < prompt_token_count;) {
@@ -688,10 +739,14 @@ llama_dart_reasoning_budget_initial_state(
       index += static_cast<int32_t>(start_tokens.size());
       continue;
     }
-    if (llama_dart_reasoning_budget_matches(
-            prompt_tokens, prompt_token_count, index, end_tokens)) {
+    const auto end = std::find_if(
+        end_sequences.begin(), end_sequences.end(), [&](const auto &sequence) {
+          return llama_dart_reasoning_budget_matches(
+              prompt_tokens, prompt_token_count, index, sequence);
+        });
+    if (end != end_sequences.end()) {
       state = REASONING_BUDGET_IDLE;
-      index += static_cast<int32_t>(end_tokens.size());
+      index += static_cast<int32_t>(end->size());
       continue;
     }
     ++index;
@@ -731,7 +786,28 @@ static void llama_dart_reasoning_budget_accept(struct llama_sampler *sampler,
   const bool accept_grammar =
       llama_dart_reasoning_budget_should_apply_grammar(context);
 
-  llama_sampler_accept(context->budget, token);
+#if LLAMADART_HAS_REASONING_BUDGET_MULTI
+  const auto previous_state = common_reasoning_budget_get_state(context->budget.get());
+#endif
+  llama_sampler_accept(context->budget.get(), token);
+#if LLAMADART_HAS_REASONING_BUDGET_MULTI
+  if (context->multi != nullptr) {
+    llama_dart_reasoning_budget_sync_forcing(*context);
+    const int32_t replay = context->multi->replay_end_index;
+    if (replay >= 0 && !accept_grammar && context->grammar != nullptr &&
+        (previous_state == REASONING_BUDGET_COUNTING ||
+         previous_state == REASONING_BUDGET_WAITING_UTF8) &&
+        common_reasoning_budget_get_state(context->budget.get()) ==
+            REASONING_BUDGET_DONE) {
+      const auto *matched = common_reasoning_budget_get_end_match(context->budget.get());
+      if (matched != nullptr && *matched == context->multi->ends[replay]) {
+        for (llama_token opener_token : *matched) {
+          llama_sampler_accept(context->grammar, opener_token);
+        }
+      }
+    }
+  }
+#endif
   if (accept_grammar) {
     llama_sampler_accept(context->grammar, token);
   }
@@ -740,7 +816,7 @@ static void llama_dart_reasoning_budget_accept(struct llama_sampler *sampler,
 static void llama_dart_reasoning_budget_apply(
     struct llama_sampler *sampler, llama_token_data_array *candidates) {
   auto *context = static_cast<llama_dart_reasoning_budget *>(sampler->ctx);
-  llama_sampler_apply(context->budget, candidates);
+  llama_sampler_apply(context->budget.get(), candidates);
   if (llama_dart_reasoning_budget_should_apply_grammar(context)) {
     llama_sampler_apply(context->grammar, candidates);
   }
@@ -748,7 +824,15 @@ static void llama_dart_reasoning_budget_apply(
 
 static void llama_dart_reasoning_budget_reset(struct llama_sampler *sampler) {
   auto *context = static_cast<llama_dart_reasoning_budget *>(sampler->ctx);
-  llama_sampler_reset(context->budget);
+#if LLAMADART_HAS_REASONING_BUDGET_MULTI
+  if (context->multi != nullptr) {
+    llama_dart_reasoning_budget_replace_child(
+        *context, context->multi->make_natural(REASONING_BUDGET_IDLE), false);
+  } else
+#endif
+  {
+    llama_sampler_reset(context->budget.get());
+  }
   if (context->grammar != nullptr) {
     llama_sampler_reset(context->grammar);
   }
@@ -763,12 +847,8 @@ static void llama_dart_reasoning_budget_free(struct llama_sampler *sampler) {
     return;
   }
 
-  if (context->budget != nullptr) {
-    llama_sampler_free(context->budget);
-  }
-  if (context->grammar != nullptr) {
-    llama_sampler_free(context->grammar);
-  }
+  context->budget.reset();
+  llama_sampler_free(context->grammar);
   delete context;
 }
 
@@ -785,6 +865,16 @@ static struct llama_sampler_i llama_dart_reasoning_budget_interface = {
     /* .backend_set_input = */ nullptr,
 };
 
+static llama_sampler *llama_dart_reasoning_budget_wrap(
+    std::unique_ptr<llama_dart_reasoning_budget> context) {
+  auto *result =
+      llama_sampler_init(&llama_dart_reasoning_budget_interface, context.get());
+  if (result != nullptr) {
+    context.release();
+  }
+  return result;
+}
+
 static struct llama_sampler *
 llama_dart_reasoning_budget_clone(const struct llama_sampler *sampler) {
   const auto *context =
@@ -793,35 +883,24 @@ llama_dart_reasoning_budget_clone(const struct llama_sampler *sampler) {
     return nullptr;
   }
 
-  auto *budget_clone = llama_sampler_clone(context->budget);
-  auto *grammar_clone = context->grammar == nullptr
-      ? nullptr
-      : llama_sampler_clone(context->grammar);
-  if (budget_clone == nullptr ||
-      (context->grammar != nullptr && grammar_clone == nullptr)) {
-    if (budget_clone != nullptr) {
-      llama_sampler_free(budget_clone);
-    }
-    if (grammar_clone != nullptr) {
-      llama_sampler_free(grammar_clone);
-    }
+  llama_dart_budget_sampler_ptr budget(
+      llama_sampler_clone(context->budget.get()), llama_sampler_free);
+  llama_dart_budget_sampler_ptr grammar(
+      llama_sampler_clone(context->grammar), llama_sampler_free);
+  if (budget == nullptr || (context->grammar != nullptr && grammar == nullptr)) {
     return nullptr;
   }
 
-  auto *clone = new llama_dart_reasoning_budget{
-      /* .budget                        = */ budget_clone,
-      /* .grammar                       = */ grammar_clone,
-      /* .pause_grammar_while_reasoning = */
-          context->pause_grammar_while_reasoning,
-  };
-  auto *result =
-      llama_sampler_init(&llama_dart_reasoning_budget_interface, clone);
-  if (result == nullptr) {
-    llama_sampler_free(clone->budget);
-    if (clone->grammar != nullptr) {
-      llama_sampler_free(clone->grammar);
-    }
-    delete clone;
+  auto clone = std::unique_ptr<llama_dart_reasoning_budget>(
+      new llama_dart_reasoning_budget{
+          std::move(budget), grammar.get(), context->pause_grammar_while_reasoning});
+#if LLAMADART_HAS_REASONING_BUDGET_MULTI
+  clone->multi = context->multi;
+  clone->forcing_only = context->forcing_only;
+#endif
+  auto *result = llama_dart_reasoning_budget_wrap(std::move(clone));
+  if (result != nullptr) {
+    grammar.release();
   }
   return result;
 }
@@ -3070,37 +3149,46 @@ extern "C" void llama_dart_test_tts_release_read_latch(void) {
 }
 #endif
 
+static bool llama_dart_reasoning_budget_valid_input(
+    const llama_vocab *vocab, const char *start_tag, const char *end_tag,
+    int32_t budget_tokens, const llama_token *prompt_tokens,
+    int32_t prompt_token_count) {
+  return vocab != nullptr && start_tag != nullptr && end_tag != nullptr &&
+         start_tag[0] != '\0' && end_tag[0] != '\0' && budget_tokens >= 0 &&
+         prompt_token_count >= 0 &&
+         (prompt_token_count == 0 || prompt_tokens != nullptr);
+}
+
+static llama_tokens llama_dart_reasoning_budget_forced_tokens(
+    const llama_vocab *vocab, const char *forced_message, const char *end_tag) {
+  std::string text = forced_message == nullptr ? "" : forced_message;
+  text += end_tag;
+  return common_tokenize(vocab, text, false, true);
+}
+
 static struct llama_sampler *llama_dart_sampler_init_reasoning_budget_impl(
     const struct llama_vocab *vocab, const char *start_tag, const char *end_tag,
     const char *forced_message, int32_t budget_tokens,
     bool pause_grammar_while_reasoning,
     struct llama_sampler *grammar_sampler, const llama_token *prompt_tokens,
     int32_t prompt_token_count) {
-  if (vocab == nullptr || start_tag == nullptr || end_tag == nullptr ||
-      start_tag[0] == '\0' || end_tag[0] == '\0' || budget_tokens < 0 ||
-      prompt_token_count < 0 ||
-      (prompt_token_count > 0 && prompt_tokens == nullptr)) {
+  if (!llama_dart_reasoning_budget_valid_input(
+          vocab, start_tag, end_tag, budget_tokens, prompt_tokens,
+          prompt_token_count)) {
     return nullptr;
   }
 
   const auto start_tokens = common_tokenize(vocab, start_tag, false, true);
   const auto end_tokens = common_tokenize(vocab, end_tag, false, true);
-  std::string forced_tokens_text =
-      forced_message == nullptr ? "" : forced_message;
-  forced_tokens_text += end_tag;
   const auto forced_tokens =
-      common_tokenize(vocab, forced_tokens_text, false, true);
+      llama_dart_reasoning_budget_forced_tokens(vocab, forced_message, end_tag);
   if (start_tokens.empty() || end_tokens.empty() || forced_tokens.empty()) {
     return nullptr;
   }
 
   const auto initial_state = llama_dart_reasoning_budget_initial_state(
-      start_tokens, end_tokens, prompt_tokens, prompt_token_count);
-  // Keep grammar_sampler owned by the caller on initialization failure, also
-  // when it fails with an exception. The Dart bridge frees it when this
-  // function returns nullptr; ownership moves to the composite sampler only
-  // after a non-null result is returned.
-  std::unique_ptr<llama_sampler, void (*)(llama_sampler *)> budget_sampler(
+      start_tokens, {end_tokens}, prompt_tokens, prompt_token_count);
+  llama_dart_budget_sampler_ptr budget_sampler(
       llama_dart_reasoning_budget_init_compat(
           &common_reasoning_budget_init, vocab, start_tokens, end_tokens,
           forced_tokens, budget_tokens, initial_state),
@@ -3109,19 +3197,12 @@ static struct llama_sampler *llama_dart_sampler_init_reasoning_budget_impl(
     return nullptr;
   }
 
-  std::unique_ptr<llama_dart_reasoning_budget> context(
-      new llama_dart_reasoning_budget{
-          /* .budget                        = */ budget_sampler.get(),
-          /* .grammar                       = */ grammar_sampler,
-          /* .pause_grammar_while_reasoning = */ pause_grammar_while_reasoning,
-      });
-  auto *result =
-      llama_sampler_init(&llama_dart_reasoning_budget_interface, context.get());
-  if (result != nullptr) {
-    budget_sampler.release();
-    context.release();
-  }
-  return result;
+  // The caller keeps grammar_sampler on every init failure. Only the
+  // successfully wrapped sampler owns it.
+  return llama_dart_reasoning_budget_wrap(
+      std::unique_ptr<llama_dart_reasoning_budget>(new llama_dart_reasoning_budget{
+          std::move(budget_sampler), grammar_sampler, pause_grammar_while_reasoning
+      }));
 }
 
 LLAMADART_API struct llama_sampler *llama_dart_sampler_init_reasoning_budget(
@@ -3137,6 +3218,67 @@ LLAMADART_API struct llama_sampler *llama_dart_sampler_init_reasoning_budget(
         prompt_token_count);
   });
 }
+
+#if LLAMADART_HAS_REASONING_BUDGET_MULTI
+LLAMADART_API struct llama_sampler *llama_dart_sampler_init_reasoning_budget_multi(
+    const struct llama_vocab *vocab, const char *start_tag, const char *end_tag,
+    const char *forced_message, const char *const *natural_end_tags,
+    int32_t natural_end_tag_count, int32_t grammar_replay_end_index,
+    int32_t budget_tokens, bool pause_grammar_while_reasoning,
+    struct llama_sampler *grammar_sampler, const llama_token *prompt_tokens,
+    int32_t prompt_token_count) {
+  return llama_dart_barrier<llama_sampler *>(nullptr, [=]() -> llama_sampler * {
+    if (!llama_dart_reasoning_budget_valid_input(
+            vocab, start_tag, end_tag, budget_tokens, prompt_tokens,
+            prompt_token_count) ||
+        natural_end_tags == nullptr || natural_end_tag_count <= 0 ||
+        grammar_replay_end_index < -1 ||
+        grammar_replay_end_index >= natural_end_tag_count) {
+      return nullptr;
+    }
+
+    auto start_tokens = common_tokenize(vocab, start_tag, false, true);
+    auto forced_tokens =
+        llama_dart_reasoning_budget_forced_tokens(vocab, forced_message, end_tag);
+    if (start_tokens.empty() || forced_tokens.empty() ||
+        common_tokenize(vocab, end_tag, false, true).empty()) {
+      return nullptr;
+    }
+
+    std::vector<llama_tokens> end_sequences;
+    end_sequences.reserve(natural_end_tag_count);
+    for (int32_t i = 0; i < natural_end_tag_count; ++i) {
+      const char *tag = natural_end_tags[i];
+      if (tag == nullptr || tag[0] == '\0') {
+        return nullptr;
+      }
+      auto sequence = common_tokenize(vocab, tag, false, true);
+      if (sequence.empty()) {
+        return nullptr;
+      }
+      end_sequences.push_back(std::move(sequence));
+    }
+
+    const auto initial_state = llama_dart_reasoning_budget_initial_state(
+        start_tokens, end_sequences, prompt_tokens, prompt_token_count);
+    const auto config = std::make_shared<const llama_dart_reasoning_budget_config>(
+        llama_dart_reasoning_budget_config{
+            vocab, {std::move(start_tokens)}, std::move(end_sequences),
+            std::move(forced_tokens), budget_tokens, grammar_replay_end_index});
+    llama_dart_budget_sampler_ptr budget(config->make_natural(initial_state),
+                                         llama_sampler_free);
+    if (budget == nullptr) {
+      return static_cast<llama_sampler *>(nullptr);
+    }
+
+    auto context = std::unique_ptr<llama_dart_reasoning_budget>(
+        new llama_dart_reasoning_budget{std::move(budget), grammar_sampler,
+                                      pause_grammar_while_reasoning, config});
+    llama_dart_reasoning_budget_sync_forcing(*context);
+    return llama_dart_reasoning_budget_wrap(std::move(context));
+  });
+}
+#endif
 
 static struct llama_dart_speculative *llama_dart_speculative_init_impl(
     struct llama_model *target_model, struct llama_model *draft_model,
