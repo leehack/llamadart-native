@@ -215,6 +215,17 @@ int main() {
 list(APPEND CMAKE_REQUIRED_INCLUDES
     "${CMAKE_CURRENT_SOURCE_DIR}/third_party/llama.cpp/common"
     "${CMAKE_CURRENT_SOURCE_DIR}/third_party/llama.cpp/vendor")
+unset(LLAMADART_HAS_REASONING_BUDGET_MULTI CACHE)
+llamadart_probe_declaration(LLAMADART_HAS_REASONING_BUDGET_MULTI
+    "#include <reasoning-budget.h>
+#include <type_traits>
+static_assert(std::is_invocable_r_v<llama_sampler *,
+    decltype(&common_reasoning_budget_init), const llama_vocab *,
+    const std::vector<llama_tokens> &, const std::vector<llama_tokens> &,
+    const llama_tokens &, int32_t, common_reasoning_budget_state>);
+static_assert(std::is_invocable_r_v<const llama_tokens *,
+    decltype(&common_reasoning_budget_get_end_match), const llama_sampler *>);
+int main() { return 0; }")
 unset(LLAMADART_SPECULATIVE_HAS_COMMON_BATCH CACHE)
 llamadart_probe_declaration(LLAMADART_SPECULATIVE_HAS_COMMON_BATCH
     "#include <common.h>
@@ -327,6 +338,7 @@ if (MSVC)
     target_compile_options(llamadart_lib PRIVATE /EHsc-)
 endif()
 target_compile_definitions(llamadart_lib PRIVATE
+    LLAMADART_HAS_REASONING_BUDGET_MULTI=$<BOOL:${LLAMADART_HAS_REASONING_BUDGET_MULTI}>
     LLAMADART_FIT_HAS_PATH_LIST=$<BOOL:${LLAMADART_FIT_HAS_PATH_LIST}>
     LLAMADART_FIT_HAS_NGL_SKIP=$<BOOL:${LLAMADART_FIT_HAS_NGL_SKIP}>
     LLAMADART_HAS_BATCH_EXT=$<BOOL:${LLAMADART_HAS_BATCH_EXT}>
@@ -624,6 +636,7 @@ if (LLAMADART_BUILD_TESTS)
     target_compile_features(llamadart_exit_teardown_test PRIVATE cxx_std_17)
     target_compile_definitions(llamadart_exit_teardown_test PRIVATE
         LLAMADART_TESTING=1
+        LLAMADART_HAS_REASONING_BUDGET_MULTI=$<BOOL:${LLAMADART_HAS_REASONING_BUDGET_MULTI}>
         LLAMADART_HAS_BATCH_EXT=$<BOOL:${LLAMADART_HAS_BATCH_EXT}>
         LLAMADART_SPECULATIVE_HAS_COMMON_BATCH=$<BOOL:${LLAMADART_SPECULATIVE_HAS_COMMON_BATCH}>
         LLAMADART_SPECULATIVE_HAS_BATCH_STATE=$<BOOL:${LLAMADART_SPECULATIVE_HAS_BATCH_STATE}>
@@ -667,6 +680,13 @@ if (LLAMADART_BUILD_TESTS)
             "${exit_teardown_vocabulary_model}")
     set_tests_properties(llamadart_exit_teardown_barrier-grammar PROPERTIES
         FIXTURES_REQUIRED llamadart_exit_teardown_vocabulary_model)
+    if (LLAMADART_HAS_REASONING_BUDGET_MULTI)
+        add_test(NAME llamadart_exit_teardown_reasoning-budget
+            COMMAND llamadart_exit_teardown_test reasoning-budget
+                "${exit_teardown_vocabulary_model}")
+        set_tests_properties(llamadart_exit_teardown_reasoning-budget PROPERTIES
+            FIXTURES_REQUIRED llamadart_exit_teardown_vocabulary_model TIMEOUT 30)
+    endif()
     # Apple automatic teardown and Linux retained statics are exercised
     # with CPU models. They use a model the test writes itself unless one is
     # given. On Linux the backends are modules, of which the test loads the
