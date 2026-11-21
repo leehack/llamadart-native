@@ -56,8 +56,8 @@ class ValidateExportsTests(unittest.TestCase):
         self.assertEqual(len(retiring), 15)
         required = set(validate_exports.DEFAULT_REQUIRED_SYMBOLS)
         self.assertFalse(required & retiring)
-        self.assertEqual(len(validate_exports.DEFAULT_REQUIRED_SYMBOLS), 111)
-        self.assertEqual(len(required), 111)
+        self.assertEqual(len(validate_exports.DEFAULT_REQUIRED_SYMBOLS), 113)
+        self.assertEqual(len(required), 113)
         self.assertIn('llama_dart_speculative_need_embd_nextn', required)
         self.assertEqual(len(validate_exports.RETIRED_SPECULATIVE_SYMBOLS), 15)
         self.assertEqual(set(validate_exports.RETIRED_SPECULATIVE_SYMBOLS), retiring)
@@ -88,7 +88,7 @@ class ValidateExportsTests(unittest.TestCase):
         result, diagnostics = self.validate_synthetic_exports(
             validate_exports.DEFAULT_REQUIRED_SYMBOLS)
         self.assertEqual(result, 0, diagnostics)
-        self.assertIn('Validated 111 required export(s)', diagnostics)
+        self.assertIn('Validated 113 required export(s)', diagnostics)
 
     def test_retired_embedding_query_fails_with_all_required_exports(self):
         result, diagnostics = self.validate_synthetic_exports([
@@ -106,6 +106,18 @@ class ValidateExportsTests(unittest.TestCase):
         self.assertEqual(result, 1, diagnostics)
         self.assertIn('Missing exports', diagnostics)
         self.assertIn('llama_dart_speculative_need_embd_nextn', diagnostics)
+
+    def test_each_reasoning_budget_export_is_required(self):
+        reasoning_exports = {
+            'llama_dart_sampler_init_reasoning_budget',
+            'llama_dart_sampler_init_reasoning_budget_multi',
+        }
+        complete = reasoning_exports | set(validate_exports.DEFAULT_REQUIRED_SYMBOLS)
+        for missing in sorted(reasoning_exports):
+            with self.subTest(missing=missing):
+                result, diagnostics = self.validate_synthetic_exports(complete - {missing})
+                self.assertEqual(result, 1, diagnostics)
+                self.assertIn(f'  - {missing}\n', diagnostics)
 
     def test_every_live_asr_export_is_required(self):
         asr = [symbol for symbol in validate_exports.DEFAULT_REQUIRED_SYMBOLS

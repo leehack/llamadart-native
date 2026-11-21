@@ -1228,6 +1228,8 @@ LLAMADART_API struct llama_sampler * llama_dart_sampler_init_reasoning_budget(
 // strings and prompt tokens are borrowed for this call. Exhaustion forces
 // the entire tokenized forced_message + end_tag. A paused grammar receives
 // the matched end at grammar_replay_end_index only on a natural close.
+// If the selected end is a tool opener, each reasoning block that closes on
+// it replays the opener once.
 // Use -1 to disable replay. The caller owns grammar_sampler on failure.
 LLAMADART_API struct llama_sampler * llama_dart_sampler_init_reasoning_budget_multi(
     const struct llama_vocab * vocab,
