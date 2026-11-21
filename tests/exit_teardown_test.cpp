@@ -864,6 +864,8 @@ int make_model(const char *path, bool is_encoder,
     pieces[221] = "</think>";
     pieces[222] = "<tool_call>";
     types[220] = types[221] = types[222] = LLAMA_TOKEN_TYPE_CONTROL;
+    pieces[223] = "<0xE2>";
+    types[223] = LLAMA_TOKEN_TYPE_BYTE;
     std::vector<const char *> texts;
     for (const std::string &piece : pieces) {
       texts.push_back(piece.c_str());
@@ -3355,17 +3357,24 @@ int test_reasoning_budget(const char *path, bool qwen35) {
                     : "<think><tool_call><think>\n", 13);
 
   {
-    auto legacy = [&](const char *message) {
+    auto legacy = [&](const char *message, const tokens &prompt) {
       return reasoning_sampler_ptr(llama_dart_sampler_init_reasoning_budget(
-          vocab, start, end, message, 0, false, nullptr, start_tokens.data(),
-          start_tokens.size()), llama_sampler_free);
+          vocab, start, end, message, 0, false, nullptr, prompt.data(),
+          prompt.size()), llama_sampler_free);
     };
-    auto opener_is_payload = legacy("<tool_call>\n");
+    auto opener_is_payload = legacy("<tool_call>\n", start_tokens);
     assert(opener_is_payload);
     check_reasoning_forced(opener_is_payload.get(), tokenize("<tool_call>\n</think>"));
-    auto historical_early_end = legacy("</think><tool_call>");
+    auto historical_early_end = legacy("</think><tool_call>", start_tokens);
     assert(historical_early_end);
     check_reasoning_forced(historical_early_end.get(), end_tokens);
+
+    auto closed = legacy(nullptr, tokenize("<think></think>"));
+    assert(closed);
+    check_reasoning_logits(closed.get(), other, false);
+    auto reopened = legacy(nullptr, tokenize("<think></think><think>"));
+    assert(reopened);
+    check_reasoning_forced(reopened.get(), end_tokens);
   }
 
   {
@@ -3397,6 +3406,23 @@ int test_reasoning_budget(const char *path, bool qwen35) {
     accept(multi.get(), {other, other});
     check_reasoning_forced(multi.get(), forced);
     assert(record->accepted == start_tokens);
+
+    accept(clone.get(), start_tokens);
+    check_reasoning_logits(clone.get(), other, false);
+    accept(clone.get(), {other, other});
+    check_reasoning_forced(clone.get(), forced);
+    accept(clone.get(), start_tokens);
+    accept(clone.get(), {other, other});
+    check_reasoning_logits(clone.get(), forced.front(), true);
+    llama_sampler_reset(clone.get());
+    check_reasoning_logits(clone.get(), other, false);
+    accept(clone.get(), start_tokens);
+    accept(clone.get(), {other});
+    accept(clone.get(), opener_tokens);
+    check_reasoning_logits(clone.get(), other, false);
+    accept(clone.get(), start_tokens);
+    accept(clone.get(), {other, other});
+    check_reasoning_forced(clone.get(), forced);
   }
 
   {
@@ -3432,6 +3458,33 @@ int test_reasoning_budget(const char *path, bool qwen35) {
     accept(multi.get(), opener_tokens);
     assert(record->accepted == opener_tokens);
     check_reasoning_logits(multi.get(), other, false);
+    accept(multi.get(), {other});
+    assert((record->accepted == tokens{opener_tokens[0], other}));
+  }
+
+  {
+    // A standalone three-byte UTF-8 lead byte exhausts the budget mid-character.
+    llama_token incomplete = LLAMA_TOKEN_NULL;
+    const auto vocab_size = llama_vocab_n_tokens(vocab);
+    for (llama_token token = 0; token < vocab_size; ++token) {
+      char piece;
+      if (llama_token_to_piece(vocab, token, &piece, 1, 0, false) == 1 &&
+          piece == '\xe2') {
+        incomplete = token;
+        break;
+      }
+    }
+    assert(incomplete != LLAMA_TOKEN_NULL);
+    int frees = 0;
+    auto *record = new reasoning_grammar_record{{}, &frees};
+    auto multi = create(ends, 2, start_tokens, 1, nullptr, true,
+                        recording_reasoning_grammar(record));
+    accept(multi.get(), {incomplete});
+    check_reasoning_logits(multi.get(), opener_tokens[0], false);
+    assert(record->accepted.empty());
+    accept(multi.get(), opener_tokens);
+    check_reasoning_logits(multi.get(), other, false);
+    assert(record->accepted == opener_tokens);
     accept(multi.get(), {other});
     assert((record->accepted == tokens{opener_tokens[0], other}));
   }
@@ -3488,10 +3541,14 @@ int test_reasoning_budget(const char *path, bool qwen35) {
                         recording_reasoning_grammar(record));
     accept(multi.get(), with_newline);
     assert(record->accepted == with_newline);
+    auto *bare_record = new reasoning_grammar_record{{}, &frees};
     auto bare = create(ends, 0, start_tokens, 1, nullptr, true,
-                       recording_reasoning_grammar(new reasoning_grammar_record{{}, &frees}));
+                       recording_reasoning_grammar(bare_record));
     accept(bare.get(), end_tokens);
+    assert(bare_record->accepted.empty());
     check_reasoning_logits(bare.get(), other, false);
+    accept(bare.get(), {other});
+    assert((bare_record->accepted == tokens{other}));
   }
   return 0;
 }

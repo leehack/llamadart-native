@@ -1000,6 +1000,7 @@ jobs:
               throw "Missing core wrapper DLL in $out"
             }
             python tools/validate_exports.py --format dumpbin --tool dumpbin $wrapper.FullName
+            if ($LASTEXITCODE -ne 0) { throw "Export validation failed for $($wrapper.Name)" }
             python tools/validate_build_identity.py $wrapper.FullName
             if ($LASTEXITCODE -ne 0) { throw "Missing build identity in $($wrapper.Name)" }
           }
