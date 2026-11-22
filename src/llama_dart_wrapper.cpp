@@ -6,6 +6,7 @@
 #if defined(LLAMADART_TESTING)
 #include "llama_dart_asr_test_hooks.h"
 #include "llama_dart_fit_test_hooks.h"
+#include "llama_dart_reasoning_budget_test_hooks.h"
 #include "llama_dart_tts_test_hooks.h"
 #endif
 #include "llama_dart_evaluate_internal.h"
@@ -865,12 +866,26 @@ static struct llama_sampler_i llama_dart_reasoning_budget_interface = {
     /* .backend_set_input = */ nullptr,
 };
 
+#if defined(LLAMADART_TESTING)
+static void (*g_test_reasoning_budget_init_hook)() = nullptr;
+
+extern "C" void llama_dart_test_set_reasoning_budget_init_hook(void (*hook)()) {
+  g_test_reasoning_budget_init_hook = hook;
+}
+#endif
+
 static llama_sampler *llama_dart_reasoning_budget_wrap(
     std::unique_ptr<llama_dart_reasoning_budget> context) {
   auto *result =
       llama_sampler_init(&llama_dart_reasoning_budget_interface, context.get());
   if (result != nullptr) {
     context.release();
+#if defined(LLAMADART_TESTING)
+    // The wait test must reach this checkpoint after all vocabulary reads.
+    if (g_test_reasoning_budget_init_hook != nullptr) {
+      g_test_reasoning_budget_init_hook();
+    }
+#endif
   }
   return result;
 }
@@ -3212,6 +3227,7 @@ LLAMADART_API struct llama_sampler *llama_dart_sampler_init_reasoning_budget(
     struct llama_sampler *grammar_sampler, const llama_token *prompt_tokens,
     int32_t prompt_token_count) {
   return llama_dart_barrier<llama_sampler *>(nullptr, [=] {
+    llama_dart_exit_call call;
     return llama_dart_sampler_init_reasoning_budget_impl(
         vocab, start_tag, end_tag, forced_message, budget_tokens,
         pause_grammar_while_reasoning, grammar_sampler, prompt_tokens,
@@ -3228,6 +3244,7 @@ LLAMADART_API struct llama_sampler *llama_dart_sampler_init_reasoning_budget_mul
     struct llama_sampler *grammar_sampler, const llama_token *prompt_tokens,
     int32_t prompt_token_count) {
   return llama_dart_barrier<llama_sampler *>(nullptr, [=]() -> llama_sampler * {
+    llama_dart_exit_call call;
     if (!llama_dart_reasoning_budget_valid_input(
             vocab, start_tag, end_tag, budget_tokens, prompt_tokens,
             prompt_token_count) ||

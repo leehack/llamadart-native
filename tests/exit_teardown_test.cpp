@@ -3,6 +3,7 @@
 #endif
 
 #include "llama_dart_asr_test_hooks.h"
+#include "llama_dart_reasoning_budget_test_hooks.h"
 #include "llama_dart_speculative_internal.h"
 #include "llama_dart_tts_test_hooks.h"
 #include "llama_dart_wrapper.h"
@@ -477,6 +478,23 @@ int test_blocked() {
   late([](void *) { llama_dart_process(nullptr, 0, nullptr); }, nullptr);
   late([](void *) { llama_dart_synchronize(nullptr); }, nullptr);
   late([](void *) { llama_dart_sampler_sample(nullptr, nullptr, 0); }, nullptr);
+  late(
+      [](void *) {
+        llama_dart_sampler_init_reasoning_budget(nullptr, "<think>", "</think>",
+                                                 nullptr, 1, false, nullptr,
+                                                 nullptr, 0);
+      },
+      nullptr);
+#if LLAMADART_HAS_REASONING_BUDGET_MULTI
+  late(
+      [](void *) {
+        const char *ends[] = {"</think>", "<tool_call>"};
+        llama_dart_sampler_init_reasoning_budget_multi(
+            nullptr, "<think>", "</think>", nullptr, ends, 2, -1, 1, false,
+            nullptr, nullptr, 0);
+      },
+      nullptr);
+#endif
   late([](void *) { llama_dart_state_save_file(nullptr, "", nullptr, 0); },
        nullptr);
   late(
@@ -1575,6 +1593,69 @@ void release_when_teardown_waits() {
   }
   g_release_evaluation.store(true);
 }
+
+#if defined(__APPLE__)
+std::atomic<bool> g_reasoning_init_held{false};
+std::atomic<bool> g_reasoning_init_resumed{false};
+
+void hold_reasoning_init() {
+  g_reasoning_init_held.store(true);
+  // Wait past the registry's 250 ms settle period so it cannot mask an
+  // uncounted call.
+  while (now_ms() - g_last_beat_ms.load() < 500) {
+    sleep_ms(1);
+  }
+  g_reasoning_init_resumed.store(true);
+}
+
+void free_reasoning_model(void *object) {
+  if (!g_reasoning_init_resumed.load()) {
+    fprintf(stderr, "exit freed the model during reasoning sampler init\n");
+    _Exit(EXIT_FAILURE);
+  }
+  llama_model_free(static_cast<llama_model *>(object));
+}
+
+int test_reasoning_budget_exit_wait(const char *path,
+                                    [[maybe_unused]] bool multi) {
+  // Registered first so it sees the registry after automatic teardown.
+  assert(atexit([] { assert(llama_dart_exit_tracked_count() == 0); }) == 0);
+  init_backends();
+  auto params = llama_model_default_params();
+  static ggml_backend_dev_t no_devices[] = {nullptr};
+  params.devices = no_devices;
+  params.n_gpu_layers = 0;
+  params.vocab_only = true;
+  auto *model = llama_model_load_from_file(path, params);
+  assert(model != nullptr);
+  assert(llama_dart_exit_track(model, free_reasoning_model,
+                               LLAMA_DART_EXIT_STAGE_MODEL));
+  const auto *vocab = llama_model_get_vocab(model);
+
+  start_beat();
+  llama_dart_test_set_reasoning_budget_init_hook(hold_reasoning_init);
+  std::thread([=] {
+    llama_sampler *sampler = nullptr;
+#if LLAMADART_HAS_REASONING_BUDGET_MULTI
+    if (multi) {
+      const char *ends[] = {"</think>", "<tool_call>"};
+      sampler = llama_dart_sampler_init_reasoning_budget_multi(
+          vocab, "<think>", "</think>", nullptr, ends, 2, -1, 1, false, nullptr,
+          nullptr, 0);
+    } else
+#endif
+    {
+      sampler = llama_dart_sampler_init_reasoning_budget(
+          vocab, "<think>", "</think>", nullptr, 1, false, nullptr, nullptr, 0);
+    }
+    llama_sampler_free(sampler);
+  }).detach();
+  while (!g_reasoning_init_held.load()) {
+    sleep_ms(1);
+  }
+  std::exit(EXIT_SUCCESS);
+}
+#endif
 
 // Holds the evaluation that calls it until it is released.
 bool hold_evaluation(ggml_tensor *, bool, void *) {
@@ -3769,6 +3850,16 @@ int main(int argc, char **argv) {
     if (scenario == "make-mtp-model") {
       return make_model(first, false, true, true);
     }
+#if defined(__APPLE__)
+    if (scenario == "reasoning-budget-exit-wait") {
+      return test_reasoning_budget_exit_wait(first, false);
+    }
+#if LLAMADART_HAS_REASONING_BUDGET_MULTI
+    if (scenario == "reasoning-budget-multi-exit-wait") {
+      return test_reasoning_budget_exit_wait(first, true);
+    }
+#endif
+#endif
 #if LLAMADART_HAS_REASONING_BUDGET_MULTI
     if (scenario == "reasoning-budget" || scenario == "reasoning-budget-qwen35") {
       return test_reasoning_budget(first, scenario == "reasoning-budget-qwen35");
