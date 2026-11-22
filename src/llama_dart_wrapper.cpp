@@ -866,12 +866,26 @@ static struct llama_sampler_i llama_dart_reasoning_budget_interface = {
     /* .backend_set_input = */ nullptr,
 };
 
+#if defined(LLAMADART_TESTING)
+static void (*g_test_reasoning_budget_init_hook)() = nullptr;
+
+extern "C" void llama_dart_test_set_reasoning_budget_init_hook(void (*hook)()) {
+  g_test_reasoning_budget_init_hook = hook;
+}
+#endif
+
 static llama_sampler *llama_dart_reasoning_budget_wrap(
     std::unique_ptr<llama_dart_reasoning_budget> context) {
   auto *result =
       llama_sampler_init(&llama_dart_reasoning_budget_interface, context.get());
   if (result != nullptr) {
     context.release();
+#if defined(LLAMADART_TESTING)
+    // The wait test must reach this checkpoint after all vocabulary reads.
+    if (g_test_reasoning_budget_init_hook != nullptr) {
+      g_test_reasoning_budget_init_hook();
+    }
+#endif
   }
   return result;
 }
@@ -3150,23 +3164,10 @@ extern "C" void llama_dart_test_tts_release_read_latch(void) {
 }
 #endif
 
-#if defined(LLAMADART_TESTING)
-static void (*g_test_reasoning_budget_init_hook)() = nullptr;
-
-extern "C" void llama_dart_test_set_reasoning_budget_init_hook(void (*hook)()) {
-  g_test_reasoning_budget_init_hook = hook;
-}
-#endif
-
 static bool llama_dart_reasoning_budget_valid_input(
     const llama_vocab *vocab, const char *start_tag, const char *end_tag,
     int32_t budget_tokens, const llama_token *prompt_tokens,
     int32_t prompt_token_count) {
-#if defined(LLAMADART_TESTING)
-  if (g_test_reasoning_budget_init_hook != nullptr) {
-    g_test_reasoning_budget_init_hook();
-  }
-#endif
   return vocab != nullptr && start_tag != nullptr && end_tag != nullptr &&
          start_tag[0] != '\0' && end_tag[0] != '\0' && budget_tokens >= 0 &&
          prompt_token_count >= 0 &&
