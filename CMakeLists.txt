@@ -675,6 +675,18 @@ if (LLAMADART_BUILD_TESTS)
                 FIXTURES_REQUIRED llamadart_exit_teardown_vocabulary_model TIMEOUT 30)
         endforeach()
     endif()
+    if (APPLE)
+        set(reasoning_budget_exit_scenarios reasoning-budget-exit-wait)
+        if (LLAMADART_HAS_REASONING_BUDGET_MULTI)
+            list(APPEND reasoning_budget_exit_scenarios reasoning-budget-multi-exit-wait)
+        endif()
+        foreach(scenario IN LISTS reasoning_budget_exit_scenarios)
+            add_test(NAME llamadart_exit_teardown_${scenario}
+                COMMAND llamadart_exit_teardown_test ${scenario} "${exit_teardown_vocabulary_model}")
+            set_tests_properties(llamadart_exit_teardown_${scenario} PROPERTIES
+                FIXTURES_REQUIRED llamadart_exit_teardown_vocabulary_model TIMEOUT 30)
+        endforeach()
+    endif()
     add_test(NAME llamadart_exit_teardown_barrier-grammar
         COMMAND llamadart_exit_teardown_test barrier-grammar
             "${exit_teardown_vocabulary_model}")
