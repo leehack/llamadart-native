@@ -3183,6 +3183,7 @@ struct reasoning_grammar_record {
   tokens accepted;
   int *frees;
   llama_token rejected = LLAMA_TOKEN_NULL;
+  reasoning_grammar_record **clone_out = nullptr;
 };
 
 using reasoning_sampler_ptr = std::unique_ptr<llama_sampler, decltype(&llama_sampler_free)>;
@@ -3202,8 +3203,14 @@ llama_sampler *recording_reasoning_grammar(reasoning_grammar_record *record) {
       static_cast<reasoning_grammar_record *>(sampler->ctx)->accepted.clear();
     };
     result.clone = [](const llama_sampler *sampler) {
-      return recording_reasoning_grammar(new reasoning_grammar_record(
-          *static_cast<const reasoning_grammar_record *>(sampler->ctx)));
+      const auto *state =
+          static_cast<const reasoning_grammar_record *>(sampler->ctx);
+      auto *clone = new reasoning_grammar_record{state->accepted, state->frees,
+                                                 state->rejected};
+      if (state->clone_out != nullptr) {
+        *state->clone_out = clone;
+      }
+      return recording_reasoning_grammar(clone);
     };
     result.free = [](llama_sampler *sampler) {
       auto *state = static_cast<reasoning_grammar_record *>(sampler->ctx);
@@ -3379,7 +3386,9 @@ int test_reasoning_budget(const char *path, bool qwen35) {
 
   {
     int frees = 0;
-    auto *record = new reasoning_grammar_record{{}, &frees};
+    reasoning_grammar_record *cloned_record = nullptr;
+    auto *record = new reasoning_grammar_record{
+        {}, &frees, LLAMA_TOKEN_NULL, &cloned_record};
     const char *message = embedded_primary;
     const auto forced = tokenize(std::string(message) + end);
     auto multi = create(ends, 2, start_tokens, 2, message, true,
@@ -3390,6 +3399,7 @@ int test_reasoning_budget(const char *path, bool qwen35) {
     accept(multi.get(), {forced.front()});
     reasoning_sampler_ptr clone(llama_sampler_clone(multi.get()), llama_sampler_free);
     assert(clone);
+    assert(cloned_record != nullptr);
     check_reasoning_forced(multi.get(), forced, 1);
     check_reasoning_forced(clone.get(), forced, 1);
     assert(record->accepted.empty());
@@ -3419,6 +3429,8 @@ int test_reasoning_budget(const char *path, bool qwen35) {
     accept(clone.get(), start_tokens);
     accept(clone.get(), {other});
     accept(clone.get(), opener_tokens);
+    assert(
+        (cloned_record->accepted == tokens{start_tokens[0], opener_tokens[0]}));
     check_reasoning_logits(clone.get(), other, false);
     accept(clone.get(), start_tokens);
     accept(clone.get(), {other, other});
