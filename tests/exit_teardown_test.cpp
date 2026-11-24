@@ -1648,6 +1648,12 @@ int test_reasoning_budget_exit_wait(const char *path,
       sampler = llama_dart_sampler_init_reasoning_budget(
           vocab, "<think>", "</think>", nullptr, 1, false, nullptr, nullptr, 0);
     }
+    if (sampler == nullptr) {
+      fprintf(stderr, "%s returned null before the exit-teardown checkpoint\n",
+              multi ? "llama_dart_sampler_init_reasoning_budget_multi"
+                    : "llama_dart_sampler_init_reasoning_budget");
+      _Exit(EXIT_FAILURE);
+    }
     llama_sampler_free(sampler);
   }).detach();
   while (!g_reasoning_init_held.load()) {
