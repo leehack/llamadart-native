@@ -9,7 +9,10 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tools'))
-from ci_scope import changed_paths, native_required, pinned_llama_cpp, upstream_rows, validate_results
+from ci_scope import (
+    apple_xcframework_required, changed_paths, native_required, pinned_llama_cpp,
+    upstream_rows, validate_results,
+)
 sys.path.insert(0, str(ROOT / 'scripts'))
 from verify_release_provenance import workflow_job
 
@@ -25,6 +28,33 @@ class ScopeTests(unittest.TestCase):
                      'scripts/release_publication.py', 'tests/test_release_contract.py'):
             with self.subTest(path=path):
                 self.assertFalse(native_required([path]))
+
+    def test_apple_xcframework_scope(self):
+        self.assertFalse(apple_xcframework_required(['docs/release_version_policy.md']))
+        self.assertTrue(apple_xcframework_required([]))
+        for path in (
+            'tests/test_apple_xcframework.py',
+            'tools/apple_bundle_metadata.py',
+            'tools/package_apple_xcframework.py',
+            'tools/validate_apple_xcframework.py',
+            'tools/apple/PrivacyInfo.xcprivacy',
+            '.github/workflows/validate_release_provenance.yml',
+            'tools/ci_scope.py',
+        ):
+            with self.subTest(path=path):
+                self.assertTrue(apple_xcframework_required(['README.md', path]))
+
+    def test_provenance_workflow_routes_apple_job_through_scope(self):
+        workflow = (ROOT / '.github/workflows/validate_release_provenance.yml').read_text()
+        changes = workflow_job(workflow, 'changes')
+        self.assertIn('fetch-depth: 0', changes)
+        self.assertIn('github.event.pull_request.base.sha || github.event.before', changes)
+        self.assertIn('tools/ci_scope.py --apple-xcframework', changes)
+        apple = workflow_job(workflow, 'macos-apple-xcframework-tools')
+        self.assertIn('needs: changes', apple)
+        self.assertIn("if: needs.changes.outputs.apple_xcframework == 'true'", apple)
+        for name in ('verify', 'python310-linux-artifact-tools'):
+            self.assertNotIn('needs: changes', workflow_job(workflow, name))
 
     def test_runtime_shared_unknown_and_platform_inputs_keep_all_lanes(self):
         for path in ('src/wrapper.c', 'tests/tts_api_test.c',

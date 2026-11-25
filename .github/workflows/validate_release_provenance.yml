@@ -13,6 +13,20 @@ permissions:
   contents: read
 
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      apple_xcframework: ${{ steps.scope.outputs.apple_xcframework }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: scope
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: python3 tools/ci_scope.py --apple-xcframework
+
   python310-linux-artifact-tools:
     runs-on: ubuntu-latest
     steps:
@@ -29,6 +43,8 @@ jobs:
           tests.validate_linux_artifact_test
 
   macos-apple-xcframework-tools:
+    needs: changes
+    if: needs.changes.outputs.apple_xcframework == 'true'
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v7
