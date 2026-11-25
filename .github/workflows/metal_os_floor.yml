@@ -16,6 +16,10 @@ on:
   # A release checks the native_apple_* artifacts of its build-apple job.
   workflow_call:
 
+concurrency:
+  group: metal-os-floor-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 permissions:
   contents: read
 

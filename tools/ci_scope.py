@@ -29,6 +29,18 @@ def native_required(paths):
     )
 
 
+def apple_xcframework_required(paths):
+    return not paths or not {
+        'tests/test_apple_xcframework.py',
+        'tools/apple_bundle_metadata.py',
+        'tools/package_apple_xcframework.py',
+        'tools/validate_apple_xcframework.py',
+        'tools/apple/PrivacyInfo.xcprivacy',
+        '.github/workflows/validate_release_provenance.yml',
+        'tools/ci_scope.py',
+    }.isdisjoint(paths)
+
+
 def changed_paths(base, head='HEAD'):
     # --no-renames reports both old deletion and new addition, including moves
     # from native inputs into docs/tooling. NUL records preserve arbitrary names.
@@ -77,12 +89,18 @@ def validate_results(needs):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--check-results', action='store_true')
+    parser.add_argument('--apple-xcframework', action='store_true')
     args = parser.parse_args()
     if args.check_results:
         return 0 if validate_results(json.loads(os.environ['NEEDS_JSON'])) else 1
-    upstreams, pinned = upstream_rows(os.environ['LLAMADART_UPSTREAMS'], pinned_llama_cpp())
     # An unavailable diff fails the classifier, never silently skips work.
     paths = changed_paths(os.environ.get('BASE_SHA', ''))
+    if args.apple_xcframework:
+        value = str(apple_xcframework_required(paths)).lower()
+        with Path(os.environ['GITHUB_OUTPUT']).open('a') as out:
+            out.write(f'apple_xcframework={value}\n')
+        return 0
+    upstreams, pinned = upstream_rows(os.environ['LLAMADART_UPSTREAMS'], pinned_llama_cpp())
     value = str(native_required(paths)).lower()
     print(json.dumps({'native': value, 'upstreams': upstreams, 'pinned': pinned, 'paths': paths}))
     with Path(os.environ['GITHUB_OUTPUT']).open('a') as out:
