@@ -17,7 +17,7 @@ env:
   # Exactly one row: the pinned upstream shipped by the current llamadart core minor.
   # tools/ci_scope.py checks that the row matches the submodule pin.
   LLAMADART_UPSTREAMS: >-
-    {"v1.0.0": "b1b770d90d94cad9e9ea5b993bdbc383a522fb28"}
+    {"v1.1.0": "171527522610996f5f0acf12334e185156ca8f44"}
 
 jobs:
   changes:
