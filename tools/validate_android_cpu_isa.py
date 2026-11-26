@@ -20,8 +20,8 @@ import sys
 # Bind complete source subtree pairs, not independent hash sets: a new caller
 # or a different KleidiAI combination invalidates the dispatch audit.
 # Candidate audit evidence: docs/v070_android_isa_qualification.md,
-# docs/v080_android_isa_qualification.md, docs/v090_android_isa_qualification.md
-# and docs/v100_android_isa_qualification.md.
+# docs/v080_android_isa_qualification.md, docs/v090_android_isa_qualification.md,
+# docs/v100_android_isa_qualification.md and docs/v110_android_isa_qualification.md.
 V070_SOURCE_PAIR = (
     "b571df853210d243a83b1ec34a6936f147916f0369d792f8bb0d17f37fc7894b",
     "deb324dbcf8c952ec149433ab58cbed0b2ab2374a557f0a4eea575b2da761377",
@@ -38,11 +38,16 @@ V100_SOURCE_PAIR = (
     "9eb33398797f3bba473032917ebe0cd017a67ff12eeaf3d88e4c2552bbfa94e1",
     "fd5b9ca98d07b81671eca377c258da74e72173f92f3cab0acdf6c17ab870bd9d",
 )
+V110_SOURCE_PAIR = (
+    "4556ff74f100cb77202657b26bcc77c715c7321b1a6a0f9f9ed6243f7f2eebd0",
+    "fd5b9ca98d07b81671eca377c258da74e72173f92f3cab0acdf6c17ab870bd9d",
+)
 SOURCE_PAIRS = frozenset({
     V070_SOURCE_PAIR,  # llama.cpp v0.7.0 / KleidiAI v1.31.0
     V080_SOURCE_PAIR,  # llama.cpp v0.8.0 8642541b255bfb5dc39cd351a178be09013a55d6 / KleidiAI v1.32.0
     V090_SOURCE_PAIR,  # llama.cpp v0.9.0 cd959bae99ff4bed22bef2604f45241c09bbb8c8 / KleidiAI v1.32.0
     V100_SOURCE_PAIR,  # llama.cpp v1.0.0 b1b770d90d94cad9e9ea5b993bdbc383a522fb28 / KleidiAI v1.32.0
+    V110_SOURCE_PAIR,  # llama.cpp v1.1.0 171527522610996f5f0acf12334e185156ca8f44 / KleidiAI v1.32.0
 })
 
 # Exact ELF STT_FUNC ranges; never allow by kai_* prefix or disassembly label.
@@ -82,7 +87,7 @@ kai_kernel_matmul_clamp_f32_qsi8d32p1x4_qai4c32p16vsx4s1s0sf16_1x16vs_sme2_dot
 
 # KleidiAI v1.32.0 adds a Q8_0 table entry reachable only with runtime SVE256,
 # SVE I8MM and DOTPROD. v0.9.0 keeps KleidiAI and its ggml callers unchanged, so
-# the v0.8.0, v0.9.0 and reviewed v1.0.0 pairs grant these two kernels.
+# the v0.8.0, v0.9.0, v1.0.0 and v1.1.0 pairs grant these two kernels.
 DISPATCHED_FUNCTIONS_V080 = DISPATCHED_FUNCTIONS_V070 | frozenset("""
 kai_kernel_matmul_clamp_f32_qai8dxp1x8_qsi8cxp8x8_1x8_sve_dot
 kai_kernel_matmul_clamp_f32_qai8dxp4x8sf32_qsi8cxp4vsx8sf32bf32_16x4vs_sve_i8mm
@@ -93,6 +98,7 @@ PAIR_FUNCTIONS = {
     V080_SOURCE_PAIR: DISPATCHED_FUNCTIONS_V080,
     V090_SOURCE_PAIR: DISPATCHED_FUNCTIONS_V080,
     V100_SOURCE_PAIR: DISPATCHED_FUNCTIONS_V080,
+    V110_SOURCE_PAIR: DISPATCHED_FUNCTIONS_V080,
 }
 
 SCALABLE_REG = re.compile(r"\b(?:z\d+|p\d+|pn\d+|za\d*[hv]?|zt\d+)\b")
