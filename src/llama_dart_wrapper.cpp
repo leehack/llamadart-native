@@ -418,11 +418,6 @@ static uint16_t llama_dart_uint16_or_default(int32_t value,
   return static_cast<uint16_t>(value);
 }
 
-static bool llama_dart_type_mask_has(uint32_t type_mask,
-                                     common_speculative_type type) {
-  return (type_mask & (1u << static_cast<uint32_t>(type))) != 0;
-}
-
 static llama_batch llama_dart_cap_batch_outputs(llama_batch batch,
                                                 std::vector<int8_t> &mask) {
   mask.clear();
@@ -483,41 +478,6 @@ llama_dart_split_speculative_type_names(const char *type_names) {
     start = end + 1;
   }
   return result;
-}
-
-static bool llama_dart_type_mask_has_draft_context(uint32_t type_mask) {
-  return llama_dart_type_mask_has(type_mask, COMMON_SPECULATIVE_TYPE_DRAFT_SIMPLE) ||
-         llama_dart_type_mask_has(type_mask, COMMON_SPECULATIVE_TYPE_DRAFT_EAGLE3) ||
-         llama_dart_type_mask_has(type_mask, COMMON_SPECULATIVE_TYPE_DRAFT_MTP) ||
-         llama_dart_type_mask_has(type_mask, COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH) ||
-         llama_dart_type_mask_has(type_mask, COMMON_SPECULATIVE_TYPE_DRAFT_DSPARK);
-}
-
-static bool llama_dart_type_mask_has_non_mtp_draft_context(uint32_t type_mask) {
-  return llama_dart_type_mask_has(type_mask, COMMON_SPECULATIVE_TYPE_DRAFT_SIMPLE) ||
-         llama_dart_type_mask_has(type_mask, COMMON_SPECULATIVE_TYPE_DRAFT_EAGLE3) ||
-         llama_dart_type_mask_has(type_mask, COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH) ||
-         llama_dart_type_mask_has(type_mask, COMMON_SPECULATIVE_TYPE_DRAFT_DSPARK);
-}
-
-static int llama_dart_count_draft_context_types(uint32_t type_mask) {
-  int count = 0;
-  if (llama_dart_type_mask_has(type_mask, COMMON_SPECULATIVE_TYPE_DRAFT_SIMPLE)) {
-    ++count;
-  }
-  if (llama_dart_type_mask_has(type_mask, COMMON_SPECULATIVE_TYPE_DRAFT_EAGLE3)) {
-    ++count;
-  }
-  if (llama_dart_type_mask_has(type_mask, COMMON_SPECULATIVE_TYPE_DRAFT_MTP)) {
-    ++count;
-  }
-  if (llama_dart_type_mask_has(type_mask, COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH)) {
-    ++count;
-  }
-  if (llama_dart_type_mask_has(type_mask, COMMON_SPECULATIVE_TYPE_DRAFT_DSPARK)) {
-    ++count;
-  }
-  return count;
 }
 
 static std::vector<uint32_t> llama_dart_speculative_target_output_layer_ids(

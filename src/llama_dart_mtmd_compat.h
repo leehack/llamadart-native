@@ -78,6 +78,10 @@ llama_dart_bitmap_from_file(mtmd_context *ctx, const char *fname) {
 static inline mtmd_helper_gen_audio_inp llama_dart_audio_input_compat(
     llama_dart_tts_model_type model_type, const char *variant) {
   mtmd_helper_gen_audio_inp input{};
+#if LLAMADART_MTMD_AUDIO_HAS_SPEED
+  // Upstream rejects speed <= 0; the other delivery fields default to zero.
+  input.speed = 1.0f;
+#endif
 #if LLAMADART_MTMD_AUDIO_HAS_TEMP
   // v1 adds an explicit frame/noise temperature; zero means greedy. LFM3
   // previously used mtmd_gen_inp_default, as did untuned Pocket variants.

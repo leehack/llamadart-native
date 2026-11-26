@@ -202,6 +202,57 @@ llama_dart_speculative_embedding_requirements_for(
   return result;
 }
 
+inline bool llama_dart_type_mask_has(uint32_t type_mask,
+                                     common_speculative_type type) {
+  return (type_mask & (1u << static_cast<uint32_t>(type))) != 0;
+}
+
+// Block drafts yield a whole block per round, so the draft context needs one
+// output per drafted token.
+inline bool llama_dart_is_block_draft_type(common_speculative_type type) {
+  return type == COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH ||
+#if LLAMADART_SPECULATIVE_HAS_DFLASH2
+         type == COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH2 ||
+         type == COMMON_SPECULATIVE_TYPE_DRAFT_LILICORR ||
+#endif
+         type == COMMON_SPECULATIVE_TYPE_DRAFT_DSPARK;
+}
+
+inline bool llama_dart_is_non_mtp_draft_type(common_speculative_type type) {
+  return type == COMMON_SPECULATIVE_TYPE_DRAFT_SIMPLE ||
+         type == COMMON_SPECULATIVE_TYPE_DRAFT_EAGLE3 ||
+         llama_dart_is_block_draft_type(type);
+}
+
+inline bool llama_dart_type_mask_has_non_mtp_draft_context(uint32_t type_mask) {
+  for (int bit = 0; bit < static_cast<int>(COMMON_SPECULATIVE_TYPE_COUNT); ++bit) {
+    const auto type = static_cast<common_speculative_type>(bit);
+    if (llama_dart_type_mask_has(type_mask, type) &&
+        llama_dart_is_non_mtp_draft_type(type)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+inline bool llama_dart_type_mask_has_draft_context(uint32_t type_mask) {
+  return llama_dart_type_mask_has(type_mask, COMMON_SPECULATIVE_TYPE_DRAFT_MTP) ||
+         llama_dart_type_mask_has_non_mtp_draft_context(type_mask);
+}
+
+inline int llama_dart_count_draft_context_types(uint32_t type_mask) {
+  int count = 0;
+  for (int bit = 0; bit < static_cast<int>(COMMON_SPECULATIVE_TYPE_COUNT); ++bit) {
+    const auto type = static_cast<common_speculative_type>(bit);
+    if (llama_dart_type_mask_has(type_mask, type) &&
+        (type == COMMON_SPECULATIVE_TYPE_DRAFT_MTP ||
+         llama_dart_is_non_mtp_draft_type(type))) {
+      ++count;
+    }
+  }
+  return count;
+}
+
 inline void llama_dart_apply_speculative_draft_output_limits(
     llama_context_params &context_params,
     const std::vector<common_speculative_type> &types, int32_t draft_token_max,
@@ -211,8 +262,7 @@ inline void llama_dart_apply_speculative_draft_output_limits(
 
   const bool has_block_draft =
       std::any_of(types.begin(), types.end(), [](common_speculative_type type) {
-        return type == COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH ||
-               type == COMMON_SPECULATIVE_TYPE_DRAFT_DSPARK;
+        return llama_dart_is_block_draft_type(type);
       });
   if (!has_block_draft) {
     return;

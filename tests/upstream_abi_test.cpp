@@ -1,4 +1,6 @@
 #include "llama_dart_wrapper.h"
+#include "ggml-backend.h"
+#include "ggml-rpc.h"
 #include "mtmd-helper.h"
 
 #include <cassert>
@@ -8,6 +10,21 @@
 
 #ifdef NDEBUG
 #error "ABI canaries require active assertions"
+#endif
+
+// v1.1.0 adds mtmd_helper_gen_audio_inp::speed on top of v1.0.0's context layout.
+#if LLAMADART_CONTEXT_HAS_MOE_CPU_SHARE && LLAMADART_MTMD_AUDIO_HAS_SPEED
+#define LLAMADART_ABI_V110 1
+#else
+#define LLAMADART_ABI_V110 0
+#endif
+
+#if LLAMADART_ABI_V110
+#define LLAMADART_ABI_SOURCE "171527522610996f5f0acf12334e185156ca8f44"
+#elif LLAMADART_CONTEXT_HAS_MOE_CPU_SHARE
+#define LLAMADART_ABI_SOURCE "b1b770d90d94cad9e9ea5b993bdbc383a522fb28"
+#else
+#define LLAMADART_ABI_SOURCE "cd959bae99ff4bed22bef2604f45241c09bbb8c8"
 #endif
 
 namespace {
@@ -23,7 +40,9 @@ bool admits(const char *identity) {
   const auto end = value.find(';', at + key.size());
   if (end == std::string::npos) return false;
   const auto source = value.substr(at + key.size(), end - at - key.size());
-#if LLAMADART_CONTEXT_HAS_MOE_CPU_SHARE
+#if LLAMADART_ABI_V110
+  return source == "171527522610996f5f0acf12334e185156ca8f44";
+#elif LLAMADART_CONTEXT_HAS_MOE_CPU_SHARE
   return source == "b1b770d90d94cad9e9ea5b993bdbc383a522fb28";
 #else
   return source == "cd959bae99ff4bed22bef2604f45241c09bbb8c8" ||
@@ -43,16 +62,19 @@ int main() {
   int calls = 0;
   const auto spy = [&] { ++calls; };
   for (const char *identity : {static_cast<const char *>(nullptr), "", "unknown",
-      "llamadart-native-build/2;llama.cpp=b1b770d90d94cad9e9ea5b993bdbc383a522fb28;",
+      "llamadart-native-build/2;llama.cpp=" LLAMADART_ABI_SOURCE ";",
       "llamadart-native-build/1;llama.cpp=unknown;",
-      "llamadart-native-build/1;llama.cpp=b1b770d90d94cad9e9ea5b993bdbc383a522fb28+dirty.123;",
-      "llamadart-native-build/1;llama.cpp=b1b770d90d94cad9e9ea5b993bdbc383a522fb28;llama.cpp=unknown;"}) {
+      "llamadart-native-build/1;llama.cpp=" LLAMADART_ABI_SOURCE "+dirty.123;",
+      "llamadart-native-build/1;llama.cpp=" LLAMADART_ABI_SOURCE ";llama.cpp=unknown;"}) {
     assert(!admitted_defaults(identity, spy));
   }
-#if LLAMADART_CONTEXT_HAS_MOE_CPU_SHARE
-  assert(!admitted_defaults("llamadart-native-build/1;llama.cpp=cd959bae99ff4bed22bef2604f45241c09bbb8c8;", spy));
-#else
+#if LLAMADART_ABI_V110
   assert(!admitted_defaults("llamadart-native-build/1;llama.cpp=b1b770d90d94cad9e9ea5b993bdbc383a522fb28;", spy));
+#elif LLAMADART_CONTEXT_HAS_MOE_CPU_SHARE
+  assert(!admitted_defaults("llamadart-native-build/1;llama.cpp=cd959bae99ff4bed22bef2604f45241c09bbb8c8;", spy));
+  assert(!admitted_defaults("llamadart-native-build/1;llama.cpp=171527522610996f5f0acf12334e185156ca8f44;", spy));
+#else
+  assert(!admitted_defaults("llamadart-native-build/1;llama.cpp=171527522610996f5f0acf12334e185156ca8f44;", spy));
 #endif
   assert(calls == 0); // No by-value call made on any refused runtime.
   const auto check_defaults = [&] {
@@ -77,11 +99,55 @@ int main() {
   static_assert(sizeof(void *) == 8, "review layout for this ABI");
   static_assert(alignof(llama_context_params) == 8, "context alignment changed");
   static_assert(sizeof(llama_model_params) == 80);
-#if LLAMADART_MTMD_AUDIO_HAS_TEMP
+  // llama_batch and its decode entry points are deprecated from v1.1.0 but
+  // remain the wrapper's decode path, so their layout is part of the contract.
+  static_assert(sizeof(llama_batch) == 56 && alignof(llama_batch) == 8);
+  static_assert(offsetof(llama_batch, token) == 8 && offsetof(llama_batch, embd) == 16 &&
+                offsetof(llama_batch, pos) == 24 && offsetof(llama_batch, n_seq_id) == 32 &&
+                offsetof(llama_batch, seq_id) == 40 && offsetof(llama_batch, logits) == 48);
+#if LLAMADART_ABI_V110
+  static_assert(sizeof(mtmd_helper_gen_audio_inp) == 96);
+  static_assert(alignof(mtmd_helper_gen_audio_inp) == 8);
+  static_assert(offsetof(mtmd_helper_gen_audio_inp, speaker_ref) == 32);
+  static_assert(offsetof(mtmd_helper_gen_audio_inp, lang) == 48);
+  static_assert(offsetof(mtmd_helper_gen_audio_inp, temp) == 64);
+  static_assert(offsetof(mtmd_helper_gen_audio_inp, seed) == 68);
+  static_assert(offsetof(mtmd_helper_gen_audio_inp, speed) == 72);
+  static_assert(offsetof(mtmd_helper_gen_audio_inp, out_type) == 88);
+  static_assert(sizeof(mtmd_gen_audio_info) == 32);
+  static_assert(offsetof(mtmd_gen_audio_info, sample_rate) == 4);
+  static_assert(offsetof(mtmd_gen_audio_info, n_channels) == 8);
+  static_assert(offsetof(mtmd_gen_audio_info, model_variant) == 16);
+  static_assert(offsetof(mtmd_gen_audio_info, n_voices) == 24);
+  static_assert(sizeof(mtmd_gen_inp) == 112);
+  static_assert(sizeof(mtmd_helper_init_opt) == 40);
+  static_assert(sizeof(mtmd_helper_video_init_params) == 40);
+  static_assert(sizeof(mtmd_helper_cap) == 9);
+  static_assert(offsetof(mtmd_helper_cap, audio_stream) == 4);
+  static_assert(offsetof(mtmd_helper_cap, audio_duplex) == 5);
+  static_assert(offsetof(mtmd_helper_cap, text_gen) == 6);
+  static_assert(sizeof(llama_model_quantize_params) == 136);
+  static_assert(sizeof(ggml_backend_dev_props) == 56);
+  static_assert(sizeof(ggml_backend_dev_caps) == 6);
+  static_assert(offsetof(ggml_backend_dev_caps, fast_async_host_input) == 5);
+  static_assert(GGML_OP_COUNT == 101);
+  static_assert(RPC_PROTO_MAJOR_VERSION == 10 && RPC_PROTO_MINOR_VERSION == 0 &&
+                RPC_PROTO_PATCH_VERSION == 2);
+  assert(mtmd_helper_gen_audio_inp_default().temp == -1.0f);
+  assert(mtmd_helper_gen_audio_inp_default().speed == 1.0f);
+#elif LLAMADART_MTMD_AUDIO_HAS_TEMP
   static_assert(sizeof(mtmd_helper_gen_audio_inp) == 72);
   static_assert(alignof(mtmd_helper_gen_audio_inp) == 8);
   static_assert(offsetof(mtmd_helper_gen_audio_inp, temp) == 56);
   static_assert(offsetof(mtmd_helper_gen_audio_inp, seed) == 60);
+  static_assert(sizeof(mtmd_gen_audio_info) == 24);
+  static_assert(sizeof(mtmd_gen_inp) == 72);
+  static_assert(sizeof(mtmd_helper_init_opt) == 32);
+  static_assert(sizeof(mtmd_helper_video_init_params) == 32);
+  static_assert(sizeof(mtmd_helper_cap) == 8);
+  static_assert(offsetof(mtmd_helper_cap, text_gen) == 5);
+  static_assert(sizeof(llama_model_quantize_params) == 64);
+  static_assert(sizeof(ggml_backend_dev_caps) == 5);
   assert(mtmd_helper_gen_audio_inp_default().temp == -1.0f);
 #endif
 #if LLAMADART_CONTEXT_HAS_MOE_CPU_SHARE
@@ -90,7 +156,9 @@ int main() {
   static_assert(offsetof(llama_context_params, abort_callback) == 128);
   static_assert(offsetof(llama_context_params, samplers) == 152);
   static_assert(offsetof(llama_context_params, ctx_other) == 168);
+#if !LLAMADART_ABI_V110
   static_assert(GGML_OP_COUNT == 99);
+#endif
 #else
   static_assert(sizeof(llama_context_params) == 168);
   static_assert(offsetof(llama_context_params, abort_callback) == 120);
@@ -99,6 +167,21 @@ int main() {
   // v0.8 and v0.9 use the pre-pruning enum.
   static_assert(GGML_OP_COUNT == 102);
 #endif
+  // Taking the address resolves each deprecated export against the library.
+#if defined(__clang__) || defined(__GNUC__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+#endif
+  const void *deprecated_exports[] = {
+      reinterpret_cast<const void *>(&llama_batch_get_one),
+      reinterpret_cast<const void *>(&llama_batch_init),
+      reinterpret_cast<const void *>(&llama_batch_free),
+      reinterpret_cast<const void *>(&llama_encode),
+      reinterpret_cast<const void *>(&llama_decode)};
+#if defined(__clang__) || defined(__GNUC__)
+#pragma GCC diagnostic pop
+#endif
+  for (const void *entry : deprecated_exports) assert(entry != nullptr);
   std::printf("context: sizeof=%zu alignof=%zu moe_cache=%zu abort=%zu samplers=%zu ctx_other=%zu; model=%zu; audio_input=%zu; ggml_ops=%d\n",
       sizeof(llama_context_params), alignof(llama_context_params),
       offsetof(llama_context_params, moe_cache_size), offsetof(llama_context_params, abort_callback),

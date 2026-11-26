@@ -97,6 +97,42 @@ static void expect_draft_output_limits(
   assert(params.n_outputs_max_per_seq == expected_per_sequence);
 }
 
+static uint32_t type_bit(common_speculative_type type) {
+  return 1u << static_cast<uint32_t>(type);
+}
+
+static void test_draft_context_type_mask() {
+  std::vector<common_speculative_type> external = {
+      COMMON_SPECULATIVE_TYPE_DRAFT_SIMPLE, COMMON_SPECULATIVE_TYPE_DRAFT_EAGLE3,
+      COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH, COMMON_SPECULATIVE_TYPE_DRAFT_DSPARK};
+#if LLAMADART_SPECULATIVE_HAS_DFLASH2
+  external.push_back(COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH2);
+  external.push_back(COMMON_SPECULATIVE_TYPE_DRAFT_LILICORR);
+#endif
+  for (const auto type : external) {
+    const uint32_t mask = type_bit(type);
+    assert(llama_dart_type_mask_has_draft_context(mask));
+    assert(llama_dart_type_mask_has_non_mtp_draft_context(mask));
+    assert(llama_dart_count_draft_context_types(mask) == 1);
+    assert(llama_dart_count_draft_context_types(
+               mask | type_bit(COMMON_SPECULATIVE_TYPE_DRAFT_MTP)) == 2);
+    assert(llama_dart_count_draft_context_types(
+               mask | type_bit(COMMON_SPECULATIVE_TYPE_NGRAM_MOD)) == 1);
+  }
+  const uint32_t mtp = type_bit(COMMON_SPECULATIVE_TYPE_DRAFT_MTP);
+  assert(llama_dart_type_mask_has_draft_context(mtp));
+  assert(!llama_dart_type_mask_has_non_mtp_draft_context(mtp));
+  for (const auto type : {COMMON_SPECULATIVE_TYPE_NONE,
+                          COMMON_SPECULATIVE_TYPE_NGRAM_SIMPLE,
+                          COMMON_SPECULATIVE_TYPE_NGRAM_MAP_K,
+                          COMMON_SPECULATIVE_TYPE_NGRAM_MAP_K4V,
+                          COMMON_SPECULATIVE_TYPE_NGRAM_MOD,
+                          COMMON_SPECULATIVE_TYPE_NGRAM_CACHE}) {
+    assert(!llama_dart_type_mask_has_draft_context(type_bit(type)));
+    assert(llama_dart_count_draft_context_types(type_bit(type)) == 0);
+  }
+}
+
 static llama_dart_speculative *make_generic_contract_backend(common_speculative_type type) {
   common_params_speculative params;
   params.types = {type};
@@ -600,6 +636,18 @@ int main(int argc, char **argv) {
   expect_draft_output_limits(
       {COMMON_SPECULATIVE_TYPE_NGRAM_MOD, COMMON_SPECULATIVE_TYPE_DRAFT_DSPARK},
       3, true, 4, 4);
+#if LLAMADART_SPECULATIVE_HAS_DFLASH2
+  expect_requirements(COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH2, false);
+  expect_requirements(COMMON_SPECULATIVE_TYPE_DRAFT_LILICORR, false);
+  expect_draft_output_limits({COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH2}, 7, false,
+                             8, 1);
+  expect_draft_output_limits({COMMON_SPECULATIVE_TYPE_DRAFT_LILICORR}, 7, true,
+                             8, 8);
+  expect_draft_output_limits({COMMON_SPECULATIVE_TYPE_DRAFT_SIMPLE,
+                              COMMON_SPECULATIVE_TYPE_DRAFT_LILICORR},
+                             3, true, 4, 4);
+#endif
+  test_draft_context_type_mask();
   test_generic_accept_requires_draft();
   test_generic_draft_clamps_and_failed_draft();
   test_generic_repeated_accept_and_sequence_validation();
