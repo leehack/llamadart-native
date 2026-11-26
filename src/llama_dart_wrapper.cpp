@@ -2047,12 +2047,78 @@ LLAMADART_API void llama_dart_synchronize(struct llama_context *ctx) {
   });
 }
 
+// llama_sampler_sample as of llama.cpp b1b770d9, except that it checks the
+// selection before accepting it. A chain that leaves every candidate at -inf
+// can still select one, and a grammar sampler that accepts an end-of-generation
+// token it has not finished with ends the process in GGML_ABORT, which no
+// exception barrier catches. Throws, so the barrier records the failure.
+static llama_token llama_dart_sample_checked(struct llama_sampler *smpl,
+                                             struct llama_context *ctx,
+                                             int32_t idx) {
+  const llama_token backend_token = llama_get_sampled_token_ith(ctx, idx);
+  if (backend_token != LLAMA_TOKEN_NULL) {
+    llama_sampler_accept(smpl, backend_token);
+    return backend_token;
+  }
+
+  const float *sampled_probs = llama_get_sampled_probs_ith(ctx, idx);
+  const float *sampled_logits = llama_get_sampled_logits_ith(ctx, idx);
+  const llama_token *sampled_ids = llama_get_sampled_candidates_ith(ctx, idx);
+
+  std::vector<llama_token_data> candidates;
+  if (sampled_probs != nullptr) {
+    const uint32_t count = llama_get_sampled_probs_count_ith(ctx, idx);
+    candidates.resize(count);
+    for (uint32_t i = 0; i < count; ++i) {
+      candidates[i] =
+          llama_token_data{sampled_ids[i], sampled_logits[i], sampled_probs[i]};
+    }
+  } else if (sampled_logits != nullptr) {
+    const uint32_t count = llama_get_sampled_logits_count_ith(ctx, idx);
+    candidates.resize(count);
+    for (uint32_t i = 0; i < count; ++i) {
+      candidates[i] = llama_token_data{sampled_ids[i], sampled_logits[i], 0.0f};
+    }
+  } else {
+    const float *logits = llama_get_logits_ith(ctx, idx);
+    if (logits == nullptr) {
+      throw std::runtime_error("No logits are available to sample from");
+    }
+    const llama_vocab *vocab = llama_model_get_vocab(llama_get_model(ctx));
+    const int32_t n_vocab = llama_vocab_n_tokens(vocab);
+    candidates.resize(static_cast<size_t>(n_vocab));
+    for (llama_token id = 0; id < n_vocab; ++id) {
+      candidates[id] = llama_token_data{id, logits[id], 0.0f};
+    }
+  }
+
+  llama_token_data_array array = {
+      /* .data       = */ candidates.data(),
+      /* .size       = */ candidates.size(),
+      /* .selected   = */ -1,
+      /* .sorted     = */ false,
+  };
+  llama_sampler_apply(smpl, &array);
+
+  if (array.selected < 0 ||
+      array.selected >= static_cast<int64_t>(array.size)) {
+    throw std::runtime_error("The sampler selected no candidate");
+  }
+  const llama_token_data &selected = array.data[array.selected];
+  if (!std::isfinite(selected.logit)) {
+    throw std::runtime_error(
+        "The sampler selected a candidate with a non-finite logit");
+  }
+  llama_sampler_accept(smpl, selected.id);
+  return selected.id;
+}
+
 LLAMADART_API llama_token llama_dart_sampler_sample(struct llama_sampler *smpl,
                                                     struct llama_context *ctx,
                                                     int32_t idx) {
   return llama_dart_barrier<llama_token>(LLAMA_TOKEN_NULL, [smpl, ctx, idx] {
     llama_dart_exit_call call;
-    return llama_sampler_sample(smpl, ctx, idx);
+    return llama_dart_sample_checked(smpl, ctx, idx);
   });
 }
 
@@ -3627,22 +3693,10 @@ static int32_t llama_dart_sampler_sample_and_accept_n_impl(
 
   int32_t count = 0;
   int32_t i = 0;
-  const auto sample_and_accept = [sampler, ctx](int32_t idx) {
-    // A token that the context's backend sampler chose is accepted here and
-    // not passed to llama_sampler_sample: whether that accepts such a token
-    // itself depends on the llama.cpp version, and it must be accepted once.
-    // llama_sampler_sample accepts what it samples on the CPU.
-    const llama_token backend_token = llama_get_sampled_token_ith(ctx, idx);
-    if (backend_token != LLAMA_TOKEN_NULL) {
-      llama_sampler_accept(sampler, backend_token);
-      return backend_token;
-    }
-    return llama_sampler_sample(sampler, ctx, idx);
-  };
 
   const llama_vocab *vocab = llama_model_get_vocab(llama_get_model(ctx));
   for (; i < draft_count; ++i) {
-    const llama_token id = sample_and_accept(idxs[i]);
+    const llama_token id = llama_dart_sample_checked(sampler, ctx, idxs[i]);
     out_tokens[count++] = id;
     // As llama.cpp's common_sampler_sample_and_accept_n since v0.6.0: the
     // draft tokens after an end of generation are not output, so the sampler
@@ -3655,7 +3709,7 @@ static int32_t llama_dart_sampler_sample_and_accept_n_impl(
   }
 
   if (i == draft_count) {
-    const llama_token id = sample_and_accept(idxs[i]);
+    const llama_token id = llama_dart_sample_checked(sampler, ctx, idxs[i]);
     out_tokens[count++] = id;
   }
 

@@ -3126,6 +3126,24 @@ bool throwing_eval_callback(ggml_tensor *, bool ask, void *) {
   }
 }
 
+const char *throwing_accept_name(const llama_sampler *) {
+  return "throwing-accept";
+}
+
+void throwing_accept(llama_sampler *, llama_token) {
+  throw std::runtime_error("accept failed");
+}
+
+llama_sampler *throwing_accept_sampler() {
+  static llama_sampler_i throwing_interface = [] {
+    llama_sampler_i value{};
+    value.name = throwing_accept_name;
+    value.accept = throwing_accept;
+    return value;
+  }();
+  return llama_sampler_init(&throwing_interface, nullptr);
+}
+
 // The same through a decode and the sampling that follows it, as generation
 // runs them, and for an exception from inside the decode itself.
 int test_model_barrier(const char *path) {
@@ -3138,8 +3156,6 @@ int test_model_barrier(const char *path) {
   assert(sampled >= 0);
   assert(llama_dart_last_error() == nullptr);
 
-  // The greedy sampler selects the token before the grammar sees it, so the
-  // chain accepts a token that the grammar rejects.
   const llama_token other =
       sampled == kGrammarToken ? kRejectedToken : kGrammarToken;
   const auto rejecting_chain = [vocab, other] {
@@ -3147,9 +3163,19 @@ int test_model_barrier(const char *path) {
     llama_sampler_chain_add(chain, grammar_sampler(vocab, other));
     return chain;
   };
+  // The greedy sampler selects the token before the grammar sees it, and the
+  // grammar leaves it at -inf: the sample is refused before the chain accepts
+  // it, which would be the exception of a grammar that rejects the token.
   llama_sampler *chain = rejecting_chain();
   assert(llama_dart_sampler_sample(chain, fixture.context, -1) == -1);
-  assert(is_grammar_stack_error(llama_dart_last_error()));
+  assert(strstr(llama_dart_last_error(), "non-finite") != nullptr);
+  llama_sampler_free(chain);
+
+  chain = llama_sampler_chain_init(llama_sampler_chain_default_params());
+  llama_sampler_chain_add(chain, llama_sampler_init_greedy());
+  llama_sampler_chain_add(chain, throwing_accept_sampler());
+  assert(llama_dart_sampler_sample(chain, fixture.context, -1) == -1);
+  assert(std::string(llama_dart_last_error()) == "accept failed");
   llama_sampler_free(chain);
 
   chain = rejecting_chain();
@@ -3159,7 +3185,16 @@ int test_model_barrier(const char *path) {
   assert(llama_dart_sampler_sample_and_accept_n(
              chain, fixture.context, &index, 1, &draft, 0, &accepted, 1) ==
          kExceptionStatus);
-  assert(is_grammar_stack_error(llama_dart_last_error()));
+  assert(strstr(llama_dart_last_error(), "non-finite") != nullptr);
+  llama_sampler_free(chain);
+
+  chain = llama_sampler_chain_init(llama_sampler_chain_default_params());
+  llama_sampler_chain_add(chain, llama_sampler_init_greedy());
+  llama_sampler_chain_add(chain, throwing_accept_sampler());
+  assert(llama_dart_sampler_sample_and_accept_n(
+             chain, fixture.context, &index, 1, &draft, 0, &accepted, 1) ==
+         kExceptionStatus);
+  assert(std::string(llama_dart_last_error()) == "accept failed");
   llama_sampler_free(chain);
 
   // A sampler's exception leaves the context usable, and a call that
@@ -3768,6 +3803,183 @@ int test_model_sample_accept(const char *path) {
   return 0;
 }
 
+// A sampler that sets every candidate's logit to a value from its
+// `after`-th apply on, as a chain does when its filters leave nothing finite.
+struct logit_override {
+  float value;
+  int after = 0;
+  int applied = 0;
+};
+
+const char *logit_override_name(const llama_sampler *) {
+  return "logit-override";
+}
+
+void logit_override_apply(llama_sampler *sampler,
+                          llama_token_data_array *candidates) {
+  auto *state = static_cast<logit_override *>(sampler->ctx);
+  if (state->applied++ < state->after) {
+    return;
+  }
+  for (size_t i = 0; i < candidates->size; ++i) {
+    candidates->data[i].logit = state->value;
+  }
+}
+
+llama_sampler *logit_override_sampler(logit_override *state) {
+  static llama_sampler_i logit_override_interface = [] {
+    llama_sampler_i value{};
+    value.name = logit_override_name;
+    value.apply = logit_override_apply;
+    return value;
+  }();
+  return llama_sampler_init(&logit_override_interface, state);
+}
+
+// A sampler selection with a logit that is not finite is rejected before the
+// sampler accepts it, by both sampling exports. Accepting it ends the
+// process when a grammar has not finished: an end-of-generation token reaches
+// GGML_ABORT in llama_grammar_accept_impl.
+int test_model_nonfinite_selection(const char *path) {
+  init_backends();
+  auto model_params = llama_model_default_params();
+  static ggml_backend_dev_t no_devices[] = {nullptr};
+  model_params.n_gpu_layers = 0;
+  model_params.devices = no_devices;
+  llama_model *model = llama_dart_model_load_from_file(path, model_params);
+  assert(model != nullptr);
+  const llama_vocab *vocab = llama_model_get_vocab(model);
+  const llama_token eog = llama_vocab_eos(vocab);
+  assert(eog != LLAMA_TOKEN_NULL && llama_vocab_is_eog(vocab, eog));
+
+  tokens input = {7, 8, 9, 10};
+  std::vector<llama_pos> positions = {0, 1, 2, 3};
+  std::vector<int32_t> sequence_counts(input.size(), 1);
+  llama_seq_id sequence = 0;
+  std::vector<llama_seq_id *> sequences(input.size(), &sequence);
+  std::vector<int8_t> outputs(input.size(), 1);
+  const llama_batch batch = {static_cast<int32_t>(input.size()),
+                             input.data(),
+                             nullptr,
+                             positions.data(),
+                             sequence_counts.data(),
+                             sequences.data(),
+                             outputs.data()};
+  const std::vector<int32_t> indices = {0, 1, 2, 3};
+  auto context_params = llama_context_default_params();
+  context_params.n_ctx = 64;
+  llama_context *context = llama_dart_init_from_model(model, context_params);
+  assert(context != nullptr);
+  assert(llama_dart_decode(context, batch) == 0);
+
+  const auto has_error = [](const char *fragment) {
+    const char *error = llama_dart_last_error();
+    return error != nullptr && strstr(error, fragment) != nullptr;
+  };
+  const llama_token kUntouched = 12345;
+  const auto sample_n = [&](llama_sampler *sampler, int32_t count,
+                            tokens draft, tokens &out) {
+    // The export rejects a null draft pointer, which an empty vector has.
+    draft.push_back(LLAMA_TOKEN_NULL);
+    return llama_dart_sampler_sample_and_accept_n(
+        sampler, context, indices.data(), count, draft.data(), count - 1,
+        out.data(), static_cast<int32_t>(out.size()));
+  };
+
+  // Every candidate is -inf under an unfinished grammar and the chain still
+  // selects the end of generation.
+  for (const bool batched : {false, true}) {
+    logit_override masked{-INFINITY};
+    scripted_sampler selects_eog{{eog}};
+    llama_sampler *chain =
+        llama_sampler_chain_init(llama_sampler_chain_default_params());
+    llama_sampler_chain_add(chain, logit_override_sampler(&masked));
+    llama_sampler_chain_add(chain, grammar_sampler(vocab, kGrammarToken));
+    llama_sampler_chain_add(chain, scripted(&selects_eog));
+    tokens out = {kUntouched};
+    if (batched) {
+      assert(sample_n(chain, 1, {}, out) == kExceptionStatus);
+      assert(out[0] == kUntouched);
+    } else {
+      assert(llama_dart_sampler_sample(chain, context, -1) ==
+             LLAMA_TOKEN_NULL);
+    }
+    assert(has_error("non-finite"));
+    assert(selects_eog.accepted.empty());
+    llama_sampler_free(chain);
+  }
+
+  // NaN and +inf are not finite either, and a chain that selects nothing
+  // reports it where llama.cpp's own sampling asserts.
+  for (const float value : {NAN, INFINITY}) {
+    logit_override override_state{value};
+    scripted_sampler script{{20}};
+    llama_sampler *chain =
+        llama_sampler_chain_init(llama_sampler_chain_default_params());
+    llama_sampler_chain_add(chain, logit_override_sampler(&override_state));
+    llama_sampler_chain_add(chain, scripted(&script));
+    assert(llama_dart_sampler_sample(chain, context, -1) == LLAMA_TOKEN_NULL);
+    assert(has_error("non-finite"));
+    assert(script.accepted.empty());
+    llama_sampler_free(chain);
+  }
+  {
+    logit_override unchanged{0.0f, 1 << 30};
+    llama_sampler *chain =
+        llama_sampler_chain_init(llama_sampler_chain_default_params());
+    llama_sampler_chain_add(chain, logit_override_sampler(&unchanged));
+    assert(llama_dart_sampler_sample(chain, context, -1) == LLAMA_TOKEN_NULL);
+    assert(has_error("selected no candidate"));
+    tokens out = {kUntouched};
+    assert(sample_n(chain, 1, {}, out) == kExceptionStatus);
+    assert(has_error("selected no candidate"));
+    assert(out[0] == kUntouched);
+    llama_sampler_free(chain);
+  }
+
+  // The batched export stops at the failing step: the token before it was
+  // accepted and the failing one neither accepted nor output.
+  {
+    logit_override masked_second{-INFINITY, 1};
+    scripted_sampler script{{20, 21}};
+    llama_sampler *chain =
+        llama_sampler_chain_init(llama_sampler_chain_default_params());
+    llama_sampler_chain_add(chain, logit_override_sampler(&masked_second));
+    llama_sampler_chain_add(chain, scripted(&script));
+    tokens out = {kUntouched, kUntouched};
+    assert(sample_n(chain, 2, {20}, out) == kExceptionStatus);
+    assert(has_error("non-finite"));
+    assert(script.accepted == tokens({20}));
+    assert(out[1] == kUntouched);
+    llama_sampler_free(chain);
+  }
+
+  // A valid selection is unchanged, accepts once and clears the error.
+  {
+    logit_override finite{0.0f, 1 << 30};
+    scripted_sampler script{{20, 21}};
+    llama_sampler *chain =
+        llama_sampler_chain_init(llama_sampler_chain_default_params());
+    llama_sampler_chain_add(chain, logit_override_sampler(&finite));
+    llama_sampler_chain_add(chain, scripted(&script));
+    assert(llama_dart_sampler_sample(chain, context, -1) == 20);
+    assert(llama_dart_last_error() == nullptr);
+    tokens out = {kUntouched};
+    assert(sample_n(chain, 1, {}, out) == 1 && out[0] == 21);
+    assert(llama_dart_last_error() == nullptr);
+    assert(script.accepted == tokens({20, 21}));
+    llama_sampler_free(chain);
+  }
+  llama_sampler *greedy = greedy_sampler();
+  assert(llama_dart_sampler_sample(greedy, context, -1) >= 0);
+  assert(llama_dart_last_error() == nullptr);
+  llama_sampler_free(greedy);
+
+  llama_dart_exit_free(context);
+  llama_dart_exit_free(model);
+  return 0;
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -3879,6 +4091,9 @@ int main(int argc, char **argv) {
     }
     if (scenario == "model-sample-accept") {
       return test_model_sample_accept(first);
+    }
+    if (scenario == "model-nonfinite-selection") {
+      return test_model_nonfinite_selection(first);
     }
     if (scenario == "make-encoder-model") {
       return make_model(first, true);

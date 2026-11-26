@@ -774,7 +774,8 @@ if (LLAMADART_BUILD_TESTS)
                 COMMAND llamadart_exit_teardown_test model-speculative-process
                     "${LLAMADART_EXIT_TEARDOWN_TEST_MODEL}")
         endif()
-        foreach(scenario model-barrier model-sample-accept)
+        foreach(scenario model-barrier model-sample-accept
+                model-nonfinite-selection)
             add_test(NAME llamadart_exit_teardown_${scenario}
                 COMMAND llamadart_exit_teardown_test ${scenario}
                     "${exit_teardown_vocabulary_model}")
