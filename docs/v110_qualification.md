@@ -120,7 +120,18 @@ python3 tools/validate_exports.py --format nm --tool nm --forbid-import __cxa_at
 python3 scripts/verify_release_provenance.py
 ```
 
-Results are in the pull request.
+Results: **99/99** CTest tests pass, including `llamadart_upstream_abi_test`
+and `llamadart_build_identity_test`; **515** Python tests pass with one
+host-only skip; strict series application passes; 113 required exports are
+present with no `__cxa_atexit` import; release-provenance contracts pass;
+`actionlint` reports only the installed linter's existing VS2026 runner-label
+exception. Before the fixes, `llamadart_mtmd_compat_test` failed its speed
+assertion, the speculative output-limit rows failed with the DFlash2/LiliCorr
+types removed from the block-draft predicate, the CUDA component test failed
+without `cuda_nvml_dev`, the OpenCL option test failed without the Android
+flag, and the unchanged Android ISA validator rejected the candidate module as
+an unaudited source pair. These are component controls, not platform or model
+qualification.
 
 ## Required gates before readiness and publication
 
