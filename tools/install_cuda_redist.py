@@ -19,6 +19,7 @@ DEFAULT_COMPONENTS = (
     "cuda_crt",
     "cuda_cudart",
     "cuda_nvcc",
+    "cuda_nvml_dev",
     "cuda_nvprof",
     "cuda_nvrtc",
     "cuda_nvtx",
@@ -32,6 +33,7 @@ DEFAULT_COMPONENTS = (
 REQUIRED_COMPONENTS = {
     "cuda_cudart",
     "cuda_nvcc",
+    "cuda_nvml_dev",
     "libcublas",
 }
 
