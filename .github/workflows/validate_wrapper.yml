@@ -531,6 +531,7 @@ jobs:
           llamadart_tts_stream_test
           llamadart_tts_eval_test
           llamadart_tts_seed_test
+          llamadart_tts_batch_test
           llamadart_tts_sampler_test
           llamadart_mtmd_compat_test
           llamadart_image_token_limit_test
