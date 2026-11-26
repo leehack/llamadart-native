@@ -308,6 +308,9 @@ def android_base_cmake_args(abi: str, ndk: Path) -> list[str]:
         "-DCMAKE_SHARED_LINKER_FLAGS=-s",
         "-DGGML_OPENMP=OFF",
         "-DGGML_LLAMAFILE=OFF",
+        # v1.1.0 defaults this ON: the OpenCL backend would try to load a
+        # libadreno-opencl-kernels.so that no bundle ships. v1.0.0 had no such path.
+        "-DGGML_OPENCL_USE_ADRENO_BIN_KERNELS=OFF",
         f"-DCMAKE_C_FLAGS={ANDROID_PRAGMA_WARN_SUPPRESS}",
         f"-DCMAKE_CXX_FLAGS={ANDROID_PRAGMA_WARN_SUPPRESS}",
     ]

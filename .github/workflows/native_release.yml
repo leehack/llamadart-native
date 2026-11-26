@@ -685,7 +685,7 @@ jobs:
   build-linux-hip:
     needs: resolve-tag
     runs-on: ubuntu-latest
-    container: rocm/dev-ubuntu-22.04:6.1.2
+    container: rocm/dev-ubuntu-22.04:6.3.4
     env:
       CCACHE_DIR: ${{ github.workspace }}/.ccache
       CCACHE_MAXSIZE: 5G

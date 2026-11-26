@@ -16,6 +16,13 @@ static_assert(audio_has_temp<mtmd_helper_gen_audio_inp>::value ==
                   static_cast<bool>(LLAMADART_MTMD_AUDIO_HAS_TEMP),
               "audio temperature probe disagrees with the headers");
 
+template<class T, class = void> struct audio_has_speed : std::false_type {};
+template<class T> struct audio_has_speed<T, std::void_t<decltype(std::declval<T>().speed)>>
+    : std::true_type {};
+static_assert(audio_has_speed<mtmd_helper_gen_audio_inp>::value ==
+                  static_cast<bool>(LLAMADART_MTMD_AUDIO_HAS_SPEED),
+              "audio speed probe disagrees with the headers");
+
 #if LLAMADART_MTMD_HELPER_HAS_EMBD_BATCH
 struct callback_expectation {
   const mtmd_helper_embd_batch *view;
@@ -77,6 +84,28 @@ int main() {
                     LLAMA_DART_TTS_MODEL_TYPE_QWEN3,
                     LLAMA_DART_TTS_MODEL_TYPE_CHATTERBOX}) {
     assert(llama_dart_audio_input_compat(type, "english").temp == -1.0f);
+  }
+#endif
+#if LLAMADART_MTMD_AUDIO_HAS_SPEED
+  // mtmd_helper_gen_audio_set_input rejects speed <= 0 with status 2, so a
+  // zero-initialized input fails every TTS setup. Delivery controls other than
+  // speed default to 0 (the model's own).
+  for (auto type : {LLAMA_DART_TTS_MODEL_TYPE_NONE,
+                    LLAMA_DART_TTS_MODEL_TYPE_QWEN3,
+                    LLAMA_DART_TTS_MODEL_TYPE_LFM3_AUDIO,
+                    LLAMA_DART_TTS_MODEL_TYPE_SOPRANO,
+                    LLAMA_DART_TTS_MODEL_TYPE_CHATTERBOX,
+                    LLAMA_DART_TTS_MODEL_TYPE_POCKET_TTS,
+                    LLAMA_DART_TTS_MODEL_TYPE_UNKNOWN}) {
+    for (const char *variant : {static_cast<const char *>(nullptr), "english"}) {
+      const auto defaults = mtmd_helper_gen_audio_inp_default();
+      const auto input = llama_dart_audio_input_compat(type, variant);
+      assert(input.speed == 1.0f);
+      assert(input.speed == defaults.speed);
+      assert(input.loudness == defaults.loudness);
+      assert(input.cfg_scale == defaults.cfg_scale);
+      assert(input.flow_steps == defaults.flow_steps);
+    }
   }
 #endif
   const auto input = llama_dart_audio_input_compat(LLAMA_DART_TTS_MODEL_TYPE_QWEN3, nullptr);

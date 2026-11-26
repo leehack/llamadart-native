@@ -186,6 +186,10 @@ unset(LLAMADART_MTMD_AUDIO_HAS_TEMP CACHE)
 llamadart_probe_declaration(LLAMADART_MTMD_AUDIO_HAS_TEMP
     "#include <mtmd-helper.h>
 int main() { return sizeof(decltype(mtmd_helper_gen_audio_inp::temp)) == 0; }")
+unset(LLAMADART_MTMD_AUDIO_HAS_SPEED CACHE)
+llamadart_probe_declaration(LLAMADART_MTMD_AUDIO_HAS_SPEED
+    "#include <mtmd-helper.h>
+int main() { return sizeof(decltype(mtmd_helper_gen_audio_inp::speed)) == 0; }")
 unset(LLAMADART_MTMD_HAS_GEN_STATE CACHE)
 llamadart_probe_declaration(LLAMADART_MTMD_HAS_GEN_STATE
     "#include <mtmd.h>
@@ -235,6 +239,11 @@ unset(LLAMADART_SPECULATIVE_HAS_BATCH_STATE CACHE)
 llamadart_probe_declaration(LLAMADART_SPECULATIVE_HAS_BATCH_STATE
     "#include <common.h>
 int main() { return sizeof(decltype(&common_batch::set_embd_state)) == 0; }")
+# v1.1.0 adds the DFlash2 and LiliCorr block drafts before the n-gram types.
+unset(LLAMADART_SPECULATIVE_HAS_DFLASH2 CACHE)
+llamadart_probe_declaration(LLAMADART_SPECULATIVE_HAS_DFLASH2
+    "#include <common.h>
+int main() { return COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH2 + COMMON_SPECULATIVE_TYPE_DRAFT_LILICORR == 0; }")
 # common_fit_params and common_get_device_memory_data take a list of model
 # paths, and the latter reports the skipped layers, from v1.0.0 on; v0.8.0 and
 # v0.9.0 take a single path.
@@ -351,8 +360,10 @@ target_compile_definitions(llamadart_lib PRIVATE
     LLAMADART_MTMD_HAS_CHATTERBOX=$<BOOL:${LLAMADART_MTMD_HAS_CHATTERBOX}>
     LLAMADART_SPECULATIVE_HAS_COMMON_BATCH=$<BOOL:${LLAMADART_SPECULATIVE_HAS_COMMON_BATCH}>
     LLAMADART_SPECULATIVE_HAS_BATCH_STATE=$<BOOL:${LLAMADART_SPECULATIVE_HAS_BATCH_STATE}>
+    LLAMADART_SPECULATIVE_HAS_DFLASH2=$<BOOL:${LLAMADART_SPECULATIVE_HAS_DFLASH2}>
     LLAMADART_MTMD_HELPER_HAS_OPTIONS=$<BOOL:${LLAMADART_MTMD_HELPER_HAS_OPTIONS}>
-    LLAMADART_MTMD_AUDIO_HAS_TEMP=$<BOOL:${LLAMADART_MTMD_AUDIO_HAS_TEMP}>)
+    LLAMADART_MTMD_AUDIO_HAS_TEMP=$<BOOL:${LLAMADART_MTMD_AUDIO_HAS_TEMP}>
+    LLAMADART_MTMD_AUDIO_HAS_SPEED=$<BOOL:${LLAMADART_MTMD_AUDIO_HAS_SPEED}>)
 
 if (MINGW)
     target_link_options(llamadart_lib PRIVATE -Wl,--export-all-symbols)
@@ -452,7 +463,8 @@ if (LLAMADART_BUILD_TESTS)
     target_compile_definitions(llamadart_speculative_api_test PRIVATE
         LLAMADART_CONTEXT_HAS_MOE_CACHE=$<BOOL:${LLAMADART_CONTEXT_HAS_MOE_CACHE}>
         LLAMADART_SPECULATIVE_HAS_COMMON_BATCH=$<BOOL:${LLAMADART_SPECULATIVE_HAS_COMMON_BATCH}>
-        LLAMADART_SPECULATIVE_HAS_BATCH_STATE=$<BOOL:${LLAMADART_SPECULATIVE_HAS_BATCH_STATE}>)
+        LLAMADART_SPECULATIVE_HAS_BATCH_STATE=$<BOOL:${LLAMADART_SPECULATIVE_HAS_BATCH_STATE}>
+        LLAMADART_SPECULATIVE_HAS_DFLASH2=$<BOOL:${LLAMADART_SPECULATIVE_HAS_DFLASH2}>)
     target_link_libraries(llamadart_speculative_api_test PRIVATE llamadart_lib)
     target_include_directories(llamadart_speculative_api_test PRIVATE
         third_party/llama.cpp/common
@@ -520,7 +532,8 @@ if (LLAMADART_BUILD_TESTS)
     target_compile_features(llamadart_upstream_abi_test PRIVATE cxx_std_17)
     target_compile_definitions(llamadart_upstream_abi_test PRIVATE
         LLAMADART_CONTEXT_HAS_MOE_CPU_SHARE=$<BOOL:${LLAMADART_CONTEXT_HAS_MOE_CPU_SHARE}>
-        LLAMADART_MTMD_AUDIO_HAS_TEMP=$<BOOL:${LLAMADART_MTMD_AUDIO_HAS_TEMP}>)
+        LLAMADART_MTMD_AUDIO_HAS_TEMP=$<BOOL:${LLAMADART_MTMD_AUDIO_HAS_TEMP}>
+        LLAMADART_MTMD_AUDIO_HAS_SPEED=$<BOOL:${LLAMADART_MTMD_AUDIO_HAS_SPEED}>)
     target_include_directories(llamadart_upstream_abi_test PRIVATE src)
     target_link_libraries(llamadart_upstream_abi_test PRIVATE llamadart_lib)
     add_test(NAME llamadart_upstream_abi_test COMMAND llamadart_upstream_abi_test)
@@ -548,6 +561,11 @@ if (LLAMADART_BUILD_TESTS)
         third_party/llama.cpp/ggml/include
     )
     add_test(NAME llamadart_tts_seed_test COMMAND llamadart_tts_seed_test)
+
+    add_executable(llamadart_tts_batch_test tests/tts_batch_test.cpp)
+    target_compile_features(llamadart_tts_batch_test PRIVATE cxx_std_17)
+    target_include_directories(llamadart_tts_batch_test PRIVATE src)
+    add_test(NAME llamadart_tts_batch_test COMMAND llamadart_tts_batch_test)
 
     add_executable(llamadart_tts_sampler_test tests/tts_sampler_test.cpp)
     target_compile_features(llamadart_tts_sampler_test PRIVATE cxx_std_17)
@@ -585,7 +603,8 @@ if (LLAMADART_BUILD_TESTS)
     target_compile_definitions(llamadart_mtmd_compat_test PRIVATE
         LLAMADART_MTMD_HELPER_HAS_EMBD_BATCH=$<BOOL:${LLAMADART_MTMD_HELPER_HAS_EMBD_BATCH}>
         LLAMADART_MTMD_HELPER_HAS_OPTIONS=$<BOOL:${LLAMADART_MTMD_HELPER_HAS_OPTIONS}>
-        LLAMADART_MTMD_AUDIO_HAS_TEMP=$<BOOL:${LLAMADART_MTMD_AUDIO_HAS_TEMP}>)
+        LLAMADART_MTMD_AUDIO_HAS_TEMP=$<BOOL:${LLAMADART_MTMD_AUDIO_HAS_TEMP}>
+        LLAMADART_MTMD_AUDIO_HAS_SPEED=$<BOOL:${LLAMADART_MTMD_AUDIO_HAS_SPEED}>)
     target_link_libraries(llamadart_mtmd_compat_test PRIVATE mtmd)
     add_test(NAME llamadart_mtmd_compat_test COMMAND llamadart_mtmd_compat_test)
 
@@ -906,7 +925,7 @@ if (LLAMADART_BUILD_TESTS)
     foreach(test_target llamadart_owner_api_test llamadart_owner_reentrancy_test llamadart_speculative_api_test llamadart_tts_api_test
             llamadart_tts_types_test llamadart_tts_stream_test llamadart_asr_stream_api_test llamadart_asr_stream_meter_test
             llamadart_build_identity_test llamadart_upstream_abi_test llamadart_cancel_flag_test
-            llamadart_tts_eval_test llamadart_tts_seed_test llamadart_tts_sampler_test
+            llamadart_tts_eval_test llamadart_tts_seed_test llamadart_tts_batch_test llamadart_tts_sampler_test
             llamadart_exit_teardown_test
             llamadart_mtmd_compat_test
             llamadart_vulkan_device_info_test llamadart_barrier_test llamadart_image_token_limit_test

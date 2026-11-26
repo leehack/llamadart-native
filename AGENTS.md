@@ -62,6 +62,9 @@ See `docs/v080_android_isa_qualification.md` for the v0.8.0/KleidiAI v1.32.0
 source pair, its SVE I8MM-gated Q8 kernels and remaining gates.
 See `docs/v100_qualification.md` for the fixed v1.0.0 candidate, retained
 carry decisions, ABI/audio adapters and pending original-trigger gates.
+See `docs/v110_qualification.md` for the v1.1.0 candidate, the 0001 retirement
+and its required S24 gate, wrapper adapters, ABI delta and remaining hardware
+gates, and `docs/v110_android_isa_qualification.md` for its source pair.
 See `docs/v090_qualification.md` for the v0.9.0 candidate and consumer ABI
 delta, and `docs/v090_android_isa_qualification.md` for its source pair and
 ggml SVE256 repack paths.

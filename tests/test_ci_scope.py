@@ -132,16 +132,16 @@ class ScopeTests(unittest.TestCase):
             self.assertIn('github.event.pull_request.number || github.run_id',content)
 
     def test_the_pin_is_exactly_one_upstream_row(self):
-        self.assertEqual(upstream_rows('{"v1.0.0": "a"}', 'a'), (['v1.0.0'], 'v1.0.0'))
-        for table in ('{}', '[]', '{"v1.0.0": "b"}',
-                      '{"v1.0.0": "a", "v1.0.0-copy": "a"}',
-                      '{"v1.0.0": "b", "v1.0.0": "a"}'):
+        self.assertEqual(upstream_rows('{"v1.1.0": "a"}', 'a'), (['v1.1.0'], 'v1.1.0'))
+        for table in ('{}', '[]', '{"v1.1.0": "b"}',
+                      '{"v1.1.0": "a", "v1.1.0-copy": "a"}',
+                      '{"v1.1.0": "b", "v1.1.0": "a"}'):
             with self.subTest(table=table), self.assertRaisesRegex(ValueError, 'exactly one'):
                 upstream_rows(table, 'a')
 
     def test_a_non_pinned_row_is_rejected_even_with_the_pin_present(self):
         with self.assertRaisesRegex(ValueError, 'exactly one'):
-            upstream_rows('{"v0.9.0": "b", "v1.0.0": "a"}', 'a')
+            upstream_rows('{"v1.0.0": "b", "v1.1.0": "a"}', 'a')
 
     def test_actual_workflow_qualifies_only_the_pinned_upstream(self):
         workflow = (ROOT / '.github/workflows/validate_wrapper.yml').read_text()
