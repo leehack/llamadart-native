@@ -234,7 +234,10 @@ LLAMADART_API void llama_dart_set_log_level(int level);
 //   LLAMA_DART_STATUS_EXCEPTION, which none of them but llama_dart_tokenize
 //   returns otherwise;
 // - llama_dart_sampler_sample returns LLAMA_TOKEN_NULL, which it does not
-//   return otherwise;
+//   return otherwise. A selection of no candidate or of one with a non-finite
+//   logit is such a failure too: nothing is accepted, and
+//   llama_dart_sampler_sample_and_accept_n returns LLAMA_DART_STATUS_EXCEPTION
+//   without writing the token (docs/sampler_selection_guard.md);
 // - a function that returns size_t returns 0;
 // - llama_dart_ggml_backend_sched_graph_compute returns GGML_STATUS_FAILED;
 // - a function that returns llama_dart_tts_status returns
