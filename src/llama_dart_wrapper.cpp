@@ -15,6 +15,7 @@
 #include "llama_dart_speculative_compat.h"
 #include "llama_dart_speculative_internal.h"
 #include "llama_dart_tts_eval_internal.h"
+#include "llama_dart_tts_batch_internal.h"
 #include "llama_dart_tts_internal.h"
 #include "llama_dart_tts_sampler_internal.h"
 #include "llama_dart_tts_stream_internal.h"
@@ -2882,7 +2883,8 @@ static enum llama_dart_tts_status llama_dart_tts_step_impl(
   llama_dart_tts_eval_scope eval_scope(tts);
   if (tts->state == LLAMA_DART_TTS_STATE_PROCESSING_PROMPT) {
     const int32_t remaining = mtmd_helper_gen_audio_step_prompt(
-        tts->generator, tts->prompt_batch_size);
+        tts->generator, llama_dart_tts_prompt_batch(tts->prompt_batch_size,
+                                                    llama_n_batch(tts->llama)));
     if (remaining < 0) {
       const auto status = llama_dart_tts_fail(
           tts, LLAMA_DART_TTS_STATUS_UPSTREAM_ERROR,

@@ -52,7 +52,7 @@ CCACHE_LANES = {
         "key-prefix": "ccache-linux-x64-hip",
         "extra-restore-keys": None,
         "label": "linux/x64/hip",
-        "container": "rocm/dev-ubuntu-22.04:6.1.2",
+        "container": "rocm/dev-ubuntu-22.04:6.3.4",
         "runner-default-shell": "sh",
     },
 }
