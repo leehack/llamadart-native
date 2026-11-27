@@ -9,7 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 
 import build  # noqa: E402
-from workflow_text import job_block, step_running
+from workflow_text import job_block, step_keys, step_running
 
 
 class AndroidVulkanGlslcTest(unittest.TestCase):
@@ -38,17 +38,31 @@ class AndroidVulkanGlslcTest(unittest.TestCase):
         self.assertIn('echo "ANDROID_VULKAN_GLSLC=$(command -v glslc)" >> "$GITHUB_ENV"', android_job)
 
     def test_android_vulkan_builds_reject_integer_dot_support(self) -> None:
-        checks = (
-            ('validate_wrapper.yml', 'android-vulkan-shaders', 'Build the release Android Vulkan backend'),
-            ('native_release.yml', 'build-android', 'tools/build.py android --abi'),
+        log = "configure-build.log"
+        grep = f"grep -Fx -- '-- GL_EXT_integer_dot_product not supported by glslc' {log}"
+
+        validation_step = step_running(
+            job_block("validate_wrapper.yml", "android-vulkan-shaders"),
+            "Build the release Android Vulkan backend",
         )
-        for workflow, job, build_step in checks:
-            with self.subTest(workflow=workflow):
-                step = step_running(job_block(workflow, job), build_step)
-                self.assertIn(
-                    "grep -Fx -- '-- GL_EXT_integer_dot_product not supported by glslc' configure-build.log",
-                    step,
-                )
+        self.assertNotIn("if", step_keys(validation_step))
+        self.assertIn(f"          python3 - <<'PY' 2>&1 | tee {log}", validation_step.splitlines())
+        self.assertIn(f"          {grep}", validation_step.splitlines())
+
+        release_step = step_running(
+            job_block("native_release.yml", "build-android"),
+            "tools/build.py android --abi",
+        )
+        self.assertNotIn("if", step_keys(release_step))
+        self.assertIn(
+            "          python3 tools/build.py android --abi ${{ matrix.android_abi }}"
+            " --backend ${{ matrix.backend }}"
+            f" 2>&1 | tee {log}\n"
+            '          if [ "${{ matrix.backend }}" = "vulkan" ]; then\n'
+            f"            {grep}\n"
+            "          fi\n",
+            release_step,
+        )
 
 
 if __name__ == "__main__":
