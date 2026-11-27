@@ -271,7 +271,12 @@ jobs:
           key-prefix: ccache-android-${{ matrix.android_abi }}-${{ matrix.backend }}
           extra-restore-keys: ccache-android-${{ matrix.android_abi }}-
       - name: Build
-        run: python3 tools/build.py android --abi ${{ matrix.android_abi }} --backend ${{ matrix.backend }}
+        run: |
+          set -euo pipefail
+          python3 tools/build.py android --abi ${{ matrix.android_abi }} --backend ${{ matrix.backend }} 2>&1 | tee configure-build.log
+          if [ "${{ matrix.backend }}" = "vulkan" ]; then
+            grep -Fx -- '-- GL_EXT_integer_dot_product not supported by glslc' configure-build.log
+          fi
       - name: Report ccache stats
         if: always()
         uses: ./.github/actions/ccache-stats

@@ -178,6 +178,7 @@ jobs:
           PY
           grep -F -- "-DVulkan_GLSLC_EXECUTABLE=$ANDROID_VULKAN_GLSLC" configure-build.log
           grep -Fx -- '-- GL_KHR_cooperative_matrix supported by glslc' configure-build.log
+          grep -Fx -- '-- GL_EXT_integer_dot_product not supported by glslc' configure-build.log
           test -f build/android-vulkan/bin/libggml-vulkan.so
       # The release takes the Android core libraries from this configuration,
       # and no other pull request lane compiles the wrapper with the NDK.
