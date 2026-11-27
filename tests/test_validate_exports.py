@@ -56,8 +56,8 @@ class ValidateExportsTests(unittest.TestCase):
         self.assertEqual(len(retiring), 15)
         required = set(validate_exports.DEFAULT_REQUIRED_SYMBOLS)
         self.assertFalse(required & retiring)
-        self.assertEqual(len(validate_exports.DEFAULT_REQUIRED_SYMBOLS), 116)
-        self.assertEqual(len(required), 116)
+        self.assertEqual(len(validate_exports.DEFAULT_REQUIRED_SYMBOLS), 117)
+        self.assertEqual(len(required), 117)
         self.assertIn('llama_dart_speculative_need_embd_nextn', required)
         self.assertEqual(len(validate_exports.RETIRED_SPECULATIVE_SYMBOLS), 15)
         self.assertEqual(set(validate_exports.RETIRED_SPECULATIVE_SYMBOLS), retiring)
@@ -88,7 +88,7 @@ class ValidateExportsTests(unittest.TestCase):
         result, diagnostics = self.validate_synthetic_exports(
             validate_exports.DEFAULT_REQUIRED_SYMBOLS)
         self.assertEqual(result, 0, diagnostics)
-        self.assertIn('Validated 116 required export(s)', diagnostics)
+        self.assertIn('Validated 117 required export(s)', diagnostics)
 
     def test_retired_embedding_query_fails_with_all_required_exports(self):
         result, diagnostics = self.validate_synthetic_exports([

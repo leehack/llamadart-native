@@ -411,7 +411,8 @@ same value. The functions that free an object only set it, since a Dart
 finalizer may run one between a failed call and the read of its error.
 The upstream functions that can throw and that a caller would otherwise call
 directly have a wrapper too: `llama_dart_sampler_accept`,
-`llama_dart_sampler_init_grammar_lazy_patterns`, `llama_dart_tokenize`,
+`llama_dart_sampler_init_grammar_lazy_patterns`, `llama_dart_sampler_init_dry`,
+`llama_dart_tokenize`,
 `llama_dart_token_to_piece`, `llama_dart_memory_clear`, the three
 `llama_dart_mtmd_bitmap_init_` functions and the `llama_dart_ggml_backend_`
 functions that reach a backend. `docs/v060_1_wrapper_rebuild.md` classifies

@@ -37,6 +37,7 @@ New exports:
 | `void llama_dart_clear_last_error(void)` | none |
 | `bool llama_dart_sampler_accept(struct llama_sampler *, llama_token)` | `false` after a caught exception |
 | `struct llama_sampler * llama_dart_sampler_init_grammar_lazy_patterns(const struct llama_vocab *, const char * grammar_str, const char * grammar_root, const char ** trigger_patterns, size_t num_trigger_patterns, const llama_token * trigger_tokens, size_t num_trigger_tokens)` | `NULL`; also llama.cpp's value for a grammar that does not parse, so the last error tells them apart |
+| `struct llama_sampler * llama_dart_sampler_init_dry(const struct llama_vocab *, float dry_multiplier, float dry_base, int32_t dry_allowed_length, int32_t dry_penalty_last_n, const char ** seq_breakers, size_t num_breakers)` | `NULL`, in no other case: llama.cpp returns an empty sampler for disabled settings |
 | `int32_t llama_dart_tokenize(const struct llama_vocab *, const char * text, int32_t text_len, llama_token * tokens, int32_t n_tokens_max, bool add_special, bool parse_special)` | `LLAMA_DART_STATUS_EXCEPTION`; `llama_tokenize` returns the same `INT32_MIN` for more than `INT32_MAX` tokens, so the last error tells them apart |
 | `int32_t llama_dart_token_to_piece(const struct llama_vocab *, llama_token, char * buf, int32_t length, int32_t lstrip, bool special)` | `LLAMA_DART_STATUS_EXCEPTION`, in no other case |
 | `bool llama_dart_memory_clear(llama_memory_t, bool data)` | `false`; `true` otherwise (upstream returns nothing) |
@@ -179,6 +180,7 @@ Behind a barrier:
 | `llama_free`, `llama_model_free`, `mtmd_free` | `llama_dart_exit_free` |
 | `llama_sampler_accept`: a grammar throws for a token it rejects | `llama_dart_sampler_accept` |
 | `llama_sampler_init_grammar_lazy_patterns`: `std::regex_error` for a trigger pattern that is not a valid regular expression | `llama_dart_sampler_init_grammar_lazy_patterns` |
+| `llama_sampler_init_dry`: detokenizes the vocabulary and tokenizes each sequence breaker, which throws `std::out_of_range` for a byte the vocabulary has no token for, and can fail to allocate | `llama_dart_sampler_init_dry` |
 | `llama_tokenize`: `std::out_of_range` for a byte that the vocabulary has no token for, `std::runtime_error` from the pre-tokenizer's regular expressions | `llama_dart_tokenize` |
 | `llama_token_to_piece`: `std::out_of_range` for a token that is not in the vocabulary, such as `LLAMA_TOKEN_NULL` | `llama_dart_token_to_piece` |
 | `llama_memory_clear`: clears the backend's buffers | `llama_dart_memory_clear` |

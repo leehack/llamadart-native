@@ -718,6 +718,11 @@ if (LLAMADART_BUILD_TESTS)
             "${exit_teardown_vocabulary_model}")
     set_tests_properties(llamadart_exit_teardown_barrier-grammar PROPERTIES
         FIXTURES_REQUIRED llamadart_exit_teardown_vocabulary_model)
+    add_test(NAME llamadart_exit_teardown_barrier-dry-wait
+        COMMAND llamadart_exit_teardown_test barrier-dry-wait
+            "${exit_teardown_vocabulary_model}")
+    set_tests_properties(llamadart_exit_teardown_barrier-dry-wait PROPERTIES
+        FIXTURES_REQUIRED llamadart_exit_teardown_vocabulary_model TIMEOUT 30)
     if (LLAMADART_HAS_REASONING_BUDGET_MULTI)
         add_test(NAME llamadart_exit_teardown_reasoning-budget
             COMMAND llamadart_exit_teardown_test reasoning-budget

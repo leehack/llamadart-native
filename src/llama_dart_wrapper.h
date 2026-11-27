@@ -810,6 +810,20 @@ LLAMADART_API struct llama_sampler * llama_dart_sampler_init_grammar_lazy_patter
     const llama_token * trigger_tokens,
     size_t num_trigger_tokens);
 
+// The DRY sampler constructor, which detokenizes the whole vocabulary and
+// tokenizes every sequence breaker: it throws for a vocabulary that cannot
+// tokenize a breaker, and for an allocation failure. NULL after a caught
+// exception; llama_dart_last_error tells that from an upstream NULL. The
+// parameters and the returned sampler are llama_sampler_init_dry's.
+LLAMADART_API struct llama_sampler * llama_dart_sampler_init_dry(
+    const struct llama_vocab * vocab,
+    float dry_multiplier,
+    float dry_base,
+    int32_t dry_allowed_length,
+    int32_t dry_penalty_last_n,
+    const char ** seq_breakers,
+    size_t num_breakers);
+
 // Returns what llama_tokenize returns: the number of tokens, or the negated
 // number needed when n_tokens_max is too small. After a caught exception it
 // returns LLAMA_DART_STATUS_EXCEPTION, which is also llama_tokenize's own
