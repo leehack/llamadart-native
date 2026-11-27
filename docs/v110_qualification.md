@@ -170,10 +170,11 @@ The integer-dot guard covers the toolchain-dependent S24 failure. Longer
 Qwen prompts (33 prefill tokens) aborted with
 `vk::Device::createComputePipeline: ErrorUnknown` on Adreno 750 with both
 release-equivalent builds and on Adreno 740 with v1.1.0. The candidate stack
-traces reach `ggml_vk_matmul`. Tested quantized models also produced corrupt
-output on Adreno 830 and 840 with both releases. The v1.1.0 Vulkan results were
-at least as good as v1.0.0-4 on the paired devices. Refusing Vulkan on affected
-devices belongs in the `llamadart` consumer.
+traces reach `ggml_vk_matmul`. Tested quantized models also hit corrupt output
+or pipeline aborts on Adreno 830 and 840 across the two releases. On Adreno
+830, v1.0.0-4 aborted at pipeline creation with `ErrorUnknown`. The v1.1.0
+Vulkan results were at least as good as v1.0.0-4 on the paired devices.
+Refusing Vulkan on affected devices belongs in the `llamadart` consumer.
 
 ## Required gates before readiness and publication
 
