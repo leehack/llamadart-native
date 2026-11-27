@@ -53,6 +53,7 @@ DEFAULT_REQUIRED_SYMBOLS = [
     "llama_dart_sampler_sample",
     "llama_dart_sampler_accept",
     "llama_dart_sampler_init_grammar_lazy_patterns",
+    "llama_dart_sampler_init_dry",
     "llama_dart_sampler_init_reasoning_budget",
     "llama_dart_sampler_init_reasoning_budget_multi",
     "llama_dart_tokenize",

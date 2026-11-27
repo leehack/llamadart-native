@@ -2261,6 +2261,18 @@ llama_dart_sampler_init_grammar_lazy_patterns(
   });
 }
 
+LLAMADART_API struct llama_sampler *llama_dart_sampler_init_dry(
+    const struct llama_vocab *vocab, float dry_multiplier, float dry_base,
+    int32_t dry_allowed_length, int32_t dry_penalty_last_n,
+    const char **seq_breakers, size_t num_breakers) {
+  return llama_dart_barrier<llama_sampler *>(nullptr, [=] {
+    llama_dart_exit_call call;
+    return llama_sampler_init_dry(vocab, dry_multiplier, dry_base,
+                                  dry_allowed_length, dry_penalty_last_n,
+                                  seq_breakers, num_breakers);
+  });
+}
+
 LLAMADART_API int32_t llama_dart_tokenize(const struct llama_vocab *vocab,
                                           const char *text, int32_t text_len,
                                           llama_token *tokens,

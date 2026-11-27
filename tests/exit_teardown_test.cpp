@@ -2990,6 +2990,101 @@ void test_barrier_lazy_grammar(const llama_vocab *vocab) {
   assert(llama_dart_last_error() == nullptr);
 }
 
+std::atomic<bool> g_dry_teardown_started{false};
+std::atomic<bool> g_dry_log_returned{false};
+
+// llama.cpp logs from inside the DRY constructor, which is the one place a
+// test can start a teardown while the constructor is in flight. The callback
+// outlasts the settle time, so a teardown that does not wait for the call
+// frees the probe before the callback returns. A call that ends after
+// teardown never returns, so the teardown thread ends the process.
+void start_teardown_from_dry_log(ggml_log_level, const char *, void *) {
+  if (g_dry_teardown_started.exchange(true)) return;
+  static char probe[] = "dry-probe";
+  g_log.clear();
+  assert(llama_dart_exit_track(probe, free_named,
+                               LLAMA_DART_EXIT_STAGE_SESSION));
+  llama_dart_exit_set_wait_ms(2000);
+  std::thread([] {
+    llama_dart_exit_teardown();
+    assert(g_dry_log_returned.load());
+    const std::vector<std::string> freed = recorded();
+    assert(!freed.empty() && freed.front() == "dry-probe");
+    std::_Exit(0);
+  }).detach();
+  std::this_thread::sleep_for(std::chrono::milliseconds(400));
+  g_dry_log_returned = true;
+}
+
+// Teardown frees nothing while a DRY constructor is in flight.
+int test_dry_teardown_waits(const char *path) {
+  llama_backend_init();
+  auto model_params = llama_model_default_params();
+  model_params.vocab_only = true;
+  llama_model *model = llama_dart_model_load_from_file(path, model_params);
+  assert(model != nullptr);
+  const llama_vocab *vocab = llama_model_get_vocab(model);
+  const std::string long_breaker(41, 'z');
+  const char *breakers[] = {long_breaker.c_str()};
+  llama_log_set(start_teardown_from_dry_log, nullptr);
+  llama_dart_sampler_init_dry(vocab, 0.8f, 1.75f, 2, 64, breakers, 1);
+  assert(false);
+  return 1;
+}
+
+// The DRY constructor tokenizes each multi-character sequence breaker, which
+// throws for a byte the vocabulary has no token for.
+void test_barrier_dry(const llama_vocab *vocab) {
+  // No token of the test vocabulary ends in a "z", so this breaker needs no
+  // tokenization.
+  const char *breakers[] = {"zz"};
+  llama_sampler *dry =
+      llama_dart_sampler_init_dry(vocab, 0.8f, 1.75f, 2, 64, breakers, 1);
+  assert(dry != nullptr);
+  assert(llama_dart_last_error() == nullptr);
+  llama_sampler_free(dry);
+
+  // Disabled settings build an empty sampler, not a failure.
+  dry = llama_dart_sampler_init_dry(vocab, 0.0f, 1.75f, 2, 64, breakers, 1);
+  assert(dry != nullptr);
+  assert(llama_dart_last_error() == nullptr);
+  llama_sampler_free(dry);
+
+  // Tokens end in an "a", and the vocabulary has no token for the "!" left of
+  // the breaker.
+  const char *unknown_byte[] = {"a!"};
+  assert(llama_dart_sampler_init_dry(vocab, 0.8f, 1.75f, 2, 64, unknown_byte,
+                                     1) == nullptr);
+  assert(llama_dart_last_error() != nullptr);
+
+  dry = llama_dart_sampler_init_dry(vocab, 0.8f, 1.75f, 2, 64, nullptr, 0);
+  assert(dry != nullptr);
+  assert(llama_dart_last_error() == nullptr);
+  llama_sampler_free(dry);
+
+  // After "1 2 3 1 2" token 3 repeats a sequence of two tokens. The penalty
+  // applies only when the allowed length (2) and the window (64) arrive in
+  // their own parameters, which swapped would leave a window of two tokens.
+  const auto penalty_of_repeated_token = [&](int32_t allowed, int32_t last_n) {
+    llama_sampler *sampler =
+        llama_dart_sampler_init_dry(vocab, 5.0f, 2.0f, allowed, last_n,
+                                    nullptr, 0);
+    assert(sampler != nullptr);
+    for (const llama_token token : {1, 2, 3, 1, 2}) {
+      llama_sampler_accept(sampler, token);
+    }
+    std::array<llama_token_data, 4> candidates = {
+        {{0, 0.0f, 0.0f}, {1, 0.0f, 0.0f}, {2, 0.0f, 0.0f}, {3, 0.0f, 0.0f}}};
+    llama_token_data_array array = {candidates.data(), candidates.size(), -1,
+                                    false};
+    llama_sampler_apply(sampler, &array);
+    llama_sampler_free(sampler);
+    return candidates[3].logit;
+  };
+  assert(penalty_of_repeated_token(2, 64) == -5.0f);
+  assert(penalty_of_repeated_token(64, 2) == 0.0f);
+}
+
 // llama.cpp throws for a token that is not in the vocabulary, such as the
 // LLAMA_TOKEN_NULL of a failed sample, and for a text with a byte that the
 // vocabulary has no token for.
@@ -3104,6 +3199,7 @@ int test_barrier_grammar(const char *path) {
   llama_sampler_free(accepting);
 
   test_barrier_lazy_grammar(vocab);
+  test_barrier_dry(vocab);
   test_barrier_tokens(vocab);
   test_barrier_bitmaps(path);
 
@@ -4085,6 +4181,9 @@ int main(int argc, char **argv) {
 #endif
     if (scenario == "barrier-grammar") {
       return test_barrier_grammar(first);
+    }
+    if (scenario == "barrier-dry-wait") {
+      return test_dry_teardown_waits(first);
     }
     if (scenario == "model-barrier") {
       return test_model_barrier(first);
