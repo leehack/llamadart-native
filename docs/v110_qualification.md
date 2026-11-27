@@ -52,7 +52,7 @@ seven patches of v1.0.0 applied strictly to v1.1.0 before 0001 was removed.
 
 | Carry | Candidate decision and proof/gap |
 | --- | --- |
-| 0001, [native #79](https://github.com/leehack/llamadart-native/issues/79) | **Retired; the gate passed on crash survival** ([receipts](#hardware-and-model-receipts)). [Upstream #30826](https://github.com/ggml-org/llama.cpp/pull/30826) (`8bf88ba9`, in v1.1.0) sets `subgroup_arithmetic = false` for `vk::DriverId::eQualcommProprietary`, which turns off the subgroup-reduction dequant `mul_mat_vec` shaders whose compile crashed `vkCreateComputePipelines` on the original trigger. The maintainer approved this retirement path. It is **not** retirement evidence by itself: the S24 run below must show old unpatched FAIL / old patched PASS / candidate unpatched PASS on SC-51E/API36, Adreno 750, driver `2150604839`, build `c81b28e1a5`, stories15M F32 and Qwen3.5-0.8B Q4_0 multi-token prefill. If the candidate unpatched run fails, restore `0001-vulkan-adreno-750-matvec-shared-memory-reduction.patch` from git history before preparing a release. The change also disables subgroup arithmetic, and so ADD+RMS_NORM fusion, on every Qualcomm proprietary driver: record Adreno decode throughput against v1.0.0 in the same run. |
+| 0001, [native #79](https://github.com/leehack/llamadart-native/issues/79) | **Retired.** The original S24 trigger failed on old unpatched, passed on old patched, and passed on candidate unpatched ([receipts](#hardware-and-model-receipts)). [Upstream #30826](https://github.com/ggml-org/llama.cpp/pull/30826) (`8bf88ba9`, in v1.1.0) disables subgroup arithmetic on the Qualcomm proprietary driver, including the subgroup-reduction dequant `mul_mat_vec` shaders whose pipeline creation crashed on the original trigger. The release-glslc rerun confirmed Qwen Q4_0 parity with v1.0.0-4. |
 | 0002, [core #782](https://github.com/leehack/llamadart/issues/782) | Retain. The null `vkGetBufferDeviceAddress` guard is still absent upstream. Same gaps as [v1.0.0](v100_qualification.md): null/present-entry causal controls and native reachability on SC-53C/API36 Mali-G68. |
 | 0005, 0006, [native #174](https://github.com/leehack/llamadart-native/issues/174) | Retain. The old F16 dot and FP16 llamafile GEMM kernels remain. Their model-free direct-kernel controls are unchanged and pass on the candidate CPU library. |
 | 0007, [core #2034](https://github.com/leehack/llamadart/issues/2034) | Retain. `common/fit.cpp` still holds the static fit-log state; the strict application and the `fit_api_test` pass. The `upstream` permalink in `series.json` stays on the v1.0.0 lines it describes. |
@@ -142,13 +142,38 @@ qualification.
 | Gate | Host | Result |
 | --- | --- | --- |
 | 1 Hosted PR lanes | GitHub Actions | 28 pass, 1 skipped (`macos-apple-xcframework-tools`) at the merged head. |
-| 2 Retirement of 0001 | Firebase Test Lab SC-51E/API36, Adreno 750, driver `2150604839`, build `c81b28e1a5`; stories15M F32, Qwen3.5-0.8B Q4_0 | **Pass on crash survival.** Old unpatched (v1.0.0 source without 0001): `SIGSEGV` at `0x2d0` in `CreateQGLCProgram` under `vkCreateComputePipelines`, both models. Old patched (v1.0.0-4): 32 tokens, both. Candidate unpatched: 32 tokens, both, three runs. **Token parity with CPU is not clean:** stories15M Vulkan now equals CPU (v1.0.0-4 differed at token 0); Qwen Q4_0 Vulkan differs at token 0 and repeats newlines (v1.0.0-4 matched 14 tokens). The documented Vulkan numerical defects on this driver stand and consumers keep the GPU refusal. Vulkan prefill is 0.6x of v1.0.0-4's time and decode 1.02 to 1.04x (median of 3), so disabling subgroup arithmetic costs no throughput here. OpenCL runs on the device and no Adreno kernel library is referenced; an Android 12+ app needs `<uses-native-library android:name="libOpenCL.so" android:required="false"/>` for the backend to load at all. |
+| 2 Retirement of 0001 | Firebase Test Lab SC-51E/API36, Adreno 750, driver `2150604839`, build `c81b28e1a5`, stories15M F32 and Qwen3.5-0.8B Q4_0 | **Pass.** Old unpatched (v1.0.0 source without 0001, NDK glslc 2022.3) hit `SIGSEGV` at `0x2d0` in `CreateQGLCProgram` under `vkCreateComputePipelines` on both models. Old patched (v1.0.0-4, CI glslc 2023.8) and candidate unpatched (Homebrew glslc 2026.4) completed 32 tokens on both models. The candidate's Qwen output repeated newlines with Homebrew glslc. Rebuilding the candidate with release glslc 2023.8 yielded **32/32 Qwen tokens identical to v1.0.0-4** (14/32 matching CPU) and **32/32 stories15M tokens identical to CPU**. OpenCL ran without an Adreno kernel library reference. On Android 12+, the app needs `<uses-native-library android:name="libOpenCL.so" android:required="false"/>` for OpenCL to load. |
 | 2 Pixel 9 Pro, A53 | Firebase Test Lab `caiman`/API35 (Mali-G715), SC-53C/API36 (Mali-G68) | Pixel 9 Pro: Vulkan tokens equal CPU tokens on both models. A53: Vulkan 1.1 is refused by the harness, CPU passes; 0002 reachability is still not shown. |
 | 3 ARM and x64 throughput | GCE t2a (Neoverse-N1), c4a (Neoverse-V2), c3 (Xeon 8481C); Qwen2.5-0.5B F16, pp512/tg128, FA on/off, auto and armv8.2 layouts, 6 samples per cell | Candidate against v0.9.0: t2a 0.992 to 1.027, c4a 0.953 to 1.032 (lowest: auto-layout tg128 FA off), x64 1.013 to 1.150. Against v1.0.0-4: 0.971 to 1.031. |
 | 4 CUDA | GCE n1-standard-8, Tesla V100 (CC 7.0), driver 580.178.04 | CUDA 12.8.93 with `cuda_nvml_dev` compiles (`nvml.h` SHA-256 `2469cfaa…`, sm_70 only to fit the run cap) and loads; `NVML present`, 25 of 25 layers offloaded, flash attention on and off give identical tokens, and with `libnvidia-ml.so.1` absent the module loads, logs `NVML absent` and produces identical tokens. CUDA and CPU match for 23 of 32 tokens. L4 and T4 were in stockout for 1.5 hours; SKU gating on Ada or Hopper and HIP did not run. |
 | 5 Metal | Apple M4 Max, macOS 27.2.1 | CTest 101/101; Metal against CPU: EmbeddingGemma 2 BF16 cosine 0.999993, greedy tokens equal for 10 (Qwen3.5-0.8B), 31 (Qwen3-0.6B) and 15 (SmolLM2-360M) of 32. iPhone, macOS 13/14 and iOS 16/17 did not run: no device harness for the native libraries exists. |
 | 6 Windows consumer | none | Did not run. |
 | 7 Speculative and TTS | Apple M4 Max (Metal for DSpark, CPU for TTS) | `draft-dspark` with the real Qwen3.5-0.8B DSpark draft and Qwen3.5-0.8B Q4_K_M target: output equals greedy (48/48), 238 drafted, 14 accepted. Pocket TTS english at `n_batch` 256 and 2048, Qwen3-TTS, LFM3-Audio, Soprano and Chatterbox each produce 6 frames. MTP, DFlash, DFlash2 and LiliCorr pairs, ASR stream, ON_DEVICE state, vision and the SVE `Q5_0`/`Q5_1` kernels did not run. |
+
+### Android Vulkan shader features
+
+Android release builds use Ubuntu 24.04's glslc `2023.8-1build1`. It supports
+`GL_KHR_cooperative_matrix` and leaves `GL_EXT_integer_dot_product` disabled.
+Homebrew glslc 2026.4 compiles the integer-dot q8_1 shaders, which produced
+incorrect Qwen Q4_0 output on the S24's Qualcomm proprietary driver. Disabling
+integer dot in that build restored the same 32 tokens as the release-glslc
+build (Firebase Test Lab `matrix-3743br4xs6xh1` and `matrix-1gj6wnhk5romg`).
+Keep the build and artifact guards until the fix in
+[llama.cpp #30821](https://github.com/ggml-org/llama.cpp/pull/30821) is in the
+pinned llama.cpp and Adreno Vulkan is requalified with integer dot enabled.
+Use the release glslc for local Android qualification. On macOS, point
+`ANDROID_VULKAN_GLSLC` at a wrapper that runs glslc in an `ubuntu:24.04`
+container with the build paths mounted, as in the qualification evidence's
+`adreno-diag/adreno-glslc-wrapper.sh`.
+
+The integer-dot guard covers the toolchain-dependent S24 failure. Longer
+Qwen prompts (33 prefill tokens) aborted with
+`vk::Device::createComputePipeline: ErrorUnknown` on Adreno 750 with both
+release-equivalent builds and on Adreno 740 with v1.1.0. The candidate stack
+traces reach `ggml_vk_matmul`. Tested quantized models also produced corrupt
+output on Adreno 830 and 840 with both releases. The v1.1.0 Vulkan results were
+at least as good as v1.0.0-4 on the paired devices. Refusing Vulkan on affected
+devices belongs in the `llamadart` consumer.
 
 ## Required gates before readiness and publication
 

@@ -76,7 +76,8 @@ class ExceptionRuntimeTests(unittest.TestCase):
     def test_a_backend_module_alone_is_accepted(self):
         self.assertEqual([], validator.exception_runtime_errors({'libggml-opencl.so': (set(), set())}))
 
-    def run_tool(self, libraries, omitted_marker=None, omitted_library=None, flags=()):
+    def run_tool(self, libraries, omitted_marker=None, omitted_library=None, flags=(),
+                 library_contents=None):
         with tempfile.TemporaryDirectory() as temp:
             out_dir = Path(temp) / 'out'
             out_dir.mkdir()
@@ -87,7 +88,9 @@ class ExceptionRuntimeTests(unittest.TestCase):
                            for marker in entry.get('android_markers', [])
                            if marker['library'] in (name, 'libggml-cpu.so' if name.startswith('libggml-cpu') else name)
                            and not (marker['text'] == omitted_marker and omitted_library in (None, name))]
-                (out_dir / name).write_bytes('\0'.join(markers).encode())
+                contents = '\0'.join(markers).encode()
+                contents += (library_contents or {}).get(name, b'')
+                (out_dir / name).write_bytes(contents)
                 (listings / f'{name}.syms').write_text(dynamic_symbols(defined, imported))
             readelf = Path(temp) / 'llvm-readelf'
             readelf.write_text(
@@ -171,6 +174,19 @@ class ExceptionRuntimeTests(unittest.TestCase):
             flags=('--backend-only',))
         self.assertEqual(1, result.returncode, result.stderr)
         self.assertIn('libggml-vulkan.so: built without', result.stderr)
+
+    def test_vulkan_packaging_rejects_integer_dot_shaders(self):
+        libraries = {'libggml-vulkan.so': (set(), set())}
+        flags = ('--backend-only',)
+        result = self.run_tool(libraries, flags=flags)
+        self.assertEqual(0, result.returncode, result.stderr)
+
+        result = self.run_tool(
+            libraries, flags=flags,
+            library_contents={'libggml-vulkan.so': b'\0mul_mat_vec_q4_0_q8_1_f32\0'},
+        )
+        self.assertEqual(1, result.returncode, result.stderr)
+        self.assertIn('libggml-vulkan.so: contains an integer-dot shader', result.stderr)
 
     def test_tool_rejects_a_second_definition(self):
         libraries = shared_runtime()

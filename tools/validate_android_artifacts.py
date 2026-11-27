@@ -140,6 +140,14 @@ def main() -> None:
             if symbol in defined:
                 print(f"{symbol}: defined by {name}")
     for library in libraries:
+        if (
+            library.name == "libggml-vulkan.so"
+            and b"mul_mat_vec_q4_0_q8_1_f32" in library.read_bytes()
+        ):
+            errors.append(
+                f"{library.name}: contains an integer-dot shader (mul_mat_vec_q4_0_q8_1_f32). "
+                "Use the Android release glslc to avoid incorrect results on Qualcomm Adreno."
+            )
         alignments = read_load_alignments(args.readelf, library)
         if not alignments:
             errors.append(f"{library.name}: no LOAD program headers found")

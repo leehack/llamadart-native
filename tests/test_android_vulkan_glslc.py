@@ -9,6 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 
 import build  # noqa: E402
+from workflow_text import job_block, step_running
 
 
 class AndroidVulkanGlslcTest(unittest.TestCase):
@@ -35,6 +36,19 @@ class AndroidVulkanGlslcTest(unittest.TestCase):
         self.assertIn('if [ "${{ matrix.backend }}" = "vulkan" ]; then', android_job)
         self.assertIn("sudo apt-get install -y glslc", android_job)
         self.assertIn('echo "ANDROID_VULKAN_GLSLC=$(command -v glslc)" >> "$GITHUB_ENV"', android_job)
+
+    def test_android_vulkan_builds_reject_integer_dot_support(self) -> None:
+        checks = (
+            ('validate_wrapper.yml', 'android-vulkan-shaders', 'Build the release Android Vulkan backend'),
+            ('native_release.yml', 'build-android', 'tools/build.py android --abi'),
+        )
+        for workflow, job, build_step in checks:
+            with self.subTest(workflow=workflow):
+                step = step_running(job_block(workflow, job), build_step)
+                self.assertIn(
+                    "grep -Fx -- '-- GL_EXT_integer_dot_product not supported by glslc' configure-build.log",
+                    step,
+                )
 
 
 if __name__ == "__main__":
