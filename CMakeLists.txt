@@ -651,6 +651,13 @@ if (LLAMADART_BUILD_TESTS)
     add_test(NAME llamadart_cancel_flag_flag
         COMMAND llamadart_cancel_flag_test flag)
 
+    add_executable(llamadart_model_fd_test tests/model_fd_test.cpp)
+    target_compile_features(llamadart_model_fd_test PRIVATE cxx_std_17)
+    target_link_libraries(llamadart_model_fd_test PRIVATE llamadart_lib)
+    target_include_directories(llamadart_model_fd_test PRIVATE src)
+    add_test(NAME llamadart_model_fd_contract COMMAND llamadart_model_fd_test)
+    set_tests_properties(llamadart_model_fd_contract PROPERTIES TIMEOUT 30)
+
     add_executable(llamadart_exit_teardown_test tests/exit_teardown_test.cpp)
     target_compile_features(llamadart_exit_teardown_test PRIVATE cxx_std_17)
     target_compile_definitions(llamadart_exit_teardown_test PRIVATE
@@ -735,6 +742,8 @@ if (LLAMADART_BUILD_TESTS)
             LLAMADART_TEST_CPU_BACKEND="$<TARGET_FILE:ggml-cpu>")
         target_compile_definitions(llamadart_speculative_api_test PRIVATE
             LLAMADART_TEST_CPU_BACKEND="$<TARGET_FILE:ggml-cpu>")
+        target_compile_definitions(llamadart_model_fd_test PRIVATE
+            LLAMADART_TEST_CPU_BACKEND="$<TARGET_FILE:ggml-cpu>")
     endif()
     if (APPLE OR CMAKE_SYSTEM_NAME STREQUAL "Linux")
         add_test(NAME llamadart_exit_teardown_graph
@@ -749,6 +758,14 @@ if (LLAMADART_BUILD_TESTS)
             set_tests_properties(llamadart_exit_teardown_make-model PROPERTIES
                 FIXTURES_SETUP llamadart_exit_teardown_model)
         endif()
+        add_test(NAME llamadart_model_fd_model
+            COMMAND llamadart_model_fd_test "${exit_teardown_model}")
+        set_tests_properties(llamadart_model_fd_model PROPERTIES
+            FIXTURES_REQUIRED llamadart_exit_teardown_model TIMEOUT 60)
+        add_test(NAME llamadart_model_fd_teardown
+            COMMAND llamadart_model_fd_test teardown "${exit_teardown_model}")
+        set_tests_properties(llamadart_model_fd_teardown PROPERTIES
+            FIXTURES_REQUIRED llamadart_exit_teardown_model TIMEOUT 60)
         foreach(scenario model-idle model-dispose model-sync model-wrappers
                 model-order model-session model-session-untracked model-embedding-toggle
                 model-freed model-decode-wait model-mtmd-wait model-decode
@@ -926,7 +943,7 @@ if (LLAMADART_BUILD_TESTS)
             llamadart_tts_types_test llamadart_tts_stream_test llamadart_asr_stream_api_test llamadart_asr_stream_meter_test
             llamadart_build_identity_test llamadart_upstream_abi_test llamadart_cancel_flag_test
             llamadart_tts_eval_test llamadart_tts_seed_test llamadart_tts_batch_test llamadart_tts_sampler_test
-            llamadart_exit_teardown_test
+            llamadart_exit_teardown_test llamadart_model_fd_test
             llamadart_mtmd_compat_test
             llamadart_vulkan_device_info_test llamadart_barrier_test llamadart_image_token_limit_test
             llamadart_fit_api_test llamadart_device_memory_test)

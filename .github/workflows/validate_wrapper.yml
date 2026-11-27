@@ -521,6 +521,7 @@ jobs:
         run: >-
           cmake --build build/wrapper-contract --target
           llamadart_owner_api_test llamadart_owner_reentrancy_test
+          llamadart_model_fd_test
           llamadart_f16_dot_accumulation_test
           llamadart_speculative_api_test
           llamadart_build_identity_test llamadart_upstream_abi_test
@@ -655,6 +656,7 @@ jobs:
           cmake --build --preset windows-x64-full --target
           llamadart_barrier_test
           llamadart_owner_api_test llamadart_owner_reentrancy_test
+          llamadart_model_fd_test
           llamadart_build_identity_test llamadart_upstream_abi_test
           llamadart_cancel_flag_test
           llamadart_exit_teardown_test
@@ -673,7 +675,7 @@ jobs:
           $wrapperDir = (Resolve-Path build/wx64).Path
           $upstreamDir = (Resolve-Path build/wx64/bin).Path
           $env:PATH = "$wrapperDir;$upstreamDir;$env:PATH"
-          ctest --test-dir build/wx64 -R "owner_api|owner_reentrant|barrier|build_identity|upstream_abi|cancel_flag|vocabulary|reasoning-budget|vulkan_device_info|device_memory|fit_api|tts_api|tts_types|asr_stream|tts_stream|image_token_limit" --timeout 120 --output-on-failure
+          ctest --test-dir build/wx64 -R "owner_api|owner_reentrant|model_fd|barrier|build_identity|upstream_abi|cancel_flag|vocabulary|reasoning-budget|vulkan_device_info|device_memory|fit_api|tts_api|tts_types|asr_stream|tts_stream|image_token_limit" --timeout 120 --output-on-failure
       - name: Validate wrapper exports
         shell: pwsh
         run: |
@@ -731,7 +733,7 @@ jobs:
       - name: Build the exit teardown test
         run: >-
           cmake --build ${{ matrix.build_dir }} --target
-          llamadart_owner_api_test llamadart_owner_reentrancy_test llamadart_exit_teardown_test llamadart_image_token_limit_test llamadart_fit_api_test llamadart_device_memory_test
+          llamadart_owner_api_test llamadart_owner_reentrancy_test llamadart_model_fd_test llamadart_exit_teardown_test llamadart_image_token_limit_test llamadart_fit_api_test llamadart_device_memory_test
           llamadart_build_identity_test llamadart_cancel_flag_test
           llamadart_f16_dot_accumulation_test
           llamadart_upstream_abi_test llamadart_mtmd_compat_test
@@ -746,7 +748,7 @@ jobs:
       # the Metal library, which takes most of a minute.
       - name: Run the exit teardown scenarios
         run: >-
-          ctest --test-dir ${{ matrix.build_dir }} -R "owner_|exit_teardown|image_token_limit|fit_api|device_memory|build_identity|cancel_flag|f16_dot_accumulation|f16_residual_kernels|upstream_abi|mtmd_compat|asr_stream"
+          ctest --test-dir ${{ matrix.build_dir }} -R "owner_|model_fd|exit_teardown|image_token_limit|fit_api|device_memory|build_identity|cancel_flag|f16_dot_accumulation|f16_residual_kernels|upstream_abi|mtmd_compat|asr_stream"
           --timeout 300 --output-on-failure
       # Apple CPUs have FHM, so the shipped build takes the FMLAL branch of
       # patch 0005. ARMv8.2-A with FP16 compiles its conversion branch, as on

@@ -411,7 +411,8 @@ LLAMADART_API int32_t llama_dart_vulkan_get_device_info(
 // every platform; automatic Apple exit teardown remains as described above.
 //
 // Objects are tracked, before the creating call returns, by
-// llama_dart_model_load_from_file, llama_dart_init_from_model,
+// llama_dart_model_load_from_file, llama_dart_model_load_from_fd,
+// llama_dart_init_from_model,
 // llama_dart_mtmd_init_from_file and the llama_dart_tts,
 // llama_dart_asr_stream and llama_dart_speculative init functions,
 // and by llama_dart_exit_track.
@@ -426,7 +427,8 @@ LLAMADART_API int32_t llama_dart_vulkan_get_device_info(
 // does not wait.
 //
 // A call in flight is the time a thread spends inside one of:
-// - the three llama_dart creating functions named above and
+// - the llama_dart creating functions named above (the model loaders from a
+//   path and from a descriptor, the context and the mtmd creators) and
 //   llama_dart_exit_free;
 // - llama_dart_decode, llama_dart_encode, llama_dart_process and the other
 //   llama_dart functions below that wrap an upstream function of the same
@@ -532,6 +534,62 @@ LLAMADART_API void llama_dart_exit_teardown(void);
 LLAMADART_API struct llama_model * llama_dart_model_load_from_file(
     const char * path_model,
     struct llama_model_params params);
+
+// Model load from a caller-owned file descriptor, API v1. See
+// docs/model_load_from_fd.md. Returns 0 where the platform has no descriptor
+// loader (Windows) and 1 elsewhere; check it before use.
+LLAMADART_API uint32_t llama_dart_model_fd_api_version(void);
+
+enum llama_dart_model_fd_status {
+    // *out_model holds a tracked model: free it with llama_dart_exit_free.
+    LLAMA_DART_MODEL_FD_STATUS_SUCCESS = 0,
+    // out_model is NULL. Nothing else was touched.
+    LLAMA_DART_MODEL_FD_STATUS_INVALID_ARGUMENT = 1,
+    // The platform has no descriptor loader (Windows). Never a success.
+    LLAMA_DART_MODEL_FD_STATUS_UNSUPPORTED = 2,
+    // fd is negative, not open, not readable, not a seekable regular file, or
+    // cannot be duplicated.
+    LLAMA_DART_MODEL_FD_STATUS_INVALID_DESCRIPTOR = 3,
+    // size is not negative and differs from the descriptor's file size.
+    LLAMA_DART_MODEL_FD_STATUS_SIZE_MISMATCH = 4,
+    // llama.cpp refused the file: not a GGUF, truncated, unsupported, mmap
+    // failed, or the load was cancelled by exit teardown.
+    LLAMA_DART_MODEL_FD_STATUS_LOAD_FAILED = 5,
+    // A caught exception or resource failure, such as no free descriptor.
+    LLAMA_DART_MODEL_FD_STATUS_ERROR = 6,
+};
+
+// llama_dart_model_load_from_file for a GGUF read through fd, which the caller
+// keeps and may close as soon as the call returns. The wrapper duplicates fd,
+// reads the whole file from offset 0 through the duplicate, and closes the
+// duplicate before returning: the model holds no descriptor, so no later call
+// touches fd. With an mmap load mode (the default), the model's tensors stay
+// mapped from the file, which must not be truncated or rewritten while the
+// model is alive. Every status other than SUCCESS sets llama_dart_last_error to
+// a message that names the cause and leaves *out_model NULL.
+//
+// size is the file's expected length, which a caller takes from its own stat
+// or content provider; it is rejected with SIZE_MISMATCH when it differs from
+// the descriptor's size. A negative size skips the check. The descriptor's file
+// offset moves while the call runs and is restored before it returns; do not
+// use fd from another thread during the call. A single GGUF only: no splits,
+// no offset into a larger file, and no path, so path-only helpers such as
+// llama_dart_fit_params do not apply to the model. The load is tracked and
+// guarded like llama_dart_model_load_from_file. Blocks after teardown.
+LLAMADART_API int32_t llama_dart_model_load_from_fd(
+    int32_t fd,
+    int64_t size,
+    struct llama_model_params params,
+    struct llama_model ** out_model);
+
+// The owner variant of llama_dart_model_load_from_fd, as
+// llama_dart_owner_model_load_from_file is to llama_dart_model_load_from_file.
+LLAMADART_API int32_t llama_dart_owner_model_load_from_fd(
+    void * owner,
+    int32_t fd,
+    int64_t size,
+    struct llama_model_params params,
+    struct llama_model ** out_model);
 
 // llama_init_from_model that tracks the context in the CONTEXT stage. Free it
 // with llama_dart_exit_free. Blocks after teardown.

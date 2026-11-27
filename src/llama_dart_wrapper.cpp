@@ -55,6 +55,12 @@
 #include <utility>
 #include <vector>
 
+#if !defined(_WIN32)
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
+
 #if defined(__APPLE__)
 #include <TargetConditionals.h>
 #include <dlfcn.h>
@@ -1779,6 +1785,155 @@ llama_dart_model_load_from_file(const char *path_model,
     return llama_dart_exit_track_created(
         llama_model_load_from_file(path_model, params),
         llama_dart_exit_free_model, LLAMA_DART_EXIT_STAGE_MODEL);
+  });
+}
+
+LLAMADART_API uint32_t llama_dart_model_fd_api_version(void) {
+#if defined(_WIN32)
+  return 0;
+#else
+  return 1;
+#endif
+}
+
+static int32_t llama_dart_model_fd_refuse(int32_t status,
+                                          const std::string &message) {
+  llama_dart_error_record(message.c_str());
+  return status;
+}
+
+#if !defined(_WIN32)
+// Reads the model through a duplicate of the caller's descriptor. The
+// duplicate shares the caller's file offset, so the destructor restores it
+// after fclose, which may itself move it.
+struct llama_dart_model_fd_stream {
+  int source;
+  off_t offset;
+  FILE *file = nullptr;
+
+  llama_dart_model_fd_stream(int source_fd, off_t source_offset)
+      : source(source_fd), offset(source_offset) {}
+  ~llama_dart_model_fd_stream() {
+    if (file != nullptr) {
+      fclose(file);
+    }
+    lseek(source, offset, SEEK_SET);
+  }
+  llama_dart_model_fd_stream(const llama_dart_model_fd_stream &) = delete;
+  llama_dart_model_fd_stream &operator=(const llama_dart_model_fd_stream &) =
+      delete;
+};
+#endif
+
+LLAMADART_API int32_t llama_dart_model_load_from_fd(
+    int32_t fd, int64_t size, struct llama_model_params params,
+    struct llama_model **out_model) {
+  if (out_model == nullptr) {
+    llama_dart_error.set = false;
+    return llama_dart_model_fd_refuse(
+        LLAMA_DART_MODEL_FD_STATUS_INVALID_ARGUMENT, "out_model is NULL");
+  }
+  *out_model = nullptr;
+  return llama_dart_barrier<int32_t>(LLAMA_DART_MODEL_FD_STATUS_ERROR, [&] {
+#if defined(_WIN32)
+    return llama_dart_model_fd_refuse(
+        LLAMA_DART_MODEL_FD_STATUS_UNSUPPORTED,
+        "loading a model from a file descriptor is not supported on Windows");
+#else
+    if (fd < 0) {
+      return llama_dart_model_fd_refuse(
+          LLAMA_DART_MODEL_FD_STATUS_INVALID_DESCRIPTOR,
+          "model file descriptor is negative");
+    }
+    struct stat info;
+    if (fstat(fd, &info) != 0) {
+      return llama_dart_model_fd_refuse(
+          LLAMA_DART_MODEL_FD_STATUS_INVALID_DESCRIPTOR,
+          "model file descriptor is not open");
+    }
+    if (!S_ISREG(info.st_mode)) {
+      return llama_dart_model_fd_refuse(
+          LLAMA_DART_MODEL_FD_STATUS_INVALID_DESCRIPTOR,
+          "model file descriptor is not a regular file");
+    }
+    const int flags = fcntl(fd, F_GETFL);
+    if (flags == -1 || (flags & O_ACCMODE) == O_WRONLY) {
+      return llama_dart_model_fd_refuse(
+          LLAMA_DART_MODEL_FD_STATUS_INVALID_DESCRIPTOR,
+          "model file descriptor is not readable");
+    }
+    const off_t offset = lseek(fd, 0, SEEK_CUR);
+    if (offset == -1) {
+      return llama_dart_model_fd_refuse(
+          LLAMA_DART_MODEL_FD_STATUS_INVALID_DESCRIPTOR,
+          "model file descriptor is not seekable");
+    }
+    if (size >= 0 && static_cast<int64_t>(info.st_size) != size) {
+      return llama_dart_model_fd_refuse(
+          LLAMA_DART_MODEL_FD_STATUS_SIZE_MISMATCH,
+          "expected model size " + std::to_string(size) +
+              " bytes but the descriptor's file size is " +
+              std::to_string(static_cast<int64_t>(info.st_size)));
+    }
+
+    llama_dart_exit_creating_call call;
+    llama_dart_model_fd_stream stream(fd, offset);
+    const int duplicate = fcntl(fd, F_DUPFD_CLOEXEC, 0);
+    if (duplicate == -1) {
+      return llama_dart_model_fd_refuse(
+          LLAMA_DART_MODEL_FD_STATUS_ERROR,
+          std::string("cannot duplicate the model file descriptor: ") +
+              strerror(errno));
+    }
+    if (lseek(duplicate, 0, SEEK_SET) == -1 ||
+        (stream.file = fdopen(duplicate, "rb")) == nullptr) {
+      const std::string reason = strerror(errno);
+      if (stream.file == nullptr) {
+        close(duplicate);
+      }
+      return llama_dart_model_fd_refuse(
+          LLAMA_DART_MODEL_FD_STATUS_ERROR,
+          "cannot read the model file descriptor: " + reason);
+    }
+
+    llama_dart_exit_load_progress progress{params.progress_callback,
+                                           params.progress_callback_user_data};
+    params.progress_callback = llama_dart_exit_load_progress_callback;
+    params.progress_callback_user_data = &progress;
+    llama_model *model =
+        llama_model_load_from_file_ptr(stream.file, params);
+    if (model == nullptr) {
+      return llama_dart_model_fd_refuse(
+          LLAMA_DART_MODEL_FD_STATUS_LOAD_FAILED,
+          "llama.cpp could not load a GGUF model from the file descriptor "
+          "(not a GGUF, truncated, unsupported, not mappable, or cancelled); "
+          "see the llama.cpp log");
+    }
+    model = llama_dart_exit_track_created(model, llama_dart_exit_free_model,
+                                          LLAMA_DART_EXIT_STAGE_MODEL);
+    if (model == nullptr) {
+      return llama_dart_model_fd_refuse(
+          LLAMA_DART_MODEL_FD_STATUS_LOAD_FAILED,
+          "the owner closed while the model was loading");
+    }
+    *out_model = model;
+    return static_cast<int32_t>(LLAMA_DART_MODEL_FD_STATUS_SUCCESS);
+#endif
+  });
+}
+
+LLAMADART_API int32_t llama_dart_owner_model_load_from_fd(
+    void *owner, int32_t fd, int64_t size, struct llama_model_params params,
+    struct llama_model **out_model) {
+  if (out_model == nullptr) {
+    llama_dart_error.set = false;
+    return llama_dart_model_fd_refuse(
+        LLAMA_DART_MODEL_FD_STATUS_INVALID_ARGUMENT, "out_model is NULL");
+  }
+  *out_model = nullptr;
+  return llama_dart_barrier<int32_t>(LLAMA_DART_MODEL_FD_STATUS_ERROR, [&] {
+    llama_dart_exit_creating_call call(owner);
+    return llama_dart_model_load_from_fd(fd, size, params, out_model);
   });
 }
 
