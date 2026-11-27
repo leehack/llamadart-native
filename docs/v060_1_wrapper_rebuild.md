@@ -450,10 +450,11 @@ In `validate_wrapper.yml`:
 
 Forced exceptions per wrapper family, in `barrier-free` and `barrier-grammar`
 on every platform: a grammar that rejects the accepted token, a trigger
-pattern `(`, `LLAMA_TOKEN_NULL` to `llama_dart_token_to_piece`, a text with a
+pattern `(`, a DRY sequence breaker with a byte the vocabulary has no token for, `LLAMA_TOKEN_NULL` to `llama_dart_token_to_piece`, a text with a
 byte the vocabulary has no token for, a ggml device whose backend throws
 `Unsupported device` while it is created or while it is queried, and a free
-function that throws. The bitmap constructors, `llama_dart_memory_clear` and
+function that throws. `barrier-dry-wait` checks that teardown frees nothing
+while the DRY constructor runs. The bitmap constructors, `llama_dart_memory_clear` and
 the ggml tensor and scheduler functions have no exception that can be forced
 without a GPU backend or an allocation failure: they are run on valid and on
 undecodable input, the ggml ones on the CPU backend in the macOS `graph`

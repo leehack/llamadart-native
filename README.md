@@ -421,7 +421,7 @@ aborts. `src/llama_dart_wrapper.h` lists the functions without a barrier and
 what a caller may do with the objects of a call that failed.
 
 `llamadart_exit_teardown_test` covers it with the `barrier-free`,
-`barrier-free-idle`, `barrier-grammar` and, on macOS, `model-barrier` and
+`barrier-free-idle`, `barrier-grammar`, `barrier-dry-wait` and, on macOS, `model-barrier` and
 `model-sample-accept` scenarios. The grammar ones use a model with a
 vocabulary that the test writes. `llamadart_barrier_test` calls the helpers
 behind the barrier directly.
