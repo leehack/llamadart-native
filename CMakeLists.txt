@@ -943,7 +943,7 @@ if (LLAMADART_BUILD_TESTS)
             llamadart_tts_types_test llamadart_tts_stream_test llamadart_asr_stream_api_test llamadart_asr_stream_meter_test
             llamadart_build_identity_test llamadart_upstream_abi_test llamadart_cancel_flag_test
             llamadart_tts_eval_test llamadart_tts_seed_test llamadart_tts_batch_test llamadart_tts_sampler_test
-            llamadart_exit_teardown_test
+            llamadart_exit_teardown_test llamadart_model_fd_test
             llamadart_mtmd_compat_test
             llamadart_vulkan_device_info_test llamadart_barrier_test llamadart_image_token_limit_test
             llamadart_fit_api_test llamadart_device_memory_test)
